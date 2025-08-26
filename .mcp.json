@@ -1,11 +1,18 @@
 {
-  "mcpServers": {
-    "neural-flow": {
-      "command": "python3",
-      "args": [
-        ".claude/mcp-tools/mcp_neural_server.py"
-      ],
-      "env": {}
+  "neural-flow": {
+    "command": "docker",
+    "args": [
+      "compose", 
+      "exec", 
+      "-T",
+      "neural-flow", 
+      "/app/docker-entrypoint.sh"
+    ],
+    "env": {
+      "PROJECT_NAME": "claude-l9-template",
+      "USE_QODO_EMBED": "true",
+      "ENABLE_AB_TESTING": "true",
+      "ENABLE_PERFORMANCE_MONITORING": "true"
     }
   }
 }

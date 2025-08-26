@@ -1,0 +1,21 @@
+# Neural Flow Docker Container Requirements
+# Optimized for containerized MCP server deployment
+
+# Base requirements
+-r requirements-base.txt
+
+# MCP Protocol Support
+mcp>=1.0.0
+
+# Enhanced embedding models
+sentence-transformers>=2.2.0
+torch>=2.0.0,<3.0.0  # CPU-only version
+transformers>=4.30.0
+
+# Container monitoring and logging
+psutil>=5.9.0
+structlog>=23.1.0
+
+# Development and debugging tools  
+ipython>=8.0.0
+pytest>=7.0.0

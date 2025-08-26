@@ -1,0 +1,61 @@
+# Neural Flow MCP Server - Docker Compose Configuration
+# Provides multi-project isolation with shared model cache
+
+version: '3.8'
+
+services:
+  neural-flow:
+    build: .
+    container_name: neural-flow-${PROJECT_NAME:-default}
+    volumes:
+      # Project-specific data isolation
+      - ./projects/${PROJECT_NAME:-default}/.claude:/app/data
+      
+      # Project source code (read-only)
+      - ./projects/${PROJECT_NAME:-default}/src:/app/project:ro
+      
+      # Shared model cache (efficient resource usage)
+      - neural-flow-models:/app/models
+      
+      # Shared ONNX models
+      - neural-flow-onnx:/app/onnx:ro
+      
+    environment:
+      # Project identification
+      - PROJECT_NAME=${PROJECT_NAME:-default}
+      
+      # Neural system configuration
+      - USE_QODO_EMBED=${USE_QODO_EMBED:-false}
+      - ENABLE_AB_TESTING=${ENABLE_AB_TESTING:-false}
+      - ENABLE_PERFORMANCE_MONITORING=${ENABLE_PERFORMANCE_MONITORING:-true}
+      
+      # Resource limits
+      - CUDA_VISIBLE_DEVICES=""  # Force CPU for consistency
+      - OMP_NUM_THREADS=4        # Limit CPU threads
+      
+    # Resource limits for development
+    mem_limit: 2g
+    cpus: '2.0'
+    
+    # Container management
+    restart: unless-stopped
+    
+    # stdio transport for MCP
+    stdin_open: true
+    tty: true
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # Persistent model cache (shared across projects)
+  neural-flow-models:
+    driver: local
+    
+  # ONNX models cache
+  neural-flow-onnx:
+    driver: local

@@ -1,0 +1,43 @@
+# Docker build context optimization
+# Exclude unnecessary files from Docker build context
+
+# Documentation and reference materials
+docs/reference-knowledge/**
+*.md
+!docker-integration-guide.md
+
+# Development files
+.git/
+.gitignore
+memory/
+
+# Legacy components (not needed in container)
+SETUP.md
+start_preloaded_server.sh
+test_mcp_server.py
+install.py
+install-global.sh
+
+# Project directories (mounted as volumes)
+projects/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment files
+.env*
+
+# IDE files
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# OS files
+.DS_Store
+Thumbs.db
