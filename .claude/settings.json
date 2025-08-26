@@ -1,0 +1,27 @@
+{
+    "hooks": {
+      "PreCompact": [
+        {
+          "matcher": "manual",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/persist-session-state.py",
+              "timeout": 60
+            }
+          ]
+        },
+        {
+          "matcher": "auto",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/persist-session-state.py",
+              "timeout": 60
+            }
+          ]
+        }
+      ]
+    }
+  }
+  

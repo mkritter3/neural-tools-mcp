@@ -1,0 +1,20 @@
+# Neural Flow MCP Server - Environment-Aware Installation
+# 
+# ⚠️  DO NOT install directly from this file!
+# 
+# This project supports Python 3.8+ with environment-specific dependencies.
+# Please run the installation script instead:
+#
+#   python install.py
+#
+# The script will automatically:
+# - Detect your Python version
+# - Check existing package compatibility
+# - Install the correct dependencies for your environment
+#
+# Manual installation (if needed):
+# - Python 3.8-3.9:   pip install -r requirements/requirements-py38.txt
+# - Python 3.10-3.12: pip install -r requirements/requirements-py310.txt  
+# - Python 3.13+:     pip install -r requirements/requirements-py313.txt
+#
+# For more information, see SETUP.md

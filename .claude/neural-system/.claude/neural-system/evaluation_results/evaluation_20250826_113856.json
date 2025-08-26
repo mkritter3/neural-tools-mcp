@@ -1,0 +1,93 @@
+{
+  "baseline": {
+    "model_name": "baseline",
+    "test_suite": "code_retrieval",
+    "recall_at_k": {
+      "1": 0.0,
+      "3": 0.125,
+      "5": 0.375,
+      "10": 0.875
+    },
+    "ndcg_at_k": {
+      "1": 0.0,
+      "3": 0.10482345107078453,
+      "5": 0.22633816545347635,
+      "10": 0.4238100432439735
+    },
+    "latency_ms": {
+      "mean": 2.8755664825439453,
+      "p50": 2.3745298385620117,
+      "p95": 4.279935359954833,
+      "p99": 4.536025524139403
+    },
+    "error_rate": 0.0,
+    "total_queries": 4,
+    "timestamp": "2025-08-26T11:38:56.930780",
+    "metadata": {
+      "feature_flags": {
+        "total_flags": 9,
+        "enabled_flags": 2,
+        "active_ab_tests": 0,
+        "config_path": ".claude/neural-system/feature_flags.json",
+        "flags": {
+          "use_qodo_embed": {
+            "enabled": false,
+            "rollout": 10.0
+          },
+          "use_codestral_embed": {
+            "enabled": false,
+            "rollout": 100.0
+          },
+          "use_openai_embeddings": {
+            "enabled": false,
+            "rollout": 100.0
+          },
+          "shadow_indexing": {
+            "enabled": true,
+            "rollout": 100.0
+          },
+          "enable_ab_testing": {
+            "enabled": false,
+            "rollout": 50.0
+          },
+          "performance_monitoring": {
+            "enabled": true,
+            "rollout": 100.0
+          },
+          "debug_embeddings": {
+            "enabled": false,
+            "rollout": 100.0
+          },
+          "ast_aware_chunking": {
+            "enabled": false,
+            "rollout": 100.0
+          },
+          "cross_domain_search": {
+            "enabled": false,
+            "rollout": 100.0
+          }
+        },
+        "ab_tests": {
+          "embedding_model_comparison": {
+            "enabled": false,
+            "variants": 3
+          }
+        }
+      },
+      "vector_store_stats": {
+        "total_embeddings": 11,
+        "total_collections": 1,
+        "collections": {
+          "onnx_384d": {
+            "count": 11,
+            "model": "onnx",
+            "dimensions": 384,
+            "created_at": "2025-08-26T11:33:03.118540"
+          }
+        },
+        "persist_dir": ".claude/chroma",
+        "shadow_indexing_enabled": true
+      }
+    }
+  }
+}

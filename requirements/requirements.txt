@@ -1,0 +1,31 @@
+# Neural Flow MCP Server Requirements (Preloaded Version)
+# Python 3.13+ compatible versions
+# Optimized for <50ms query performance with model pre-loading
+
+# Core MCP server framework
+mcp>=1.13.1
+
+# Neural embeddings and vector database
+chromadb>=1.0.20  # Must be 1.0.20+ for NumPy 2.x compatibility
+numpy>=2.1.0      # Required for Python 3.13
+onnxruntime>=1.20.1
+tiktoken>=0.9.0
+
+# AsyncIO support for MCP server
+asyncio-mqtt>=0.16.0  # Optional, for MQTT support
+
+# Development dependencies (optional)
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# mypy>=1.0.0
+
+# Performance Notes:
+# - Preloaded server uses ~300MB RAM but provides <50ms response times
+# - First-time startup takes 2-3 seconds to pre-load models
+# - Falls back gracefully if pre-loading fails
+
+# Python 3.13 Compatibility:
+# - NumPy must be >=2.1.0 
+# - ChromaDB must be >=1.0.20 (earlier versions incompatible with NumPy 2.x)
+# - Some packages may show pip resolver warnings but will work correctly

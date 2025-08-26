@@ -1,0 +1,12 @@
+# Requirements for Python 3.13+
+# Latest versions with best performance
+
+-r requirements-base.txt
+
+# Python 3.13 requires NumPy 2.x
+numpy>=2.1.0
+chromadb>=1.0.20  # Must be 1.0.20+ for NumPy 2.x compatibility
+
+# Optional development dependencies
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0

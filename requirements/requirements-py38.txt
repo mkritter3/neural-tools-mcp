@@ -1,0 +1,12 @@
+# Requirements for Python 3.8-3.9
+# Older but stable versions for compatibility
+
+-r requirements-base.txt
+
+# NumPy and ChromaDB versions compatible with Python 3.8+
+numpy>=1.19.0,<2.0  # NumPy 1.x for older Python
+chromadb==0.4.24    # Last version supporting NumPy 1.x properly
+
+# Optional development dependencies
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0

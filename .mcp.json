@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "neural-flow": {
+      "command": "python3",
+      "args": [
+        ".claude/mcp-tools/mcp_neural_server.py"
+      ],
+      "env": {}
+    }
+  }
+}
