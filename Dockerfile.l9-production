@@ -1,0 +1,114 @@
+# L9 Neural Flow - Optimized Multi-stage Docker Build
+# Target: <2GB container size (vs 23.9GB current)
+# Architecture: Single Qodo-Embed-1.5B model with hybrid search
+
+# Stage 1: Model cache layer for Qodo-Embed pre-loading
+FROM python:3.12-slim as l9-model-cache
+
+# Pre-download and cache Qodo model to improve startup time
+RUN pip install --no-cache-dir sentence-transformers>=3.0.0
+RUN python3 -c "from sentence_transformers import SentenceTransformer; print('📥 Pre-caching Qodo-Embed-1.5B model...'); model = SentenceTransformer('Qodo/Qodo-Embed-1-1.5B'); print('✅ Qodo model cached for L9 production')"
+
+# Stage 2: Dependencies builder with optimization
+FROM python:3.12-slim as l9-builder
+
+# Install system dependencies for building
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ \
+    git \
+    curl \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Set Python optimizations for build
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install L9 dependencies with optimizations
+COPY requirements/requirements-l9.txt /tmp/requirements-l9.txt
+RUN pip install --user --no-cache-dir --compile -r /tmp/requirements-l9.txt
+
+# Copy pre-cached Qodo model from model-cache stage
+COPY --from=l9-model-cache /root/.cache/huggingface /root/.cache/huggingface
+
+# Stage 3: L9 Production runtime (optimized for <2GB)
+FROM python:3.12-slim as l9-production
+
+# Runtime dependencies only (minimal footprint)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Copy dependencies and cached models from builder
+COPY --from=l9-builder /root/.local /root/.local
+COPY --from=l9-builder /root/.cache/huggingface /root/.cache/huggingface
+
+# L9 optimized environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TOKENIZERS_PARALLELISM=false \
+    OMP_NUM_THREADS=2 \
+    NEURAL_L9_MODE=1 \
+    USE_SINGLE_QODO_MODEL=1 \
+    ENABLE_AUTO_SAFETY=1 \
+    CHROMADB_RUST_CORE=1 \
+    L9_PERFORMANCE_MODE=1
+
+# Create app directory
+WORKDIR /app
+
+# Copy L9 neural system (optimized components only)
+COPY .claude/neural-system/ /app/neural-system/
+
+# Create optimized entrypoint script
+RUN echo '#!/bin/bash' > /app/docker-entrypoint-l9.sh && \
+    echo 'set -e' >> /app/docker-entrypoint-l9.sh && \
+    echo '' >> /app/docker-entrypoint-l9.sh && \
+    echo '# L9 Neural Flow Entrypoint - Optimized Startup' >> /app/docker-entrypoint-l9.sh && \
+    echo 'echo "🚀 Starting L9 Neural Flow MCP Server..."' >> /app/docker-entrypoint-l9.sh && \
+    echo 'echo "🔮 Architecture: Single Qodo-Embed-1.5B with Hybrid Search"' >> /app/docker-entrypoint-l9.sh && \
+    echo 'echo "📊 Target: 85%+ Recall@1 accuracy"' >> /app/docker-entrypoint-l9.sh && \
+    echo '' >> /app/docker-entrypoint-l9.sh && \
+    echo '# Set project-specific environment' >> /app/docker-entrypoint-l9.sh && \
+    echo 'export PROJECT_NAME=${PROJECT_NAME:-claude-l9-template}' >> /app/docker-entrypoint-l9.sh && \
+    echo 'export DATA_DIR=/app/data' >> /app/docker-entrypoint-l9.sh && \
+    echo '' >> /app/docker-entrypoint-l9.sh && \
+    echo '# Create data directories' >> /app/docker-entrypoint-l9.sh && \
+    echo 'mkdir -p /app/data/chroma-l9' >> /app/docker-entrypoint-l9.sh && \
+    echo 'mkdir -p /app/data/chroma-l9-hybrid' >> /app/docker-entrypoint-l9.sh && \
+    echo '' >> /app/docker-entrypoint-l9.sh && \
+    echo '# Pre-load L9 systems for faster response' >> /app/docker-entrypoint-l9.sh && \
+    echo 'echo "⚡ Pre-loading L9 components..."' >> /app/docker-entrypoint-l9.sh && \
+    echo 'python3 -c "' >> /app/docker-entrypoint-l9.sh && \
+    echo 'import sys' >> /app/docker-entrypoint-l9.sh && \
+    echo 'sys.path.append(\"/app/neural-system\")' >> /app/docker-entrypoint-l9.sh && \
+    echo 'from l9_single_model_system import L9SingleModelSystem' >> /app/docker-entrypoint-l9.sh && \
+    echo 'from l9_hybrid_search import L9HybridSearchEngine' >> /app/docker-entrypoint-l9.sh && \
+    echo 'from l9_auto_safety import L9AutoSafetySystem' >> /app/docker-entrypoint-l9.sh && \
+    echo 'print(\"✅ L9 components loaded successfully\")' >> /app/docker-entrypoint-l9.sh && \
+    echo '"' >> /app/docker-entrypoint-l9.sh && \
+    echo '' >> /app/docker-entrypoint-l9.sh && \
+    echo '# Start L9 MCP server' >> /app/docker-entrypoint-l9.sh && \
+    echo 'cd /app/neural-system' >> /app/docker-entrypoint-l9.sh && \
+    echo 'exec python3 mcp_neural_server.py' >> /app/docker-entrypoint-l9.sh && \
+    chmod +x /app/docker-entrypoint-l9.sh
+
+# Health check for L9 system
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python3 -c "import sys; sys.path.append('/app/neural-system'); from l9_single_model_system import get_l9_system; system = get_l9_system(); print('✅ L9 system healthy')"
+
+# Container metadata
+LABEL maintainer="L9 Engineering Team" \
+      description="L9 Neural Flow - Single Model Architecture" \
+      version="L9-2025" \
+      model="Qodo-Embed-1.5B" \
+      performance="68.53 CoIR score" \
+      target_size="<2GB"
+
+# Expose no ports (stdio transport only)
+ENTRYPOINT ["/app/docker-entrypoint-l9.sh"]

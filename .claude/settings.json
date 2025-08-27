@@ -1,27 +1,116 @@
 {
-    "hooks": {
-      "PreCompact": [
-        {
-          "matcher": "manual",
-          "hooks": [
-            {
-              "type": "command",
-              "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/persist-session-state.py",
-              "timeout": 60
-            }
-          ]
-        },
-        {
-          "matcher": "auto",
-          "hooks": [
-            {
-              "type": "command",
-              "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/persist-session-state.py",
-              "timeout": 60
-            }
-          ]
-        }
-      ]
-    }
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "allow": [
+      "*"
+    ],
+    "deny": [
+      "Read(.git/config)",
+      "Read(Dockerfile)",
+      "Bash(apt install:*)",
+      "Bash(brew install --cask:*)",
+      "Bash(chgrp -R:*)",
+      "Bash(chmod -R 777:*)",
+      "Bash(chmod 777:*)",
+      "Bash(chown -R:*)",
+      "Bash(curl:*)",
+      "Bash(del /f /s /q:*)",
+      "Bash(docker build --no-cache:*)",
+      "Bash(docker container prune:*)",
+      "Bash(docker network prune:*)",
+      "Bash(docker run --privileged:*)",
+      "Bash(docker system prune:*)",
+      "Bash(docker volume prune:*)",
+      "Bash(fetch:*)",
+      "Bash(find . -delete:*)",
+      "Bash(gem install:*)",
+      "Bash(git checkout -- .:*)",
+      "Bash(git clean -fd:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard HEAD~:*)",
+      "Bash(http:*)",
+      "Bash(https:*)",
+      "Bash(kill -9:*)",
+      "Bash(killall:*)",
+      "Bash(launchctl:*)",
+      "Bash(npm publish:*)",
+      "Bash(pip install --global:*)",
+      "Bash(pip install -e .:*)",
+      "Bash(pkill:*)",
+      "Bash(python setup.py install:*)",
+      "Bash(rm --recursive --force:*)",
+      "Bash(rm -r:*)",
+      "Bash(rm -rf:*)",
+      "Bash(rmdir /s:*)",
+      "Bash(service:*)",
+      "Bash(su -:*)",
+      "Bash(sudo:*)",
+      "Bash(systemctl:*)",
+      "Bash(wget:*)",
+      "Bash(yum install:*)"
+    ],
+    "ask": [
+      "Edit(Dockerfile)",
+      "Edit(docker-compose.yml)",
+      "Edit(requirements.txt)",
+      "Bash(git push:*)",
+      "Bash(npm publish:*)",
+      "Bash(pip upload:*)",
+      "Bash(docker build:*)",
+      "Bash(docker push:*)",
+      "Bash(terraform apply:*)",
+      "Bash(kubectl apply:*)",
+      "Edit(package.json)",
+      "Edit(requirements.txt)",
+      "Edit(Cargo.toml)",
+      "Edit(tsconfig.json)",
+      "Edit(webpack.config.*)",
+      "Edit(babel.config.*)",
+      "Bash(Dockerfile:*)",
+      "Edit(docker-compose.*)",
+      "Bash(Makefile:*)",
+      "Bash(migrate:*)",
+      "Bash(seed:*)",
+      "Bash(schema:*)",
+      "Bash(database:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/neural-system/safety_checker.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/neural-system/style_preserver.py"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "NEURAL_L9_MODE": "1",
+    "USE_SINGLE_QODO_MODEL": "1",
+    "ENABLE_AUTO_SAFETY": "1",
+    "L9_PROTECTION_LEVEL": "maximum"
+  },
+  "_metadata": {
+    "generated_by": "L9 Auto-Safety System",
+    "generated_at": "2025-08-26T17:52:33.210107",
+    "protection_level": "maximum",
+    "total_rules": 67,
+    "sensitive_files": 2
   }
-  
+}

@@ -1,15 +1,31 @@
 {
   "mcpServers": {
-    "neural-flow": {
+    "neural-flow-l9": {
       "command": "docker",
       "args": [
         "run",
         "--rm",
         "-i",
         "--env", "PROJECT_NAME=${PROJECT_NAME:-claude-l9-template}",
+        "--env", "NEURAL_L9_MODE=1",
+        "--env", "USE_SINGLE_QODO_MODEL=1",
+        "--env", "ENABLE_AUTO_SAFETY=1",
+        "--env", "CHROMADB_RUST_CORE=1",
+        "--env", "L9_PERFORMANCE_MODE=1",
+        "-v", "${PWD}/.claude:/app/data",
+        "neural-flow:l9-production"
+      ]
+    },
+    "neural-flow": {
+      "command": "docker", 
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--env", "PROJECT_NAME=${PROJECT_NAME:-claude-l9-template}",
         "--env", "USE_QODO_EMBED=true",
-        "--env", "ENABLE_AB_TESTING=true", 
-        "--env", "ENABLE_PERFORMANCE_MONITORING=true",
+        "--env", "ENABLE_AB_TESTING=true",
+        "--env", "ENABLE_PERFORMANCE_MONITORING=true", 
         "-v", "${PWD}/.claude:/app/data",
         "neural-flow:production"
       ]

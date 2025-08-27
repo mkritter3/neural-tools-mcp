@@ -1,7 +1,7 @@
 # Base Requirements - Works with Python 3.8+
 # Core dependencies that work across all supported Python versions
 
-# MCP server framework
+# MCP server framework - L9 2025 compliance
 mcp>=1.13.1
 
 # Neural embeddings runtime
