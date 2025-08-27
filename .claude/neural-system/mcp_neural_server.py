@@ -16,27 +16,25 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from neural_embeddings import get_neural_system
 from feature_flags import get_feature_manager
-from neural_dynamic_memory_system import DynamicMemorySystem
+from neural_dynamic_memory_system import NeuralDynamicMemorySystem
 from project_neural_indexer import ProjectNeuralIndexer
 
-# MCP Protocol imports (these would need to be added to requirements)
-try:
-    from mcp.server import Server
-    from mcp.server.models import InitializationOptions
-    from mcp.server.stdio import stdio_server
-    from mcp.types import (
-        Resource, Tool, TextContent, Prompt,
-        GetResourceRequest, GetResourceResult,
-        ListResourcesRequest, ListResourcesResult,
-        CallToolRequest, CallToolResult,
-        ListToolsRequest, ListToolsResult,
-        GetPromptRequest, GetPromptResult,
-        ListPromptsRequest, ListPromptsResult,
-    )
-    MCP_AVAILABLE = True
-except ImportError:
-    MCP_AVAILABLE = False
-    print("⚠️  MCP SDK not available. Install with: pip install mcp", file=sys.stderr)
+# MCP Protocol imports - L9 2025 JSON-RPC 2.0 compliance
+from mcp.server import Server
+from mcp.server.models import InitializationOptions
+from mcp.server.stdio import stdio_server
+from mcp.types import (
+    Resource, Tool, TextContent, Prompt,
+    ReadResourceRequest, ReadResourceResult,
+    ListResourcesRequest, ListResourcesResult,
+    CallToolRequest, CallToolResult,
+    ListToolsRequest, ListToolsResult,
+    GetPromptRequest, GetPromptResult,
+    ListPromptsRequest, ListPromptsResult,
+)
+
+# L9 optimization: MCP is required for full compliance
+MCP_AVAILABLE = True
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +56,7 @@ class NeuralFlowMCPServer:
             # Initialize core systems
             self.neural_system = get_neural_system()
             self.feature_manager = get_feature_manager()
-            self.memory_system = DynamicMemorySystem()
+            self.memory_system = NeuralDynamicMemorySystem()
             
             # Initialize project indexer if in project context
             project_root = Path.cwd()
@@ -107,8 +105,8 @@ class NeuralFlowMCPServer:
             
             return resources
         
-        @self.server.get_resource()
-        async def get_resource(request: GetResourceRequest) -> GetResourceResult:
+        @self.server.read_resource()
+        async def get_resource(request: ReadResourceRequest) -> ReadResourceResult:
             """Get specific neural resource"""
             uri = request.uri
             
@@ -143,7 +141,7 @@ class NeuralFlowMCPServer:
             else:
                 raise ValueError(f"Unknown resource URI: {uri}")
             
-            return GetResourceResult(contents=[content])
+            return ReadResourceResult(contents=[content])
         
         # Tools
         @self.server.list_tools()
@@ -264,35 +262,28 @@ class NeuralFlowMCPServer:
             return CallToolResult(contents=[content])
 
 async def main():
-    """Main MCP server entry point"""
-    if not MCP_AVAILABLE:
-        print("❌ MCP SDK required. Install with: pip install mcp", file=sys.stderr)
-        sys.exit(1)
-        
-    # Configure logging
+    """Main MCP server entry point - L9 2025 optimized"""
+    
+    # Configure logging for L9 environment
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # Create and initialize server
+    logger.info("🚀 Starting L9 Neural Flow MCP Server...")
+    logger.info("🔮 L9 Mode: Single Qodo-Embed architecture")
+    logger.info("📡 MCP Protocol: JSON-RPC 2.0 compliant")
+    
+    # Create and initialize L9-optimized server
     mcp_server = NeuralFlowMCPServer() 
     await mcp_server.initialize()
     mcp_server.register_handlers()
     
-    # Start stdio server
+    logger.info("✅ L9 Neural Flow MCP Server ready")
+    
+    # Start stdio server with JSON-RPC 2.0
     async with stdio_server(mcp_server.server) as streams:
         await mcp_server.server.run(streams[0], streams[1], InitializationOptions())
 
 if __name__ == "__main__":
-    if not MCP_AVAILABLE:
-        print("⚠️  Running in compatibility mode without MCP protocol", file=sys.stderr)
-        # Basic neural system test
-        import asyncio
-        async def test_systems():
-            server = NeuralFlowMCPServer()
-            await server.initialize()
-            print("✅ Neural systems initialized successfully")
-        asyncio.run(test_systems())
-    else:
-        asyncio.run(main())
+    asyncio.run(main())

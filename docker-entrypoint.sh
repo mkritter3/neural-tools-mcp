@@ -1,11 +1,27 @@
 #!/bin/bash
 # Neural Flow MCP Server - Docker Entry Point
-# Handles MCP server startup with proper environment configuration
+# L9-grade initialization with performance optimizations
 
 set -e
 
+# Performance optimizations
+echo "Setting performance optimizations..." >&2
+export MALLOC_MMAP_THRESHOLD_=131072
+export MALLOC_TRIM_THRESHOLD_=131072
+export MALLOC_TOP_PAD_=131072
+export PYTHONOPTIMIZE=2
+
 # Ensure data directories exist
-mkdir -p /app/data/chroma /app/data/memory /app/models
+mkdir -p /app/data/chroma /app/data/memory /app/data/benchmarks /app/models
+
+# Ensure model cache is available
+if [ ! -d "/app/models/.cache/huggingface" ]; then
+    mkdir -p /app/models/.cache/huggingface
+    # Link pre-cached models if available
+    if [ -d "/root/.cache/huggingface" ]; then
+        ln -sf /root/.cache/huggingface/* /app/models/.cache/huggingface/ 2>/dev/null || true
+    fi
+fi
 
 # Set up Python path
 export PYTHONPATH="/app/neural-system:$PYTHONPATH"
@@ -32,7 +48,13 @@ except Exception as e:
     sys.exit(1)
 "
 
-# Start MCP server
+# Check if we should run benchmarks on startup
+if [ "$RUN_BENCHMARKS_ON_START" = "true" ]; then
+    echo "Running initial performance benchmarks..." >&2
+    python3 -O /app/neural-system/performance_benchmarks.py --data-dir /app/data --report-only || true
+fi
+
+# Start MCP server with optimizations
 echo "🚀 Starting MCP server on stdio transport..." >&2
 cd /app/neural-system
-exec python3 -m mcp_neural_server
+exec python3 -O -u mcp_neural_server.py

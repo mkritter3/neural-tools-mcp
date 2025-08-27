@@ -37,6 +37,8 @@ COMMANDS:
   status             Show running containers and project status
   logs <project>     Show container logs
   shell <project>    Open shell in container
+  benchmark <project> Run performance benchmarks
+  monitor <project>  Start performance monitoring
   clean              Clean up unused containers and volumes
   update             Update neural flow system
 
@@ -293,6 +295,30 @@ main() {
             log_info "Cleaning up neural flow containers and volumes..."
             docker system prune -f --filter "label=com.docker.compose.project" 
             log_success "Cleanup complete"
+            ;;
+        benchmark)
+            if [[ -z "$2" ]]; then
+                log_error "Project name required"
+                exit 1
+            fi
+            log_info "Running performance benchmarks for project: $2"
+            cd "$NEURAL_FLOW_DIR"
+            export PROJECT_NAME="$2"
+            docker-compose --project-name "neural-flow-$2" --profile benchmarking up --build neural-flow-benchmark
+            docker-compose --project-name "neural-flow-$2" logs neural-flow-benchmark
+            log_success "Benchmarks complete - check logs above"
+            ;;
+        monitor)
+            if [[ -z "$2" ]]; then
+                log_error "Project name required"
+                exit 1
+            fi
+            log_info "Starting performance monitoring for project: $2"
+            cd "$NEURAL_FLOW_DIR"
+            export PROJECT_NAME="$2"
+            docker-compose --project-name "neural-flow-$2" --profile monitoring up -d neural-flow-monitor
+            log_success "Performance monitoring started for project $2"
+            log_info "View logs with: $(basename "$0") logs $2"
             ;;
         update)
             log_info "Updating neural flow system..."

@@ -228,6 +228,15 @@ class CodeSpecificEmbedder:
             logger.error(f"Code embedding failed: {e}")
             raise
     
+    def embed_code(self, code: str) -> List[float]:
+        """Generate code-specific embeddings (alias for encode)"""
+        if not self.model:
+            # Fallback to simple statistical embedding
+            return [0.0] * self.embedding_dim
+        
+        embedding = self.encode(code)
+        return embedding.tolist()
+    
     def is_available(self) -> bool:
         """Check if model is available"""
         return self.model is not None
@@ -797,11 +806,23 @@ class HybridEmbeddingSystem:
 # Global instance
 _neural_system = None
 
-def get_neural_system() -> HybridEmbeddingSystem:
-    """Get or create global neural embedding system"""
+def get_neural_system():
+    """Get or create global neural embedding system - L9 optimized"""
     global _neural_system
     if _neural_system is None:
-        _neural_system = HybridEmbeddingSystem()
+        # Check if L9 mode is enabled
+        l9_mode = os.getenv("NEURAL_L9_MODE", "0") == "1"
+        if l9_mode:
+            # Import and use L9 single model system
+            try:
+                from l9_single_model_system import get_l9_system
+                _neural_system = get_l9_system()
+                logger.info("🔮 Using L9 Single Model System (Qodo-Embed-1.5B)")
+            except ImportError:
+                logger.warning("L9 system not available, falling back to hybrid system")
+                _neural_system = HybridEmbeddingSystem()
+        else:
+            _neural_system = HybridEmbeddingSystem()
     return _neural_system
 
 def test_neural_embeddings():
