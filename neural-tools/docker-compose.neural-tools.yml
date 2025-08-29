@@ -1,0 +1,231 @@
+version: '3.8'
+
+# Neural Tools System - L9 Enhanced Architecture
+# 3-Container Architecture: Neural Tools Server + Neural Data Storage + Neural Embeddings
+# Features: Kuzu GraphRAG, RRF Hybrid Search, INT8 Quantization, Tree-sitter AST
+
+services:
+  # Neural Tools Server with Kuzu GraphRAG
+  neural-tools-server:
+    image: l9-mcp-enhanced:minimal-fixed
+    container_name: ${PROJECT_NAME:-default}-neural
+    
+    # STDIO transport for MCP communication
+    stdin_open: true
+    tty: true
+    
+    volumes:
+      # Project source (read-only)
+      - type: bind
+        source: ${PROJECT_DIR:-../}
+        target: /app/project
+        read_only: true
+      
+      # Persistent data
+      - type: bind
+        source: ./.neural-tools/data/${PROJECT_NAME:-default}
+        target: /app/data
+        bind:
+          create_host_path: true
+      
+      # Kuzu database storage
+      - type: bind
+        source: ./.neural-tools/kuzu/${PROJECT_NAME:-default}
+        target: /app/kuzu
+        bind:
+          create_host_path: true
+      
+      # Model cache
+      - type: volume
+        source: neural-models-cache
+        target: /app/models
+    
+    environment:
+      # Project config
+      - PROJECT_NAME=${PROJECT_NAME:-default}
+      
+      # Neural Data Storage connection
+      - QDRANT_HOST=neural-data-storage
+      - QDRANT_GRPC_PORT=6334
+      
+      # Neural Embeddings service
+      - USE_EXTERNAL_EMBEDDING=true
+      - EMBEDDING_SERVICE_HOST=neural-embeddings
+      - EMBEDDING_SERVICE_PORT=8000
+      
+      # Kuzu GraphRAG configuration
+      - KUZU_DB_PATH=/app/kuzu
+      - GRAPHRAG_ENABLED=true
+      - HYBRID_SEARCH_MODE=enhanced
+      
+      # Performance optimizations
+      - OMP_NUM_THREADS=6
+      - TOKENIZERS_PARALLELISM=false
+      - PYTHONUNBUFFERED=1
+      - L9_PERFORMANCE_MODE=enhanced
+    
+    depends_on:
+      - neural-data-storage
+      - neural-embeddings
+    
+    networks:
+      - neural-network
+    
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '4.0'
+        reservations:
+          memory: 2G
+          cpus: '2.0'
+    
+    restart: unless-stopped
+    
+    labels:
+      - "mcp.transport=stdio"
+      - "mcp.project=${PROJECT_NAME:-default}"
+      - "mcp.version=neural-tools-l9"
+
+  # Neural Data Storage (Qdrant Vector Database)
+  neural-data-storage:
+    image: qdrant/qdrant:v1.10.0
+    container_name: ${PROJECT_NAME:-default}-neural-storage
+    
+    # Only expose ports for debugging/admin
+    ports:
+      - "${QDRANT_DEBUG_PORT:-6681}:6333"  # REST API (debug only)
+    
+    volumes:
+      # Persistent storage
+      - type: bind
+        source: ./.neural-tools/qdrant/${PROJECT_NAME:-default}/storage
+        target: /qdrant/storage
+        bind:
+          create_host_path: true
+      
+      - type: bind
+        source: ./.neural-tools/qdrant/${PROJECT_NAME:-default}/snapshots
+        target: /qdrant/snapshots
+        bind:
+          create_host_path: true
+    
+    environment:
+      # Qdrant configuration
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HOST=0.0.0.0
+      - QDRANT__LOG_LEVEL=INFO
+      
+      # Storage paths
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      - QDRANT__STORAGE__SNAPSHOTS_PATH=/qdrant/snapshots
+      
+      # Performance optimizations
+      - QDRANT__STORAGE__PERFORMANCE__INDEXING_THRESHOLD_KB=10000
+      - QDRANT__STORAGE__PERFORMANCE__MEMMAP_THRESHOLD_KB=25000
+      - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
+      
+      # Hybrid search with RRF fusion
+      - QDRANT__STORAGE__HNSW_INDEX__M=32
+      - QDRANT__STORAGE__HNSW_INDEX__EF_CONSTRUCT=200
+      - QDRANT__STORAGE__QUANTIZATION__SCALAR__TYPE=int8
+      - QDRANT__STORAGE__QUANTIZATION__SCALAR__QUANTILE=0.99
+      
+      # MMR diversity and prefetch
+      - QDRANT__STORAGE__SEARCH__MAX_RESULTS_PREFETCH=1000
+      - QDRANT__STORAGE__SEARCH__DIVERSITY_THRESHOLD=0.85
+    
+    networks:
+      - neural-network
+    
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '3.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+    
+    restart: unless-stopped
+
+  # Neural Embeddings Service (Nomic Embed v2-MoE)
+  neural-embeddings:
+    image: neural-flow:nomic-v2-production
+    container_name: neural-embeddings
+    
+    command: [
+      "python3", "-m", "uvicorn", "neural-tools.nomic_embed_server:app", 
+      "--host", "0.0.0.0", "--port", "8000", 
+      "--workers", "1"
+    ]
+    
+    ports:
+      - "${NOMIC_DEBUG_PORT:-8081}:8000"  # Debug access
+    
+    volumes:
+      # Model cache (shared across projects) 
+      - type: volume
+        source: neural-embeddings-models
+        target: /app/models
+      
+      # Mount neural-tools directory for the server
+      - type: bind
+        source: ./
+        target: /app/neural-tools
+        read_only: true
+    
+    environment:
+      # Nomic Embed v2-MoE configuration
+      - EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v2-moe
+      - MODEL_TRUST_REMOTE_CODE=true
+      - MAX_CONCURRENT_REQUESTS=1024
+      - MAX_BATCH_TOKENS=32768
+      - INFERENCE_OPTIMIZATION=true
+      - MOE_ROUTING_EFFICIENCY=0.85
+      
+      # Performance optimizations
+      - TORCH_COMPILE=false
+      - FLASH_ATTENTION=true
+      - BATCH_PROCESSING=dynamic
+    
+    networks:
+      - neural-network
+    
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '6.0'
+        reservations:
+          memory: 4G
+          cpus: '3.0'
+    
+    restart: unless-stopped
+    
+    labels:
+      - "embedding.model=nomic-v2-moe"
+      - "embedding.parameters=305M-active-475M-total"
+      - "embedding.optimization=neural-tools"
+
+volumes:
+  neural-models-cache:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./.neural-tools/volumes/models-cache
+  neural-embeddings-models:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./.neural-tools/volumes/embeddings-models
+
+networks:
+  neural-network:
+    name: ${PROJECT_NAME:-default}-neural-network
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: neural-br0

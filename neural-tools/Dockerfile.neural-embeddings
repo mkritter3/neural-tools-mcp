@@ -1,0 +1,58 @@
+# Neural Embeddings Service - Nomic Embed v2-MoE
+# Focused container for embedding generation (305M active/475M total parameters)
+# Features: Dynamic batching + MoE routing optimization
+
+FROM python:3.11-slim
+
+# System dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    g++ \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies in stages (torch first, then git dependencies)
+COPY requirements-l9-enhanced.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/torch \
+    --mount=type=cache,target=/root/.cache/huggingface \
+    pip install --no-cache-dir torch>=2.3.0 numpy>=1.24.0 && \
+    pip install --no-cache-dir -r requirements-l9-enhanced.txt
+
+# Copy embedding server
+COPY nomic_embed_server.py .
+
+# Create model cache directory
+RUN mkdir -p /app/models
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Nomic Embed v2-MoE configuration
+ENV EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v2-moe
+ENV MODEL_TRUST_REMOTE_CODE=true
+ENV MAX_CONCURRENT_REQUESTS=1024
+ENV MAX_BATCH_TOKENS=32768
+ENV INFERENCE_OPTIMIZATION=true
+ENV MOE_ROUTING_EFFICIENCY=0.85
+
+# Performance optimizations
+ENV TORCH_COMPILE=false
+ENV FLASH_ATTENTION=true
+ENV BATCH_PROCESSING=dynamic
+
+# Expose embedding service port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Run Nomic Embed v2-MoE server
+CMD ["python", "-m", "uvicorn", "nomic_embed_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

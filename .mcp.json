@@ -1,34 +1,29 @@
 {
   "mcpServers": {
-    "neural-flow-l9": {
+    "neural-tools-claude-l9-template": {
       "command": "docker",
       "args": [
-        "run",
-        "--rm",
+        "exec",
         "-i",
-        "--env", "PROJECT_NAME=${PROJECT_NAME:-claude-l9-template}",
-        "--env", "NEURAL_L9_MODE=1",
-        "--env", "USE_SINGLE_QODO_MODEL=1",
-        "--env", "ENABLE_AUTO_SAFETY=1",
-        "--env", "CHROMADB_RUST_CORE=1",
-        "--env", "L9_PERFORMANCE_MODE=1",
-        "-v", "${PWD}/.claude:/app/data",
-        "neural-flow:l9-production"
-      ]
-    },
-    "neural-flow": {
-      "command": "docker", 
-      "args": [
-        "run",
-        "--rm",
-        "-i",
-        "--env", "PROJECT_NAME=${PROJECT_NAME:-claude-l9-template}",
-        "--env", "USE_QODO_EMBED=true",
-        "--env", "ENABLE_AB_TESTING=true",
-        "--env", "ENABLE_PERFORMANCE_MONITORING=true", 
-        "-v", "${PWD}/.claude:/app/data",
-        "neural-flow:production"
-      ]
+        "claude-l9-template-neural",
+        "python3",
+        "-u",
+        "/app/neural-mcp-server-enhanced.py"
+      ],
+      "env": {
+        "PROJECT_NAME": "claude-l9-template",
+        "PROJECT_DIR": "/Users/mkr/local-coding/claude-l9-template",
+        "QDRANT_HOST": "neural-data-storage",
+        "QDRANT_GRPC_PORT": "6334",
+        "EMBEDDING_SERVICE_HOST": "neural-embeddings",
+        "EMBEDDING_SERVICE_PORT": "8000",
+        "USE_EXTERNAL_EMBEDDING": "true",
+        "GRAPHRAG_ENABLED": "true",
+        "HYBRID_SEARCH_MODE": "enhanced",
+        "KUZU_DB_PATH": "/app/kuzu",
+        "PYTHONUNBUFFERED": "1"
+      },
+      "description": "Neural Tools - L9 Enhanced MCP Server with Kuzu GraphRAG + Qdrant + Nomic Embed v2-MoE"
     }
   }
 }
