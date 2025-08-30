@@ -143,7 +143,7 @@ PROJECT_NAME="$PROJECT_NAME" PROJECT_DIR="$PROJECT_PATH" \
 echo -e "${BLUE}2. Waiting for services to be ready...${NC}"
 for i in {1..30}; do
     if docker exec "${PROJECT_NAME}-neural" python3 -c "print('MCP server ready')" 2>/dev/null &&
-       curl -s "http://localhost:6333/health" > /dev/null 2>&1; then
+       docker exec "${PROJECT_NAME}-neural-storage" curl -s "http://localhost:6333/health" > /dev/null 2>&1; then
         echo -e "${GREEN}  ✅ Services are healthy${NC}"
         break
     fi
@@ -155,10 +155,10 @@ echo
 # Step 2: Configure MCP
 echo -e "${BLUE}3. Configuring MCP client...${NC}"
 
-# Determine config file location
+# Determine config file location  
 if [[ "$SCOPE" == "user" ]]; then
-    CONFIG_FILE="$HOME/.config/claude/claude-code.json"
-    CONFIG_DIR="$HOME/.config/claude"
+    CONFIG_FILE="$HOME/.claude/mcp_config.json"  # Correct Claude Code CLI config
+    CONFIG_DIR="$HOME/.claude"
 else
     CONFIG_FILE="$PROJECT_PATH/.mcp.json"
     CONFIG_DIR="$PROJECT_PATH"
@@ -199,10 +199,26 @@ MCP_CONFIG=$(cat << EOF
       "USE_EXTERNAL_EMBEDDING": "true",
       "GRAPHRAG_ENABLED": "true",
       "HYBRID_SEARCH_MODE": "enhanced",
+      "NEO4J_URI": "bolt://neo4j-graph:7687",
+      "NEO4J_USERNAME": "neo4j",
+      "NEO4J_PASSWORD": "neural-l9-2025",
       "KUZU_DB_PATH": "/app/kuzu",
       "PYTHONUNBUFFERED": "1"
     },
-    "description": "Neural Tools for ${PROJECT_NAME} - L9 Enhanced with 9 vibe coder tools"
+    "alwaysAllow": [
+      "mcp__neural-tools-${PROJECT_NAME}__memory_store_enhanced",
+      "mcp__neural-tools-${PROJECT_NAME}__memory_search_enhanced", 
+      "mcp__neural-tools-${PROJECT_NAME}__kuzu_graph_query",
+      "mcp__neural-tools-${PROJECT_NAME}__neo4j_graph_query",
+      "mcp__neural-tools-${PROJECT_NAME}__neo4j_semantic_graph_search",
+      "mcp__neural-tools-${PROJECT_NAME}__neo4j_code_dependencies",
+      "mcp__neural-tools-${PROJECT_NAME}__neo4j_migration_status",
+      "mcp__neural-tools-${PROJECT_NAME}__neo4j_index_code_graph",
+      "mcp__neural-tools-${PROJECT_NAME}__semantic_code_search",
+      "mcp__neural-tools-${PROJECT_NAME}__project_auto_index",
+      "mcp__neural-tools-${PROJECT_NAME}__neural_system_status"
+    ],
+    "description": "Neural Tools for ${PROJECT_NAME} - L9 Enhanced with Neo4j GraphRAG + 9 vibe coder tools"
   }
 }
 EOF
@@ -240,13 +256,14 @@ echo
 echo -e "${BLUE}📚 Available MCP Tools:${NC}"
 echo "  • memory_store_enhanced - Store with GraphRAG + embeddings"
 echo "  • memory_search_enhanced - Hybrid search with RRF fusion"
-echo "  • memory_graph_query - Execute Cypher queries"
+echo "  • neo4j_graph_query - Execute Neo4j Cypher queries"
+echo "  • neo4j_semantic_graph_search - Semantic search across code graph"
+echo "  • neo4j_code_dependencies - Get dependency graph for files"
+echo "  • neo4j_migration_status - Check Neo4j migration status"
+echo "  • neo4j_index_code_graph - Index code files into Neo4j"
 echo "  • neural_system_status - System performance monitoring"
-echo "  • schema_customization - Manage custom collections"
-echo "  • atomic_dependency_tracer - Trace code dependencies"
-echo "  • project_understanding - Get project overview (<2000 tokens)"
 echo "  • semantic_code_search - Find code by meaning"
-echo "  • vibe_preservation - Learn/apply coding styles"
+echo "  • project_auto_index - Auto-index project files"
 echo
 echo -e "${YELLOW}🚀 Next Steps:${NC}"
 if [[ "$SCOPE" == "project" ]]; then

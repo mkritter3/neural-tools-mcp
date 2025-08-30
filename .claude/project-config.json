@@ -1,0 +1,15 @@
+{
+  "project_name": "claude-l9-template",
+  "project_path": "/Users/mkr/local-coding/claude-l9-template",
+  "container_name": "qdrant-claude-l9-template",
+  "rest_port": 6678,
+  "grpc_port": 6679,
+  "network_name": "neural-network-claude-l9-template",
+  "storage_path": ".docker/qdrant/claude-l9-template/storage",
+  "snapshots_path": ".docker/qdrant/claude-l9-template/snapshots",
+  "model_server": {
+    "host": "localhost",
+    "port": 8080,
+    "shared": true
+  }
+}

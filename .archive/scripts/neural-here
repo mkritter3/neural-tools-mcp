@@ -1,0 +1,242 @@
+#!/bin/bash
+# Neural Here - Zero-effort L9 neural memory for any project
+# Usage: Just run `neural here` in any project directory
+
+set -e
+
+# Configuration
+NEURAL_FLOW_DIR="${NEURAL_FLOW_DIR:-$HOME/.neural-flow}"
+DOCKER_DATA_DIR="$HOME/.neural-flow/data"
+
+# Colors
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_info() { echo -e "${BLUE}🧠 $1${NC}"; }
+log_success() { echo -e "${GREEN}✅ $1${NC}"; }
+log_warn() { echo -e "${YELLOW}⚠️  $1${NC}"; }
+log_action() { echo -e "${CYAN}⚡ $1${NC}"; }
+
+# Auto-detect project name intelligently
+detect_project_name() {
+    local project_name=""
+    
+    # Try git repo name first
+    if git rev-parse --show-toplevel &>/dev/null; then
+        local git_root=$(git rev-parse --show-toplevel)
+        project_name=$(basename "$git_root")
+        log_info "Detected git project: $project_name"
+    else
+        # Fall back to directory name
+        project_name=$(basename "$PWD")
+        log_info "Using directory name: $project_name"
+    fi
+    
+    # Clean project name (remove invalid docker characters)
+    project_name=$(echo "$project_name" | sed 's/[^a-zA-Z0-9._-]//g' | tr '[:upper:]' '[:lower:]')
+    
+    if [[ -z "$project_name" ]]; then
+        project_name="project-$(date +%s)"
+        log_warn "Generated fallback name: $project_name"
+    fi
+    
+    echo "$project_name"
+}
+
+# Check if container already exists
+container_exists() {
+    local project_name="$1"
+    docker ps -a --format '{{.Names}}' | grep -q "^l9-${project_name}$"
+}
+
+# Check if container is running
+container_running() {
+    local project_name="$1"
+    docker ps --format '{{.Names}}' | grep -q "^l9-${project_name}$"
+}
+
+# Get container port
+get_container_port() {
+    local project_name="$1"
+    docker port "l9-${project_name}" 6333/tcp 2>/dev/null | cut -d':' -f2
+}
+
+# Setup MCP configuration for claude-code
+setup_mcp_config() {
+    local project_name="$1"
+    local port="$2"
+    
+    # Create or update .claude/mcp.json
+    mkdir -p .claude
+    
+    cat > .claude/mcp.json << EOF
+{
+  "mcpServers": {
+    "l9-neural-${project_name}": {
+      "command": "docker",
+      "args": [
+        "exec", "-i", "l9-${project_name}",
+        "python3", "/app/mcp_server.py"
+      ],
+      "env": {
+        "PROJECT_NAME": "${project_name}",
+        "QDRANT_HOST": "localhost",
+        "QDRANT_HTTP_PORT": "${port}"
+      }
+    }
+  }
+}
+EOF
+
+    log_success "Configured claude-code MCP integration"
+}
+
+# Start neural memory container
+start_neural_container() {
+    local project_name="$1"
+    local container_name="l9-${project_name}"
+    
+    # Create data directories
+    mkdir -p "${DOCKER_DATA_DIR}/${project_name}"/{qdrant,mcp}
+    
+    # Find available port
+    local port=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo "6333")
+    
+    log_action "Starting L9 neural container: $container_name"
+    
+    # Start unified container with Qdrant + MCP
+    docker run -d \
+        --name "$container_name" \
+        --restart unless-stopped \
+        -p "${port}:6333" \
+        -p "$((port+1)):6334" \
+        -v "${PWD}:/app/project:ro" \
+        -v "${DOCKER_DATA_DIR}/${project_name}/qdrant:/qdrant/storage" \
+        -v "${DOCKER_DATA_DIR}/${project_name}/mcp:/app/data" \
+        -e PROJECT_NAME="$project_name" \
+        -e QDRANT_HOST=localhost \
+        -e QDRANT_HTTP_PORT=6333 \
+        -e QDRANT_GRPC_PORT=6334 \
+        --label "l9.project=${project_name}" \
+        --label "l9.type=neural-memory" \
+        l9-mcp-server:latest
+    
+    # Wait for container to be ready
+    log_action "Waiting for neural memory to initialize..."
+    local max_attempts=30
+    local attempt=1
+    
+    while [[ $attempt -le $max_attempts ]]; do
+        if curl -sf "http://localhost:${port}/collections" &>/dev/null; then
+            log_success "Neural memory ready! (port: $port)"
+            return 0
+        fi
+        sleep 2
+        ((attempt++))
+    done
+    
+    log_warn "Container started but health check timed out"
+    echo "Check logs with: docker logs $container_name"
+    return 0
+}
+
+# Main function
+main() {
+    echo "🔮 Neural Here - Instant L9 Intelligence"
+    echo "======================================="
+    
+    # Check if docker is available
+    if ! command -v docker &>/dev/null; then
+        log_warn "Docker not found. Install Docker first:"
+        echo "  https://docs.docker.com/get-docker/"
+        exit 1
+    fi
+    
+    # Auto-detect project
+    local project_name=$(detect_project_name)
+    log_info "Project: $project_name"
+    
+    # Check container status
+    if container_exists "$project_name"; then
+        if container_running "$project_name"; then
+            local port=$(get_container_port "$project_name")
+            log_success "Neural memory already running (port: $port)"
+            setup_mcp_config "$project_name" "$port"
+        else
+            log_action "Restarting existing container..."
+            docker start "l9-${project_name}"
+            local port=$(get_container_port "$project_name")
+            setup_mcp_config "$project_name" "$port"
+            log_success "Neural memory restarted (port: $port)"
+        fi
+    else
+        # Check if L9 image exists
+        if ! docker images l9-mcp-server:latest -q | grep -q .; then
+            log_warn "L9 neural image not found. Building..."
+            if [[ -d "$NEURAL_FLOW_DIR" ]]; then
+                cd "$NEURAL_FLOW_DIR"
+                docker build -f docker/Dockerfile.mcp -t l9-mcp-server:latest .
+                cd - >/dev/null
+            else
+                log_warn "Neural Flow not installed. Run: neural-flow install"
+                exit 1
+            fi
+        fi
+        
+        # Create new container
+        start_neural_container "$project_name"
+        local port=$(get_container_port "$project_name")
+        setup_mcp_config "$project_name" "$port"
+    fi
+    
+    echo
+    log_success "🎯 Neural memory active for $(basename "$PWD")"
+    echo
+    echo "💡 Next steps:"
+    echo "   claude         # Start coding with neural memory"
+    echo "   neural stop    # Stop when done"
+    echo "   neural status  # Check all neural containers"
+}
+
+# Handle arguments
+case "${1:-}" in
+    stop)
+        project_name=$(detect_project_name)
+        if container_running "$project_name"; then
+            docker stop "l9-${project_name}"
+            log_success "Stopped neural memory for $project_name"
+        else
+            log_info "Neural memory not running for $project_name"
+        fi
+        ;;
+    status)
+        echo "🧠 Neural Memory Status"
+        echo "======================"
+        containers=$(docker ps --filter "label=l9.type=neural-memory" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}")
+        if [[ -n "$containers" ]]; then
+            echo "$containers"
+        else
+            echo "No neural containers running"
+        fi
+        ;;
+    clean)
+        echo "🧹 Cleaning unused neural containers..."
+        docker container prune -f --filter "label=l9.type=neural-memory"
+        log_success "Cleanup complete"
+        ;;
+    help|--help|-h)
+        echo "Neural Here - Zero-effort L9 neural memory"
+        echo
+        echo "Usage:"
+        echo "  neural here       # Enable neural memory (auto-detects project)"
+        echo "  neural stop       # Stop neural memory for this project"  
+        echo "  neural status     # Show all neural containers"
+        echo "  neural clean      # Remove unused containers"
+        ;;
+    *)
+        main
+        ;;
+esac

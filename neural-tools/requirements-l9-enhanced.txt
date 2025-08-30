@@ -1,5 +1,5 @@
-# L9 Enhanced MCP Server Dependencies - 2025 Performance Optimized
-# Features: Kuzu GraphRAG + Nomic Embed v2-MoE + Tree-sitter + Qdrant hybrid search
+# L9 Enhanced MCP Server Dependencies - 2025 Neo4j Production
+# Features: Neo4j GraphRAG + Nomic Embed v2-MoE + Tree-sitter + Qdrant hybrid search
 
 # Core MCP Framework
 mcp==1.0.0
@@ -8,8 +8,8 @@ fastmcp==0.4.0
 # Enhanced Vector Search (no legacy FastEmbed - using Nomic v2-MoE service)
 qdrant-client==1.10.0
 
-# Kuzu Graph Database for GraphRAG - 3-10x faster than Neo4j
-kuzu>=0.6.0
+# Neo4j Graph Database - L9 2025 Production
+neo4j>=5.22.0
 
 # Nomic Embed v2 Dependencies  
 torch>=2.3.0

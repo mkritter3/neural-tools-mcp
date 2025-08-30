@@ -1,11 +1,11 @@
 version: '3.8'
 
-# Neural Tools System - L9 Enhanced Architecture
-# 3-Container Architecture: Neural Tools Server + Neural Data Storage + Neural Embeddings
-# Features: Kuzu GraphRAG, RRF Hybrid Search, INT8 Quantization, Tree-sitter AST
+# Neural Tools System - L9 Enhanced Architecture  
+# 4-Container Architecture: Neural Tools Server + Neural Data Storage + Neural Embeddings + Neo4j GraphRAG
+# Features: Neo4j GraphRAG, RRF Hybrid Search, INT8 Quantization, Tree-sitter AST
 
 services:
-  # Neural Tools Server with Kuzu GraphRAG
+  # Neural Tools Server with Neo4j GraphRAG
   neural-tools-server:
     image: l9-mcp-enhanced:minimal-fixed
     container_name: ${PROJECT_NAME:-default}-neural
@@ -28,10 +28,10 @@ services:
         bind:
           create_host_path: true
       
-      # Kuzu database storage
+      # Neo4j migration workspace
       - type: bind
-        source: ./.neural-tools/kuzu/${PROJECT_NAME:-default}
-        target: /app/kuzu
+        source: ./.neural-tools/neo4j/${PROJECT_NAME:-default}
+        target: /app/neo4j-workspace
         bind:
           create_host_path: true
       
@@ -53,8 +53,10 @@ services:
       - EMBEDDING_SERVICE_HOST=neural-embeddings
       - EMBEDDING_SERVICE_PORT=8000
       
-      # Kuzu GraphRAG configuration
-      - KUZU_DB_PATH=/app/kuzu
+      # Neo4j GraphRAG configuration
+      - NEO4J_URI=bolt://neo4j-graph:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=neural-l9-2025
       - GRAPHRAG_ENABLED=true
       - HYBRID_SEARCH_MODE=enhanced
       
@@ -67,6 +69,7 @@ services:
     depends_on:
       - neural-data-storage
       - neural-embeddings
+      - neo4j-graph
     
     networks:
       - neural-network
@@ -208,6 +211,70 @@ services:
       - "embedding.model=nomic-v2-moe"
       - "embedding.parameters=305M-active-475M-total"
       - "embedding.optimization=neural-tools"
+
+  # Neo4j Graph Database for GraphRAG
+  neo4j-graph:
+    image: neo4j:5.23.0-community
+    container_name: ${PROJECT_NAME:-default}-neo4j-graph
+    
+    # Only expose ports for debugging/admin
+    ports:
+      - "${NEO4J_DEBUG_HTTP_PORT:-7475}:7474"  # HTTP UI (debug only)
+      - "${NEO4J_DEBUG_BOLT_PORT:-7688}:7687"  # Bolt protocol (debug only)
+    
+    volumes:
+      # Persistent storage
+      - type: bind
+        source: ./.neural-tools/neo4j/${PROJECT_NAME:-default}/data
+        target: /data
+        bind:
+          create_host_path: true
+      
+      - type: bind
+        source: ./.neural-tools/neo4j/${PROJECT_NAME:-default}/logs
+        target: /logs
+        bind:
+          create_host_path: true
+      
+      - type: bind
+        source: ./.neural-tools/neo4j/${PROJECT_NAME:-default}/import
+        target: /var/lib/neo4j/import
+        bind:
+          create_host_path: true
+      
+      - type: bind
+        source: ./.neural-tools/neo4j/${PROJECT_NAME:-default}/plugins
+        target: /plugins
+        bind:
+          create_host_path: true
+    
+    environment:
+      # Authentication
+      - NEO4J_AUTH=neo4j/neural-l9-2025
+      
+      # Memory configuration for GraphRAG workloads
+      - NEO4J_server_memory_heap_initial__size=2G
+      - NEO4J_server_memory_heap_max__size=4G
+    
+    networks:
+      - neural-network
+    
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '4.0'
+        reservations:
+          memory: 3G
+          cpus: '2.0'
+    
+    restart: unless-stopped
+    
+    labels:
+      - "graph.database=neo4j"
+      - "graph.version=5.23.0-community"
+      - "graph.purpose=graphrag-code-relationships"
+      - "mcp.project=${PROJECT_NAME:-default}"
 
 volumes:
   neural-models-cache:

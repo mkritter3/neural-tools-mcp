@@ -1,0 +1,52 @@
+# L9 Enhanced MCP Server Dependencies - 2025 Performance Optimized
+# Features: Kuzu GraphRAG + Nomic Embed v2-MoE + Tree-sitter + Qdrant hybrid search
+
+# Core MCP Framework
+mcp==1.0.0
+fastmcp==0.4.0
+
+# Enhanced Vector Search (no legacy FastEmbed - using Nomic v2-MoE service)
+qdrant-client==1.10.0
+
+# Kuzu Graph Database for GraphRAG - 3-10x faster than Neo4j
+kuzu>=0.6.0
+
+# Nomic Embed v2 Dependencies  
+sentence-transformers>=2.7.0
+transformers>=4.40.0
+torch>=2.3.0
+numpy>=1.24.0
+einops>=0.7.0
+# MoE architecture support for Nomic v2
+git+https://github.com/nomic-ai/megablocks.git
+
+# Tree-sitter Multi-language AST
+tree-sitter==0.20.4
+tree-sitter-languages==1.10.2
+
+# HTTP Client for Services
+httpx>=0.25.0
+
+# FastAPI for embedding server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Performance Optimizations
+optimum>=1.19.0
+accelerate>=0.30.0
+
+# Data Processing
+pandas>=2.0.0
+pydantic>=2.0.0
+
+# Async Support
+asyncio-mqtt>=0.16.0
+aiofiles>=23.0.0
+
+# Logging and Monitoring  
+structlog>=23.0.0
+prometheus-client>=0.17.0
+
+# Optional GPU Support
+# torch-audio>=2.3.0  # Uncomment if audio processing needed
+# torchaudio>=2.3.0   # Uncomment if audio processing needed

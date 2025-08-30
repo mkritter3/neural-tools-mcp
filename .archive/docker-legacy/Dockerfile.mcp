@@ -1,0 +1,56 @@
+# L9 Neural MCP Server - Production Docker Image
+# Optimized for MCP + Qdrant hybrid search
+
+FROM python:3.11-slim as base
+
+# System dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python environment
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Install Python dependencies
+COPY docker/requirements-mcp.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy enhanced MCP server with tree-sitter
+COPY docker/neural-mcp-server-v2.py /app/mcp_server.py
+
+# Copy shared embedding client
+COPY docker/embedding_client.py /app/embedding_client.py
+
+# Copy global neural project manager
+COPY scripts/neural-mcp-manager.py /app/neural_manager.py
+
+# Copy tree-sitter AST analyzer
+COPY neural-system/tree_sitter_ast.py /app/tree_sitter_ast.py
+
+# Copy neural system modules (if needed for advanced features)
+COPY neural-system/neural_embeddings.py /app/neural_embeddings.py
+COPY neural-system/memory_system.py /app/memory_system.py
+COPY neural-system/config_manager.py /app/config_manager.py
+
+# Create data directories
+RUN mkdir -p /app/data /app/project /app/models
+
+# Non-root user
+RUN useradd -m -u 1000 mcp && \
+    chown -R mcp:mcp /app
+
+USER mcp
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python3 -c "import qdrant_client; print('healthy')" || exit 1
+
+# Default command - run MCP server via stdio
+CMD ["python3", "/app/mcp_server.py"]

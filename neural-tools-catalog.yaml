@@ -1,0 +1,81 @@
+name: neural-tools-l9
+displayName: L9 Neural Tools Catalog
+description: Enhanced neural tools with Qdrant vector search, Kuzu GraphRAG, and PRISM scoring
+
+registry:
+  neural-tools-claude-l9-template:
+    description: "L9 Enhanced Neural Tools with Qdrant hybrid search, Kuzu GraphRAG, and PRISM importance scoring"
+    title: "Neural L9 Tools"
+    type: "server"
+    dateAdded: "2025-08-30T16:00:00Z"
+    image: "claude-l9-template-neural:latest"
+    
+    # All L9 neural tools available
+    tools:
+      - name: "neural_system_status"
+        description: "Get comprehensive neural system status and health metrics"
+      - name: "memory_store_enhanced" 
+        description: "Store content with hybrid vector indexing and GraphRAG"
+      - name: "memory_search_enhanced"
+        description: "Enhanced search with RRF fusion, MMR diversity, and graph expansion"
+      - name: "project_auto_index"
+        description: "Smart auto-indexing of project files with change detection"
+      - name: "semantic_code_search"
+        description: "Search code by meaning using vector embeddings"
+      - name: "kuzu_graph_query"
+        description: "Execute Cypher queries on code relationship graph"
+      - name: "atomic_dependency_tracer"
+        description: "Trace dependencies and call relationships"
+      - name: "project_understanding"
+        description: "Generate condensed project understanding"
+      - name: "vibe_preservation"
+        description: "Preserve and apply project coding patterns"
+    
+    # MCP server configuration
+    command: ["python3", "/app/neural-mcp-server-enhanced.py"]
+    
+    # Volume mounts for project access
+    volumes:
+      - "/Users/mkr/local-coding/claude-l9-template:/app/project:ro"
+    
+    # Environment for L9 system
+    env:
+      - name: "PROJECT_NAME"
+        value: "claude-l9-template"
+      - name: "QDRANT_HOST"
+        value: "neural-data-storage"
+      - name: "QDRANT_GRPC_PORT"
+        value: "6334"
+      - name: "KUZU_DB_PATH"
+        value: "/app/kuzu"
+      - name: "GRAPHRAG_ENABLED"
+        value: "true"
+    
+    # Configuration schema
+    config:
+      - name: "neural-tools-claude-l9-template"
+        description: "L9 Neural Tools configuration"
+        type: "object"
+        properties:
+          project_name:
+            type: "string"
+            default: "claude-l9-template"
+          enable_prism:
+            type: "boolean"
+            default: true
+          enable_graphrag:
+            type: "boolean" 
+            default: true
+        required: ["project_name"]
+    
+    # Metadata
+    metadata:
+      category: "ai-tools"
+      tags: ["neural", "search", "indexing", "graphrag", "l9"]
+      license: "L9 Enhanced"
+      owner: "l9-engineering"
+    
+    # Documentation
+    readme: "https://github.com/l9-engineering/neural-tools/README.md"
+    source: "https://github.com/l9-engineering/neural-tools"
+    icon: "🧠"

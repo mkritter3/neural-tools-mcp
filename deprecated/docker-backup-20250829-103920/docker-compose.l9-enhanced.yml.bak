@@ -1,0 +1,247 @@
+version: '3.8'
+
+# L9 Enhanced System - 2025 Performance Optimized
+# 3-Container Architecture: MCP Server + Qdrant + Nomic Embed v2-MoE
+# Features: Kuzu GraphRAG, RRF Hybrid Search, INT8 Quantization, Tree-sitter AST
+
+services:
+  # Enhanced MCP Server with Kuzu GraphRAG
+  mcp-server-enhanced:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile.l9-enhanced
+    image: l9-mcp-server:enhanced-2025
+    container_name: mcp-server-enhanced-${PROJECT_NAME:-default}
+    
+    # STDIO transport for MCP communication
+    stdin_open: true
+    tty: true
+    
+    volumes:
+      # Project source (read-only)
+      - type: bind
+        source: ${PROJECT_DIR:-../}
+        target: /app/project
+        read_only: true
+      
+      # Persistent data with enhanced structure
+      - type: bind
+        source: ./.docker/mcp-data/${PROJECT_NAME:-default}
+        target: /app/data
+        bind:
+          create_host_path: true
+      
+      # Kuzu database storage
+      - type: bind
+        source: ./.docker/kuzu/${PROJECT_NAME:-default}
+        target: /app/kuzu
+        bind:
+          create_host_path: true
+      
+      # Model cache
+      - type: volume
+        source: mcp-models-enhanced
+        target: /app/models
+    
+    environment:
+      # Project config
+      - PROJECT_NAME=${PROJECT_NAME:-default}
+      
+      # Qdrant connection (internal Docker network)
+      - QDRANT_HOST=qdrant
+      - QDRANT_GRPC_PORT=6334
+      
+      # Nomic Embed v2 service connection
+      - EMBEDDING_SERVICE_HOST=nomic-embed-service
+      - EMBEDDING_SERVICE_PORT=8000
+      
+      # Kuzu GraphRAG configuration
+      - KUZU_DB_PATH=/app/kuzu
+      - GRAPHRAG_ENABLED=true
+      - HYBRID_SEARCH_MODE=enhanced
+      
+      # Performance optimizations
+      - OMP_NUM_THREADS=6
+      - TOKENIZERS_PARALLELISM=false
+      - PYTHONUNBUFFERED=1
+      - L9_PERFORMANCE_MODE=enhanced
+    
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      nomic-embed-service:
+        condition: service_healthy
+    
+    networks:
+      - l9-enhanced-network
+    
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '4.0'
+        reservations:
+          memory: 2G
+          cpus: '2.0'
+    
+    restart: unless-stopped
+    
+    labels:
+      - "mcp.transport=stdio"
+      - "mcp.project=${PROJECT_NAME:-default}"
+      - "mcp.version=l9-enhanced-2025"
+
+  # Qdrant Vector Database with 2025 Optimizations
+  qdrant:
+    image: qdrant/qdrant:v1.10.0
+    container_name: qdrant-enhanced-${PROJECT_NAME:-default}
+    
+    # Only expose ports for debugging/admin
+    ports:
+      - "${QDRANT_DEBUG_PORT:-6681}:6333"  # REST API (debug only)
+    
+    volumes:
+      # Persistent storage with enhanced structure
+      - type: bind
+        source: ./.docker/qdrant-enhanced/${PROJECT_NAME:-default}/storage
+        target: /qdrant/storage
+        bind:
+          create_host_path: true
+      
+      - type: bind
+        source: ./.docker/qdrant-enhanced/${PROJECT_NAME:-default}/snapshots
+        target: /qdrant/snapshots
+        bind:
+          create_host_path: true
+    
+    environment:
+      # Enhanced Qdrant configuration
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HOST=0.0.0.0
+      - QDRANT__LOG_LEVEL=INFO
+      
+      # Storage paths
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      - QDRANT__STORAGE__SNAPSHOTS_PATH=/qdrant/snapshots
+      
+      # 2025 Performance optimizations
+      - QDRANT__STORAGE__PERFORMANCE__INDEXING_THRESHOLD_KB=10000
+      - QDRANT__STORAGE__PERFORMANCE__MEMMAP_THRESHOLD_KB=25000
+      - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
+      
+      # Enhanced hybrid search with RRF fusion
+      - QDRANT__STORAGE__HNSW_INDEX__M=32
+      - QDRANT__STORAGE__HNSW_INDEX__EF_CONSTRUCT=200
+      - QDRANT__STORAGE__QUANTIZATION__SCALAR__TYPE=int8
+      - QDRANT__STORAGE__QUANTIZATION__SCALAR__QUANTILE=0.99
+      
+      # Enable MMR diversity and prefetch queries
+      - QDRANT__STORAGE__SEARCH__MAX_RESULTS_PREFETCH=1000
+      - QDRANT__STORAGE__SEARCH__DIVERSITY_THRESHOLD=0.85
+    
+    networks:
+      - l9-enhanced-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '3.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+    
+    restart: unless-stopped
+
+  # Nomic Embed v2-MoE Service (305M active/475M total parameters)
+  nomic-embed-service:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.l9-enhanced
+      target: nomic-embed-service
+    image: neural-flow:nomic-v2-production
+    container_name: nomic-embed-v2-${PROJECT_NAME:-default}
+    
+    command: [
+      "python3", "-m", "uvicorn", "nomic_embed_server:app", 
+      "--host", "0.0.0.0", "--port", "8000", 
+      "--workers", "2", "--worker-class", "uvicorn.workers.UvicornWorker"
+    ]
+    
+    ports:
+      - "${NOMIC_DEBUG_PORT:-8081}:8000"  # Debug access
+    
+    volumes:
+      # Model cache (shared across projects) 
+      - type: volume
+        source: nomic-models-v2
+        target: /app/models
+    
+    environment:
+      # Nomic Embed v2-MoE configuration
+      - EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v2-moe
+      - MODEL_TRUST_REMOTE_CODE=true
+      - MAX_CONCURRENT_REQUESTS=1024
+      - MAX_BATCH_TOKENS=32768
+      - INFERENCE_OPTIMIZATION=true
+      - MOE_ROUTING_EFFICIENCY=0.85
+      
+      # Performance optimizations
+      - TORCH_COMPILE=true
+      - FLASH_ATTENTION=true
+      - BATCH_PROCESSING=dynamic
+    
+    networks:
+      - l9-enhanced-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 120s  # Longer startup for model loading
+    
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '6.0'
+        reservations:
+          memory: 4G
+          cpus: '3.0'
+    
+    restart: unless-stopped
+    
+    labels:
+      - "embedding.model=nomic-v2-moe"
+      - "embedding.parameters=305M-active-475M-total"
+      - "embedding.optimization=2025-enhanced"
+
+volumes:
+  mcp-models-enhanced:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./.docker/volumes/mcp-models-enhanced
+  nomic-models-v2:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./.docker/volumes/nomic-models-v2
+
+networks:
+  l9-enhanced-network:
+    name: l9-enhanced-network-${PROJECT_NAME:-default}
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: l9-enhanced-br0

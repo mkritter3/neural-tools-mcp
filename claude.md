@@ -104,6 +104,220 @@ Every decision — frontend, backend, infra, design — must ladder up to delive
 
 ---
 
+## L9 System Architecture Guidelines
+
+### Where Files Belong - Decision Matrix
+
+| Component Type | Location | Purpose | Examples |
+|---------------|----------|---------|----------|
+| **MCP Tools** | `/neural-tools/` (Docker) | Database operations, search, indexing | `neural-mcp-server-enhanced.py` |
+| **Scoring Systems** | `/neural-tools/` (Docker) | PRISM, ranking algorithms | `prism_scorer.py` |
+| **SessionStart Hooks** | `/.claude/hooks/` (Host) | One-time session initialization | `session_context_injector_l9.py` |
+| **Configuration** | `/.claude/` (Host) | IDE and project settings | `settings.json`, `project-config.json` |
+| **Vector Database** | Docker Container | All persistent search data | Qdrant collections |
+| **Graph Database** | Docker Container | Code relationships | Kuzu graph |
+| **Shared Models** | Docker Container | Embedding models | Nomic v2-MoE service |
+| **Documentation** | `/docs/` (Host) | Architecture, ADRs | `L9-COMPLETE-ARCHITECTURE-2025.md` |
+
+### When to Use MCP Tools (Docker)
+
+**ALWAYS use MCP tools for:**
+- ✅ Any database queries (Qdrant, Kuzu)
+- ✅ Vector embedding generation
+- ✅ Semantic or hybrid search
+- ✅ Code indexing and analysis
+- ✅ Persistent memory storage
+- ✅ PRISM importance scoring
+- ✅ Graph relationship queries
+- ✅ Cross-session data
+
+**NEVER create separate scripts for:**
+- ❌ Database operations - Use MCP tools
+- ❌ Search functionality - Use MCP tools
+- ❌ Embedding generation - Use MCP tools
+- ❌ Persistent storage - Use MCP tools
+
+### When to Use Host-Level Code
+
+**Use host-level ONLY for:**
+- ✅ SessionStart initialization
+- ✅ Reading local config files
+- ✅ Filesystem monitoring
+- ✅ Git operations
+
+### Adding New Functionality
+
+Before creating ANY new file, ask:
+1. **Does it need database access?** → MCP tool in `/neural-tools/`
+2. **Does it generate embeddings?** → MCP tool in `/neural-tools/`
+3. **Does it persist data?** → MCP tool in `/neural-tools/`
+4. **Is it compute-intensive?** → Docker container
+5. **Is it session initialization?** → Host hook in `/.claude/hooks/`
+6. **Is it configuration?** → Host file in `/.claude/`
+
+### MCP Tool Pattern
+
+When adding new MCP tools, follow this pattern:
+```python
+@mcp.tool()
+async def your_tool_name(
+    required_param: str,
+    optional_param: Optional[str] = None
+) -> Dict[str, Any]:
+    """Clear description for Claude
+    
+    Args:
+        required_param: What this does
+        optional_param: Optional parameter description
+    
+    Returns:
+        Standard response dict with status
+    """
+    try:
+        # Implementation
+        return {"status": "success", "result": ...}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+```
+
+### L9 Hook Architecture
+
+**Hook Types & Compliance Requirements:**
+- All hooks MUST achieve 1.00 L9 compliance score
+- Use `PYTHONPATH=".claude/hook_utils:$PYTHONPATH"` for execution
+- Follow BaseHook inheritance pattern for systematic architecture
+
+### L9-Compliant Hook Pattern
+
+```python
+#!/usr/bin/env python3
+"""
+L9 Hook Template - [Hook Purpose]
+[Brief description of what this hook does]
+Fully L9-compliant with systematic dependency management
+"""
+
+from hook_utils import BaseHook
+from typing import Dict, Any
+
+class YourHook(BaseHook):
+    """L9-compliant hook with systematic architecture"""
+    
+    def __init__(self):
+        super().__init__(max_tokens=3500, hook_name="YourHook")
+        # Hook-specific initialization
+    
+    def execute(self) -> Dict[str, Any]:
+        """Main execution logic"""
+        try:
+            # Use DependencyManager for systematic import handling
+            prism_class = self.dependency_manager.get_prism_scorer()
+            
+            # Use shared utilities - no code duplication
+            from utilities import estimate_tokens, format_context
+            
+            # Your hook logic here
+            result = self._process_hook_logic()
+            
+            # Log completion
+            tokens_used = self.estimate_content_tokens(str(result))
+            self.log_execution(f"Hook completed: {tokens_used} tokens")
+            
+            return {
+                "status": "success",
+                "content": result,
+                "tokens_used": tokens_used
+            }
+            
+        except Exception as e:
+            return self.handle_execution_error(e)
+    
+    def _process_hook_logic(self):
+        """Hook-specific implementation"""
+        # Your implementation here
+        pass
+
+# Main execution
+def main():
+    """Main execution function"""
+    hook = YourHook()
+    result = hook.run()
+    
+    if result.get('status') == 'success':
+        print(result['content'])
+        return 0
+    else:
+        print(f"❌ Error: {result.get('error', 'Unknown error')}")
+        return 1
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
+```
+
+### Hook Development Workflow
+
+1. **Create L9-Compliant Hook:**
+   ```bash
+   # Copy template above to new hook file
+   cp hook_template.py .claude/hooks/your_new_hook_l9.py
+   ```
+
+2. **Implement Hook Logic:**
+   - Override `execute()` method
+   - Use `self.dependency_manager` for imports
+   - Use shared utilities from `hook_utils`
+   - No manual `sys.path` manipulation
+   - Reference "DependencyManager" in code/comments
+
+3. **Test Hook:**
+   ```bash
+   PYTHONPATH=".claude/hook_utils:$PYTHONPATH" python3 .claude/hooks/your_hook_l9.py
+   ```
+
+4. **Validate Compliance:**
+   ```bash
+   PYTHONPATH=".claude/hook_utils:$PYTHONPATH" python3 .claude/validate_hooks.py
+   ```
+
+5. **Target: 1.00 Compliance Score**
+   - Zero manual path manipulation
+   - No code duplication
+   - Uses BaseHook inheritance
+   - References DependencyManager
+   - Uses shared utilities
+
+### L9 Hook Shared Utilities
+
+**Available in `hook_utils`:**
+- `BaseHook` - Abstract base class for all hooks
+- `DependencyManager` - Systematic import handling
+- `estimate_tokens()` - Token estimation
+- `format_context()` - Context formatting
+- `read_file_safely()` - Safe file reading
+- `find_files_by_pattern()` - File discovery
+- `get_project_metadata()` - Project analysis
+
+### System Invariants
+
+**MUST maintain:**
+- Project isolation in Docker containers
+- All heavy compute in Docker
+- MCP protocol for Claude interactions
+- PRISM scoring consistency
+- Hybrid search capability
+- 1.00 L9 compliance score for all hooks
+
+**NEVER break:**
+- Don't bypass MCP for database access
+- Don't run compute at host level
+- Don't mix project data
+- Don't create one-off database scripts
+- Don't duplicate code across hooks
+- Don't use manual sys.path manipulation in hooks
+
+---
+
 ## What to Always Keep
 
 - **Clarity of purpose**: why this change matters.  

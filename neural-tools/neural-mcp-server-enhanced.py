@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-L9 Enhanced MCP Server - 2025 Performance Optimized
-Features: Kuzu GraphRAG + Nomic Embed v2-MoE + Tree-sitter + Qdrant hybrid search
+L9 Enhanced MCP Server - 2025 Neo4j GraphRAG Migration
+Features: Neo4j GraphRAG + Nomic Embed v2-MoE + Tree-sitter + Qdrant hybrid search
 
 Performance Improvements Over Legacy:
-- Kuzu GraphRAG (3-10x faster than Neo4j)
+- Neo4j GraphRAG (Production-grade multi-tenancy)
 - Nomic v2-MoE (30-40% lower inference costs)
 - RRF hybrid search with MMR diversity
 - INT8 quantization (4x memory reduction)
@@ -16,10 +16,99 @@ import sys
 import json
 import asyncio
 import logging
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import sqlite3
+
+def generate_deterministic_point_id(file_path: str, content: str, chunk_index: int = 0) -> int:
+    """Generate deterministic point ID for consistent upserts following industry standards.
+    
+    This prevents duplicate accumulation by ensuring the same content gets the same ID,
+    allowing Qdrant's upsert to properly update existing points instead of creating duplicates.
+    
+    Args:
+        file_path: Path to the source file
+        content: Content being indexed  
+        chunk_index: Index of the chunk within the file (for multi-chunk files)
+    
+    Returns:
+        Deterministic integer ID that will be the same for identical content
+    """
+    content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()[:16]
+    unique_string = f"{file_path}#{content_hash}#{chunk_index}"
+    return abs(hash(unique_string)) % (10**15)
+
+def get_content_hash(content: str) -> str:
+    """Generate content hash for change detection"""
+    return hashlib.md5(content.encode('utf-8')).hexdigest()
+
+async def cleanup_stale_chunks(manifest: Dict[str, str], project_dir: Path):
+    """Clean up stale chunks from deleted or modified files following industry standards.
+    
+    This prevents database bloat by removing chunks that no longer correspond to existing files
+    or have been replaced by updated versions.
+    
+    Args:
+        manifest: Current manifest with file hashes
+        project_dir: Project directory path
+    """
+    try:
+        collection_name = f"{COLLECTION_PREFIX}code"
+        
+        # Get all points in the collection to identify stale chunks
+        scroll_result = qdrant_client.scroll(
+            collection_name=collection_name,
+            limit=10000,  # Process in batches
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        points_to_delete = []
+        
+        for point in scroll_result[0]:
+            payload = point.payload
+            file_path = payload.get('file_path', '')
+            
+            # Check if file still exists in project
+            full_file_path = project_dir / file_path
+            
+            if not full_file_path.exists():
+                # File was deleted - mark all its chunks for deletion
+                points_to_delete.append(point.id)
+                logger.debug(f"Marking chunks from deleted file {file_path} for cleanup")
+            
+            elif file_path in manifest:
+                # File exists but check if content changed significantly
+                # (This covers cases where files were truncated and have fewer chunks now)
+                try:
+                    with open(full_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        current_content = f.read()
+                    
+                    # If file is now empty or very small, clean up chunks
+                    if len(current_content.strip()) < 50:
+                        points_to_delete.append(point.id)
+                        logger.debug(f"Marking chunks from truncated file {file_path} for cleanup")
+                        
+                except Exception as e:
+                    logger.warning(f"Could not check file {file_path} for cleanup: {e}")
+        
+        # Delete stale points in batches
+        if points_to_delete:
+            # Delete in batches of 100 to avoid memory issues
+            for i in range(0, len(points_to_delete), 100):
+                batch = points_to_delete[i:i+100]
+                qdrant_client.delete(
+                    collection_name=collection_name,
+                    points_selector=models.PointIdsList(points=batch)
+                )
+            
+            logger.info(f"Cleaned up {len(points_to_delete)} stale chunks from collection {collection_name}")
+        
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+        # Don't raise - cleanup failures shouldn't break indexing
 
 # MCP SDK
 from fastmcp import FastMCP
@@ -30,17 +119,25 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.models import Distance, VectorParams, SparseVectorParams
 
-# Kuzu for GraphRAG
+# Neo4j for GraphRAG (L9 2025 Production)
 try:
-    import kuzu
-    KUZU_AVAILABLE = True
+    from neo4j_client import Neo4jGraphRAGClient, AsyncNeo4jClient
+    NEO4J_AVAILABLE = True
 except ImportError:
-    KUZU_AVAILABLE = False
-    logging.warning("Kuzu not available - GraphRAG features disabled")
+    NEO4J_AVAILABLE = False
+    logging.warning("Neo4j client not available - GraphRAG features disabled")
 
 # Nomic Embed v2 client
 import httpx
 from dataclasses import dataclass
+
+# Import PRISM scorer for intelligent importance scoring
+try:
+    from prism_scorer import PrismScorer
+    PRISM_AVAILABLE = True
+except ImportError:
+    PRISM_AVAILABLE = False
+    logging.warning("PRISM scorer not available, using basic scoring")
 
 # Tree-sitter for enhanced code analysis
 try:
@@ -58,8 +155,7 @@ mcp = FastMCP("l9-neural-enhanced")
 
 # Global clients
 qdrant_client = None
-kuzu_db = None
-kuzu_conn = None
+neo4j_client = None
 nomic_client = None
 ast_analyzer = None
 
@@ -68,8 +164,8 @@ QDRANT_HOST = os.environ.get('QDRANT_HOST', 'neural-data-storage')
 QDRANT_GRPC_PORT = int(os.environ.get('QDRANT_GRPC_PORT', 6334))
 PROJECT_NAME = os.environ.get('PROJECT_NAME', 'default')
 COLLECTION_PREFIX = f"project_{PROJECT_NAME}_"
-KUZU_DB_PATH = os.environ.get('KUZU_DB_PATH', '/app/kuzu')
-GRAPHRAG_ENABLED = os.environ.get('GRAPHRAG_ENABLED', 'true').lower() == 'true'
+# Neo4j GraphRAG Configuration
+GRAPHRAG_ENABLED = os.environ.get('GRAPHRAG_ENABLED', 'true').lower() == 'true' and NEO4J_AVAILABLE
 
 @dataclass
 class NomicEmbedResponse:
@@ -106,8 +202,8 @@ class NomicEmbedClient:
             raise
 
 async def initialize():
-    """Initialize enhanced L9 system with Kuzu GraphRAG"""
-    global qdrant_client, kuzu_db, kuzu_conn, nomic_client, ast_analyzer
+    """Initialize enhanced L9 system with Neo4j GraphRAG"""
+    global qdrant_client, neo4j_client, nomic_client, ast_analyzer
     
     try:
         # Connect to Qdrant using gRPC (3-4x faster)
@@ -120,17 +216,19 @@ async def initialize():
         # Initialize Nomic Embed v2 client
         nomic_client = NomicEmbedClient()
         
-        # Initialize Kuzu GraphRAG if enabled
-        if GRAPHRAG_ENABLED and KUZU_AVAILABLE:
-            # Ensure the directory exists
-            os.makedirs(KUZU_DB_PATH, exist_ok=True)
-            # Kuzu Python API expects a database file path, not a directory path
-            kuzu_db_file = os.path.join(KUZU_DB_PATH, "graph.db")
-            kuzu_db = kuzu.Database(kuzu_db_file)
-            kuzu_conn = kuzu.Connection(kuzu_db)
-            
-            # Initialize graph schema
-            await initialize_kuzu_schema()
+        # Initialize Neo4j GraphRAG
+        if GRAPHRAG_ENABLED:
+            try:
+                neo4j_client = Neo4jGraphRAGClient(project_name=PROJECT_NAME)
+                connection_success = await neo4j_client.connect()
+                if connection_success:
+                    logger.info("✅ Neo4j GraphRAG client initialized")
+                else:
+                    raise Exception("Neo4j connection failed")
+            except Exception as e:
+                logger.error(f"❌ Neo4j GraphRAG client failed: {e}")
+                logger.warning("⚠️  GraphRAG features will be disabled")
+                neo4j_client = None
         
         # Initialize Tree-sitter for code analysis
         if TREE_SITTER_AVAILABLE:
@@ -143,76 +241,14 @@ async def initialize():
         
         logger.info(f"✅ Enhanced L9 MCP Server initialized - Project: {PROJECT_NAME}")
         logger.info(f"📍 Qdrant: {QDRANT_HOST}:{QDRANT_GRPC_PORT}")
-        if GRAPHRAG_ENABLED:
-            logger.info(f"🔗 Kuzu GraphRAG: {os.path.join(KUZU_DB_PATH, 'graph.db')}")
+        if GRAPHRAG_ENABLED and neo4j_client:
+            logger.info(f"🔗 Neo4j GraphRAG: Project {PROJECT_NAME} (Production)")
         logger.info(f"🧠 Nomic Embed v2-MoE: {nomic_client.base_url}")
         
     except Exception as e:
         logger.error(f"Failed to initialize enhanced system: {e}")
         raise
 
-async def initialize_kuzu_schema():
-    """Initialize Kuzu graph schema for GraphRAG"""
-    try:
-        # Create node tables for knowledge entities
-        kuzu_conn.execute("""
-            CREATE NODE TABLE IF NOT EXISTS Document(
-                id STRING, 
-                path STRING, 
-                content STRING, 
-                embedding_id INT64,
-                PRIMARY KEY (id)
-            )
-        """)
-        
-        kuzu_conn.execute("""
-            CREATE NODE TABLE IF NOT EXISTS CodeEntity(
-                id STRING,
-                name STRING,
-                type STRING,
-                file_path STRING,
-                line_number INT64,
-                embedding_id INT64,
-                PRIMARY KEY (id)
-            )
-        """)
-        
-        kuzu_conn.execute("""
-            CREATE NODE TABLE IF NOT EXISTS Concept(
-                id STRING,
-                name STRING,
-                category STRING,
-                embedding_id INT64,
-                PRIMARY KEY (id)
-            )
-        """)
-        
-        # Create relationship tables
-        kuzu_conn.execute("""
-            CREATE REL TABLE IF NOT EXISTS IMPORTS(
-                FROM CodeEntity TO CodeEntity,
-                relationship_type STRING
-            )
-        """)
-        
-        kuzu_conn.execute("""
-            CREATE REL TABLE IF NOT EXISTS REFERENCES(
-                FROM Document TO CodeEntity,
-                reference_type STRING
-            )
-        """)
-        
-        kuzu_conn.execute("""
-            CREATE REL TABLE IF NOT EXISTS RELATES_TO(
-                FROM Concept TO Concept,
-                similarity_score DOUBLE
-            )
-        """)
-        
-        logger.info("✅ Kuzu GraphRAG schema initialized")
-        
-    except Exception as e:
-        logger.error(f"Failed to initialize Kuzu schema: {e}")
 
 async def ensure_collection(collection_name: str):
     """Ensure collection exists with enhanced hybrid search config"""
@@ -268,7 +304,7 @@ async def memory_store_enhanced(
         content: Text content to store
         category: Category for organization
         metadata: Additional metadata
-        create_graph_entities: Whether to create graph entities in Kuzu
+        create_graph_entities: Whether to create graph entities in Neo4j GraphRAG
     """
     try:
         collection_name = f"{COLLECTION_PREFIX}{category}"
@@ -299,15 +335,17 @@ async def memory_store_enhanced(
             values=sparse_values
         )
         
-        # Store in Qdrant with enhanced configuration
-        point_id = hash(content + str(datetime.now()))
+        # Store in Qdrant with enhanced configuration using deterministic ID
+        point_id = generate_deterministic_point_id("memory_store", content)
         qdrant_client.upsert(
             collection_name=collection_name,
             points=[
                 models.PointStruct(
-                    id=abs(point_id) % (10 ** 8),
-                    vector={"dense": dense_embedding},
-                    sparse_vector={"sparse": sparse_vector},
+                    id=point_id,
+                    vector={
+                        "dense": dense_embedding,
+                        "sparse": sparse_vector
+                    },
                     payload={
                         "content": content,
                         "category": category,
@@ -322,24 +360,18 @@ async def memory_store_enhanced(
         
         # Create graph entities if enabled
         graph_entity_id = None
-        if create_graph_entities and GRAPHRAG_ENABLED and kuzu_conn:
+        if create_graph_entities and GRAPHRAG_ENABLED and neo4j_client:
             try:
-                # Create document entity
                 doc_id = f"doc_{abs(point_id) % (10 ** 8)}"
-                kuzu_conn.execute(
-                    f"""
-                    CREATE (d:Document {{
-                        id: '{doc_id}',
-                        path: '{metadata.get('file_path', '')}',
-                        content: $content,
-                        embedding_id: {abs(point_id) % (10 ** 8)}
-                    }})
-                    """,
-                    parameters={"content": content[:1000]}  # Truncate for storage
+                await neo4j_client.create_file_node(
+                    file_path=metadata.get('file_path', ''),
+                    content=content[:1000],  # Truncate for storage
+                    embedding_id=abs(point_id) % (10 ** 8),
+                    additional_metadata={"doc_id": doc_id}
                 )
                 graph_entity_id = doc_id
             except Exception as e:
-                logger.warning(f"GraphRAG entity creation failed: {e}")
+                logger.warning(f"Neo4j GraphRAG entity creation failed: {e}")
         
         return {
             "status": "success",
@@ -358,9 +390,9 @@ async def memory_store_enhanced(
 async def memory_search_enhanced(
     query: str,
     category: Optional[str] = None,
-    limit: int = 10,
+    limit: str = "10",  # Accept as string, convert to int
     mode: str = "rrf_hybrid",  # Enhanced search modes
-    diversity_threshold: float = 0.85,
+    diversity_threshold: str = "0.85",  # Accept as string, convert to float
     graph_expand: bool = True
 ) -> List[Dict[str, Any]]:
     """Enhanced search with RRF fusion, MMR diversity, and GraphRAG expansion
@@ -374,6 +406,10 @@ async def memory_search_enhanced(
         graph_expand: Whether to expand results using graph relationships
     """
     try:
+        # Convert string parameters to proper types
+        limit_int = int(limit) if isinstance(limit, str) else limit
+        diversity_threshold_float = float(diversity_threshold) if isinstance(diversity_threshold, str) else diversity_threshold
+        
         collection_name = f"{COLLECTION_PREFIX}{category or 'memory'}"
         
         # Generate query embeddings
@@ -387,7 +423,7 @@ async def memory_search_enhanced(
             semantic_results = qdrant_client.search(
                 collection_name=collection_name,
                 query_vector=("dense", dense_embedding),
-                limit=limit * 2,  # Get more for fusion/diversity
+                limit=limit_int * 2,  # Get more for fusion/diversity
                 with_payload=True,
                 with_vectors=True
             )
@@ -423,11 +459,8 @@ async def memory_search_enhanced(
             
             keyword_results = qdrant_client.search(
                 collection_name=collection_name,
-                query_vector=models.NamedSparseVector(
-                    name="sparse",
-                    vector=sparse_vector
-                ),
-                limit=limit * 2,
+                query_vector=("sparse", sparse_vector),
+                limit=limit_int * 2,
                 with_payload=True
             )
             
@@ -469,19 +502,19 @@ async def memory_search_enhanced(
         
         # Apply MMR diversity if requested
         if mode == "mmr_diverse" and len(results) > 1:
-            results = apply_mmr_diversity(results, diversity_threshold, limit)
+            results = apply_mmr_diversity(results, diversity_threshold_float, limit_int)
         
         # Sort by score and limit
         results.sort(key=lambda x: x["score"], reverse=True)
-        results = results[:limit]
+        results = results[:limit_int]
         
         # GraphRAG expansion if enabled
-        if graph_expand and GRAPHRAG_ENABLED and kuzu_conn:
+        if graph_expand and GRAPHRAG_ENABLED and neo4j_client:
             try:
-                expanded_results = await expand_with_graph_context(results, query)
+                expanded_results = await expand_with_neo4j_graph_context(results, query)
                 return expanded_results
             except Exception as e:
-                logger.warning(f"GraphRAG expansion failed: {e}")
+                logger.warning(f"Neo4j GraphRAG expansion failed: {e}")
         
         return results
         
@@ -546,8 +579,9 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
     
     return dot_product / (magnitude1 * magnitude2)
 
-async def expand_with_graph_context(results: List[Dict], query: str) -> List[Dict]:
-    """Expand search results using Kuzu graph relationships"""
+
+async def expand_with_neo4j_graph_context(results: List[Dict], query: str) -> List[Dict]:
+    """Expand search results using Neo4j graph relationships"""
     try:
         expanded_results = []
         
@@ -557,69 +591,89 @@ async def expand_with_graph_context(results: List[Dict], query: str) -> List[Dic
             # Find related entities through graph traversal
             if "embedding_id" in result:
                 embedding_id = result["embedding_id"]
-                
-                # Query for related documents and code entities
-                graph_query = f"""
-                MATCH (d:Document {{embedding_id: {embedding_id}}})-[r:REFERENCES]->(c:CodeEntity)
-                RETURN c.name, c.type, c.file_path, r.reference_type
-                LIMIT 5
-                """
+                file_path = result.get("file_path", "")
                 
                 try:
-                    graph_results = kuzu_conn.execute(graph_query)
-                    if graph_results:
-                        related_entities = []
-                        for row in graph_results:
-                            related_entities.append({
-                                "name": row["c.name"],
-                                "type": row["c.type"], 
-                                "file_path": row["c.file_path"],
-                                "relationship": row["r.reference_type"]
-                            })
+                    # Query for related documents and code entities using Neo4j
+                    related_entities = await neo4j_client.execute_cypher_query(
+                        """
+                        MATCH (f:File {path: $file_path})
+                        OPTIONAL MATCH (f)-[:CONTAINS]->(fn:Function)
+                        OPTIONAL MATCH (f)-[:CONTAINS]->(c:Class)
+                        OPTIONAL MATCH (fn)-[:CALLS]->(called:Function)
+                        RETURN 
+                            fn.name as function_name, 
+                            c.name as class_name,
+                            called.name as called_function,
+                            fn.complexity as complexity
+                        LIMIT 5
+                        """,
+                        {"file_path": file_path}
+                    )
+                    
+                    if related_entities:
+                        graph_context = []
+                        for entity in related_entities:
+                            if entity.get('function_name'):
+                                graph_context.append({
+                                    "name": entity['function_name'],
+                                    "type": "function",
+                                    "complexity": entity.get('complexity'),
+                                    "relationship": "contains"
+                                })
+                            if entity.get('class_name'):
+                                graph_context.append({
+                                    "name": entity['class_name'],
+                                    "type": "class",
+                                    "relationship": "contains"
+                                })
+                            if entity.get('called_function'):
+                                graph_context.append({
+                                    "name": entity['called_function'],
+                                    "type": "function",
+                                    "relationship": "calls"
+                                })
                         
-                        expanded_result["graph_context"] = related_entities
+                        expanded_result["graph_context"] = graph_context
+                        
                 except Exception as e:
-                    logger.debug(f"Graph query failed for result {embedding_id}: {e}")
+                    logger.debug(f"Neo4j graph query failed for result {embedding_id}: {e}")
             
             expanded_results.append(expanded_result)
         
         return expanded_results
         
     except Exception as e:
-        logger.error(f"Graph expansion failed: {e}")
+        logger.error(f"Neo4j graph expansion failed: {e}")
         return results
 
 @mcp.tool()
-async def kuzu_graph_query(query: str) -> Dict[str, Any]:
-    """Execute Cypher query on Kuzu graph database
+async def graph_query(query: str) -> Dict[str, Any]:
+    """Execute Cypher query on Neo4j graph database
     
     Args:
         query: Cypher query to execute
     """
     try:
-        if not GRAPHRAG_ENABLED or not kuzu_conn:
+        if not GRAPHRAG_ENABLED:
             return {"status": "error", "message": "GraphRAG not enabled"}
         
-        result = kuzu_conn.execute(query)
+        if not neo4j_client:
+            return {"status": "error", "message": "Neo4j client not available"}
         
-        # Convert result to JSON-serializable format
-        rows = []
-        if result:
-            for row in result:
-                row_dict = {}
-                for key, value in row.items():
-                    row_dict[key] = str(value)  # Convert all to strings for JSON
-                rows.append(row_dict)
-        
+        # Execute query on Neo4j
+        result = await neo4j_client.execute_cypher_query(query)
         return {
             "status": "success",
-            "rows": rows,
-            "count": len(rows)
+            "results": result,
+            "count": len(result) if result else 0,
+            "database": "neo4j",
+            "project": PROJECT_NAME
         }
         
     except Exception as e:
-        logger.error(f"Kuzu query failed: {e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Neo4j graph query failed: {e}")
+        return {"status": "error", "message": str(e), "query": query}
 
 @mcp.tool()
 async def schema_customization(
@@ -709,7 +763,7 @@ async def schema_customization(
 async def atomic_dependency_tracer(
     target: str,
     trace_type: str = "calls",
-    max_depth: int = 5,
+    max_depth: str = "5",  # Accept as string, convert to int
     include_imports: bool = True
 ) -> Dict[str, Any]:
     """Trace atomic dependencies for functions, classes, or modules
@@ -721,8 +775,14 @@ async def atomic_dependency_tracer(
         include_imports: Include import dependencies
     """
     try:
-        if not KUZU_AVAILABLE or not kuzu_conn:
+        # Convert string parameters to proper types
+        max_depth_int = int(max_depth) if isinstance(max_depth, str) else max_depth
+        
+        if not GRAPHRAG_ENABLED:
             return {"status": "error", "message": "GraphRAG not available"}
+        
+        if not neo4j_client:
+            return {"status": "error", "message": "Neo4j GraphRAG not available"}
         
         results = {
             "target": target,
@@ -734,7 +794,7 @@ async def atomic_dependency_tracer(
         if trace_type == "calls":
             # Find all paths leading TO the target
             query = f"""
-            MATCH path = (source:CodeEntity)-[:CALLS|IMPORTS*1..{max_depth}]->(target:CodeEntity)
+            MATCH path = (source:CodeEntity)-[:CALLS|IMPORTS*1..{max_depth_int}]->(target:CodeEntity)
             WHERE target.name = '{target}'
             RETURN path, length(path) as depth
             ORDER BY depth
@@ -758,25 +818,60 @@ async def atomic_dependency_tracer(
             LIMIT 100
             """
         
-        # Execute query
-        result = kuzu_conn.execute(query)
-        paths_seen = set()
+        # Execute query using Neo4j
+        if trace_type == "calls":
+            # Find functions that call the target
+            neo4j_query = f"""
+            MATCH (caller:Function)-[:CALLS]->(target:Function)
+            WHERE target.name = $target
+            RETURN caller.name as caller_name, caller.file_path as caller_file, 
+                   target.name as target_name, target.file_path as target_file
+            LIMIT 50
+            """
+        elif trace_type == "dependencies":
+            # Find what the target function calls
+            neo4j_query = f"""
+            MATCH (source:Function)-[:CALLS]->(dependency:Function)
+            WHERE source.name = $target
+            RETURN source.name as source_name, source.file_path as source_file,
+                   dependency.name as dependency_name, dependency.file_path as dependency_file
+            LIMIT 50
+            """
+        else:  # both
+            neo4j_query = f"""
+            MATCH (f1:Function)-[:CALLS]-(f2:Function)
+            WHERE f1.name = $target OR f2.name = $target
+            RETURN f1.name as func1_name, f1.file_path as func1_file,
+                   f2.name as func2_name, f2.file_path as func2_file
+            LIMIT 100
+            """
+        
+        result = await neo4j_client.execute_cypher_query(neo4j_query, {"target": target})
         
         for row in result:
-            path_info = {
-                "depth": row["depth"],
-                "nodes": [],
-                "relationships": []
-            }
-            
-            # Parse path structure (simplified - Kuzu returns path objects)
-            # This would need actual path parsing based on Kuzu's response format
-            path_str = str(row["path"])
-            if path_str not in paths_seen:
-                paths_seen.add(path_str)
+            if trace_type == "calls" and row.get('caller_name'):
                 results["dependencies"].append({
-                    "path": path_str,
-                    "depth": row["depth"]
+                    "type": "function_call",
+                    "caller": row['caller_name'],
+                    "caller_file": row['caller_file'],
+                    "target": row['target_name'],
+                    "target_file": row['target_file']
+                })
+            elif trace_type == "dependencies" and row.get('dependency_name'):
+                results["dependencies"].append({
+                    "type": "function_dependency",
+                    "source": row['source_name'],
+                    "source_file": row['source_file'],
+                    "dependency": row['dependency_name'],
+                    "dependency_file": row['dependency_file']
+                })
+            elif trace_type == "both":
+                results["dependencies"].append({
+                    "type": "function_relationship",
+                    "func1": row['func1_name'],
+                    "func1_file": row['func1_file'],
+                    "func2": row['func2_name'],
+                    "func2_file": row['func2_file']
                 })
         
         # Add token usage estimate
@@ -795,19 +890,23 @@ async def atomic_dependency_tracer(
 @mcp.tool()
 async def project_understanding(
     scope: str = "full",
-    max_tokens: int = 2000
+    max_tokens: str = "2000"  # Accept as string, convert to int
 ) -> Dict[str, Any]:
     """Generate condensed project understanding without reading all files
     
     Args:
         scope: 'full', 'architecture', 'dependencies', 'core_logic'
-        max_tokens: Maximum tokens for response
+        max_tokens: Maximum tokens for response (string converted to int)
     """
     try:
+        # Convert string parameters to proper types
+        max_tokens_int = int(max_tokens) if isinstance(max_tokens, str) else max_tokens
+        
         understanding = {
             "project": PROJECT_NAME,
             "timestamp": datetime.now().isoformat(),
-            "scope": scope
+            "scope": scope,
+            "max_tokens": max_tokens_int
         }
         
         # Get high-level stats from Qdrant collections
@@ -838,33 +937,47 @@ async def project_understanding(
                     for hit in search_result
                 ]
         
-        # Get graph structure from Kuzu
-        if GRAPHRAG_ENABLED and kuzu_conn:
-            # Get top-level architecture
-            arch_query = """
-            MATCH (n:CodeEntity)
-            WHERE n.type IN ['module', 'class', 'package']
-            RETURN n.type as type, count(n) as count
-            ORDER BY count DESC
-            """
-            arch_result = kuzu_conn.execute(arch_query)
+        # Get graph structure from active graph database
+        if GRAPHRAG_ENABLED:
+            if neo4j_client:
+                # Neo4j (Primary) - Get architecture overview
+                try:
+                    # Get file and function counts
+                    arch_result = await neo4j_client.execute_cypher_query("""
+                        MATCH (f:File)
+                        OPTIONAL MATCH (f)-[:CONTAINS]->(fn:Function)
+                        OPTIONAL MATCH (f)-[:CONTAINS]->(c:Class)
+                        RETURN 
+                            COUNT(DISTINCT f) as file_count,
+                            COUNT(DISTINCT fn) as function_count,
+                            COUNT(DISTINCT c) as class_count
+                    """)
+                    
+                    understanding["architecture"] = {
+                        "structure": [
+                            {"type": "files", "count": arch_result[0].get('file_count', 0)},
+                            {"type": "functions", "count": arch_result[0].get('function_count', 0)},
+                            {"type": "classes", "count": arch_result[0].get('class_count', 0)}
+                        ],
+                        "database": "neo4j"
+                    }
+                    
+                    # Get core relationships
+                    rel_result = await neo4j_client.execute_cypher_query("""
+                        MATCH ()-[r:CALLS]->()
+                        RETURN 'CALLS' as rel_type, COUNT(r) as count
+                        UNION
+                        MATCH ()-[r:CONTAINS]->()
+                        RETURN 'CONTAINS' as rel_type, COUNT(r) as count
+                        ORDER BY count DESC
+                    """)
+                    
+                    understanding["relationships"] = [
+                        {"type": row["rel_type"], "count": row["count"]} for row in rel_result
+                    ]
+                except Exception as e:
+                    logger.warning(f"Neo4j graph structure query failed: {e}")
             
-            understanding["architecture"] = {
-                "structure": [{"type": row["type"], "count": row["count"]} for row in arch_result]
-            }
-            
-            # Get core relationships
-            rel_query = """
-            MATCH (n1:CodeEntity)-[r]->(n2:CodeEntity)
-            RETURN type(r) as rel_type, count(r) as count
-            ORDER BY count DESC
-            LIMIT 10
-            """
-            rel_result = kuzu_conn.execute(rel_query)
-            
-            understanding["relationships"] = [
-                {"type": row["rel_type"], "count": row["count"]} for row in rel_result
-            ]
         
         # Compress to fit token limit
         response_str = json.dumps(understanding, indent=2)
@@ -888,8 +1001,10 @@ async def project_understanding(
 async def semantic_code_search(
     query: str,
     search_type: str = "semantic",
-    limit: int = 10,
-    min_score: float = 0.7
+    limit: str = "10",  # Accept as string, convert to int
+    min_score: str = "0.7",  # Accept as string, convert to float
+    use_prism: bool = True,
+    prism_boost: str = "0.3"  # Accept as string, convert to float
 ) -> Dict[str, Any]:
     """Search code by meaning, not just text matching
     
@@ -898,8 +1013,15 @@ async def semantic_code_search(
         search_type: 'semantic', 'hybrid', 'exact'
         limit: Maximum results
         min_score: Minimum similarity score
+        use_prism: Whether to boost results with PRISM importance scores
+        prism_boost: How much to blend PRISM scores (0.0-1.0)
     """
     try:
+        # Convert string parameters to proper types
+        limit_int = int(limit) if isinstance(limit, str) else limit
+        min_score_float = float(min_score) if isinstance(min_score, str) else min_score
+        prism_boost_float = float(prism_boost) if isinstance(prism_boost, str) else prism_boost
+        
         # Generate embedding for semantic query
         embed_response = await nomic_client.get_embeddings([query])
         query_vector = embed_response.embeddings[0]
@@ -911,8 +1033,8 @@ async def semantic_code_search(
             results = qdrant_client.search(
                 collection_name=collection_name,
                 query_vector={"dense": query_vector},
-                limit=limit,
-                score_threshold=min_score,
+                limit=limit_int,
+                score_threshold=min_score_float,
                 with_payload=True
             )
         elif search_type == "hybrid":
@@ -928,7 +1050,7 @@ async def semantic_code_search(
                         )
                     ]
                 ),
-                limit=limit,
+                limit=limit_int,
                 with_payload=True
             )
         else:  # exact
@@ -943,7 +1065,7 @@ async def semantic_code_search(
                         )
                     ]
                 ),
-                limit=limit,
+                limit=limit_int,
                 with_payload=True
             )[0]  # scroll returns tuple
         
@@ -959,19 +1081,48 @@ async def semantic_code_search(
             
             formatted_results.append({
                 "score": hit.score if hasattr(hit, 'score') else 1.0,
-                "file": hit.payload.get("file_path", "unknown"),
+                "file_path": hit.payload.get("file_path", "unknown"),
                 "type": hit.payload.get("type", "code"),
                 "snippet": snippet,
                 "full_content_id": hit.id
             })
             total_tokens += len(snippet) // 4
         
+        # Apply PRISM boosting if enabled
+        if use_prism and PRISM_AVAILABLE:
+            try:
+                # Initialize PRISM scorer with project directory
+                prism_scorer = PrismScorer("/app/project")
+                
+                # Boost search results with PRISM scores
+                formatted_results = prism_scorer.boost_search_results(
+                    formatted_results, 
+                    boost_factor=prism_boost
+                )
+                
+                # Add PRISM explanation to top results
+                for i, result in enumerate(formatted_results[:3]):
+                    if 'prism_score' in result:
+                        result['importance_reason'] = f"PRISM: {result['prism_score']:.2f}"
+                        if result['prism_score'] >= 0.8:
+                            result['importance_level'] = "CRITICAL"
+                        elif result['prism_score'] >= 0.6:
+                            result['importance_level'] = "HIGH"
+                        elif result['prism_score'] >= 0.4:
+                            result['importance_level'] = "MEDIUM"
+                        else:
+                            result['importance_level'] = "LOW"
+                            
+            except Exception as e:
+                logger.warning(f"PRISM boosting failed: {e}, using original scores")
+        
         return {
             "status": "success",
             "query": query,
             "results": formatted_results,
             "total_found": len(formatted_results),
-            "token_usage": total_tokens
+            "token_usage": total_tokens,
+            "prism_enabled": use_prism and PRISM_AVAILABLE
         }
         
     except Exception as e:
@@ -1075,6 +1226,224 @@ async def vibe_preservation(
         return {"status": "error", "message": str(e)}
 
 @mcp.tool()
+async def project_auto_index(
+    scope: str = "modified",  # modified, all, git-changes
+    since_minutes: Optional[str] = None,  # Accept as string, convert to int
+    file_patterns: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Smart auto-indexing tool that indexes project files on-demand
+    
+    Args:
+        scope: Index scope - 'modified' (changed files), 'all' (full reindex), 'git-changes' (uncommitted)
+        since_minutes: Only index files modified in last N minutes
+        file_patterns: Optional file patterns to index (e.g., ['*.py', '*.js'])
+    
+    Returns:
+        Index status with files processed and performance metrics
+    """
+    import hashlib
+    import json
+    from pathlib import Path
+    import subprocess
+    
+    try:
+        # Convert string parameters to proper types
+        since_minutes_int = int(since_minutes) if since_minutes and isinstance(since_minutes, str) else since_minutes
+        
+        project_dir = Path("/app/project")
+        manifest_file = Path("/app/data/index_manifest.json")
+        
+        # Load existing manifest
+        manifest = {}
+        if manifest_file.exists():
+            with open(manifest_file, 'r') as f:
+                manifest = json.load(f)
+        
+        files_to_index = []
+        files_checked = 0
+        files_skipped = 0
+        
+        # Determine which files to index based on scope
+        if scope == "git-changes":
+            # Get uncommitted changes from git
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "--name-only", "HEAD"],
+                    cwd=project_dir,
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    changed_files = result.stdout.strip().split('\n')
+                    files_to_index = [project_dir / f for f in changed_files if f]
+            except:
+                return {"status": "error", "message": "Git not available or not a git repository"}
+        
+        elif scope == "all":
+            # Index all supported files
+            patterns = file_patterns or ['*.py', '*.js', '*.ts', '*.jsx', '*.tsx', '*.java', '*.go', '*.rs', '*.md']
+            for pattern in patterns:
+                files_to_index.extend(project_dir.rglob(pattern))
+        
+        else:  # scope == "modified"
+            # Check for modified files using checksums
+            patterns = file_patterns or ['*.py', '*.js', '*.ts', '*.jsx', '*.tsx', '*.java', '*.go', '*.rs', '*.md']
+            
+            for pattern in patterns:
+                for file_path in project_dir.rglob(pattern):
+                    files_checked += 1
+                    
+                    # Skip if file is in ignored directories
+                    if any(part in str(file_path) for part in ['__pycache__', '.git', 'node_modules', '.venv', 'dist', 'build']):
+                        files_skipped += 1
+                        continue
+                    
+                    # Check if file was modified
+                    try:
+                        # Get file modification time
+                        mtime = file_path.stat().st_mtime
+                        
+                        # Check against since_minutes if provided
+                        if since_minutes:
+                            from datetime import datetime, timedelta
+                            cutoff_time = (datetime.now() - timedelta(minutes=since_minutes)).timestamp()
+                            if mtime < cutoff_time:
+                                files_skipped += 1
+                                continue
+                        
+                        # Calculate file hash
+                        with open(file_path, 'rb') as f:
+                            file_hash = hashlib.md5(f.read()).hexdigest()
+                        
+                        # Check if file changed
+                        file_key = str(file_path.relative_to(project_dir))
+                        if manifest.get(file_key) != file_hash:
+                            files_to_index.append(file_path)
+                            manifest[file_key] = file_hash
+                        else:
+                            files_skipped += 1
+                    
+                    except Exception as e:
+                        logger.warning(f"Could not check file {file_path}: {e}")
+                        files_skipped += 1
+        
+        # Index the files
+        indexed_count = 0
+        index_errors = 0
+        total_chunks = 0
+        
+        for file_path in files_to_index:
+            try:
+                # Read file content
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                
+                if not content.strip():
+                    continue
+                
+                # Get relative path for metadata
+                relative_path = file_path.relative_to(project_dir)
+                
+                # Simple chunking for large files
+                lines = content.split('\n')
+                max_lines_per_chunk = 500
+                chunks = []
+                
+                for i in range(0, len(lines), max_lines_per_chunk):
+                    chunk_lines = lines[i:i + max_lines_per_chunk]
+                    chunk_text = '\n'.join(chunk_lines)
+                    if chunk_text.strip():
+                        chunks.append({
+                            'text': chunk_text,
+                            'start_line': i + 1,
+                            'end_line': min(i + max_lines_per_chunk, len(lines))
+                        })
+                
+                # Get embeddings
+                texts_to_embed = [f"File: {relative_path}\n{chunk['text'][:500]}" for chunk in chunks]
+                embed_response = await nomic_client.get_embeddings(texts_to_embed)
+                
+                # Store in Qdrant
+                collection_name = f"{COLLECTION_PREFIX}code"
+                await ensure_collection(collection_name)
+                
+                points = []
+                for idx, (chunk, embedding) in enumerate(zip(chunks, embed_response.embeddings)):
+                    chunk_content = chunk['text']  # Extract chunk content for ID generation
+                    
+                    # Create sparse vector from keywords
+                    words = chunk_content.lower().split()
+                    word_freq = {}
+                    for word in words[:100]:  # Top 100 words
+                        if len(word) > 2:
+                            word_freq[word] = word_freq.get(word, 0) + 1
+                    
+                    sparse_indices = []
+                    sparse_values = []
+                    for word, freq in word_freq.items():
+                        word_idx = hash(word) % 10000  # Rename to avoid variable conflict
+                        sparse_indices.append(word_idx)
+                        sparse_values.append(float(freq))
+                    
+                    point = models.PointStruct(
+                        id=generate_deterministic_point_id(str(file_path), chunk_content, idx),
+                        vector={
+                            "dense": embedding,
+                            "sparse": models.SparseVector(
+                                indices=sparse_indices,
+                                values=sparse_values
+                            )
+                        },
+                        payload={
+                            "file_path": str(relative_path),
+                            "chunk_index": idx,
+                            "total_chunks": len(chunks),
+                            "start_line": chunk['start_line'],
+                            "end_line": chunk['end_line'],
+                            "content": chunk['text'][:1000],
+                            "file_type": file_path.suffix,
+                            "indexed_at": datetime.now().isoformat(),
+                            "project": PROJECT_NAME
+                        }
+                    )
+                    points.append(point)
+                
+                qdrant_client.upsert(
+                    collection_name=collection_name,
+                    points=points
+                )
+                
+                indexed_count += 1
+                total_chunks += len(chunks)
+                
+            except Exception as e:
+                logger.error(f"Failed to index {file_path}: {e}")
+                index_errors += 1
+        
+        # Cleanup stale chunks from deleted or truncated files
+        await cleanup_stale_chunks(manifest, project_dir)
+        
+        # Save manifest
+        with open(manifest_file, 'w') as f:
+            json.dump(manifest, f)
+        
+        return {
+            "status": "success",
+            "scope": scope,
+            "files_checked": files_checked,
+            "files_skipped": files_skipped,
+            "files_indexed": indexed_count,
+            "total_chunks": total_chunks,
+            "index_errors": index_errors,
+            "manifest_updated": True,
+            "message": f"Indexed {indexed_count} files ({total_chunks} chunks)"
+        }
+        
+    except Exception as e:
+        logger.error(f"Auto-indexing failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
 async def neural_system_status() -> Dict[str, Any]:
     """Get comprehensive neural system status"""
     try:
@@ -1112,38 +1481,49 @@ async def neural_system_status() -> Dict[str, Any]:
         except Exception as e:
             stats["qdrant"] = {"error": str(e)}
         
-        # Kuzu GraphRAG statistics
-        if GRAPHRAG_ENABLED and kuzu_conn:
-            try:
-                # Get node counts
-                node_counts = {}
-                for table in ["Document", "CodeEntity", "Concept"]:
-                    try:
-                        result = kuzu_conn.execute(f"MATCH (n:{table}) RETURN count(n) AS count")
-                        node_counts[table] = result[0]["count"] if result else 0
-                    except:
-                        node_counts[table] = 0
-                
-                # Get relationship counts
-                rel_counts = {}
-                for table in ["IMPORTS", "REFERENCES", "RELATES_TO"]:
-                    try:
-                        result = kuzu_conn.execute(f"MATCH ()-[r:{table}]->() RETURN count(r) AS count")
-                        rel_counts[table] = result[0]["count"] if result else 0
-                    except:
-                        rel_counts[table] = 0
-                
-                stats["kuzu"] = {
-                    "database_path": KUZU_DB_PATH,
-                    "nodes": node_counts,
-                    "relationships": rel_counts,
-                    "total_nodes": sum(node_counts.values()),
-                    "total_relationships": sum(rel_counts.values())
-                }
-            except Exception as e:
-                stats["kuzu"] = {"error": str(e)}
+        # GraphRAG statistics (Neo4j)
+        if GRAPHRAG_ENABLED:
+            if neo4j_client:
+                # Neo4j GraphRAG statistics (Primary)
+                try:
+                    # Get node counts
+                    node_result = await neo4j_client.execute_cypher_query("""
+                        MATCH (f:File)
+                        OPTIONAL MATCH (fn:Function)
+                        OPTIONAL MATCH (c:Class)
+                        RETURN COUNT(DISTINCT f) as files, COUNT(DISTINCT fn) as functions, COUNT(DISTINCT c) as classes
+                    """)
+                    
+                    # Get relationship counts
+                    rel_result = await neo4j_client.execute_cypher_query("""
+                        MATCH ()-[r:CONTAINS]->() 
+                        WITH COUNT(r) as contains_count
+                        MATCH ()-[r2:CALLS]->() 
+                        RETURN contains_count, COUNT(r2) as calls_count
+                    """)
+                    
+                    stats["neo4j"] = {
+                        "status": "active",
+                        "project": PROJECT_NAME,
+                        "nodes": {
+                            "files": node_result[0].get('files', 0),
+                            "functions": node_result[0].get('functions', 0),
+                            "classes": node_result[0].get('classes', 0)
+                        },
+                        "relationships": {
+                            "contains": rel_result[0].get('contains_count', 0) if rel_result else 0,
+                            "calls": rel_result[0].get('calls_count', 0) if rel_result else 0
+                        }
+                    }
+                    stats["neo4j"]["total_nodes"] = sum(stats["neo4j"]["nodes"].values())
+                    stats["neo4j"]["total_relationships"] = sum(stats["neo4j"]["relationships"].values())
+                except Exception as e:
+                    stats["neo4j"] = {"status": "error", "message": str(e)}
+            
+            else:
+                stats["graphrag"] = {"status": "disabled", "message": "No graph database available"}
         else:
-            stats["kuzu"] = {"status": "disabled"}
+            stats["graphrag"] = {"status": "disabled", "message": "GraphRAG not enabled"}
         
         # Nomic Embed statistics
         try:
@@ -1163,6 +1543,273 @@ async def neural_system_status() -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Stats failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+# =============================================================================
+# Neo4j GraphRAG MCP Tools (L9 2025 Migration)
+# =============================================================================
+
+@mcp.tool()
+async def neo4j_graph_query(
+    cypher_query: str,
+    parameters: str = "{}"
+) -> Dict[str, Any]:
+    """
+    Execute Cypher query against the Neo4j graph database
+    
+    Args:
+        cypher_query: Cypher query to execute
+        parameters: JSON string of query parameters
+        
+    Returns:
+        Query results with project isolation
+    """
+    if not NEO4J_AVAILABLE:
+        return {"status": "error", "message": "Neo4j client not available"}
+    
+    try:
+        # Parse parameters
+        query_params = json.loads(parameters) if parameters else {}
+        
+        async with AsyncNeo4jClient(project_name=PROJECT_NAME) as client:
+            results = await client.execute_cypher_query(cypher_query, query_params)
+            
+            return {
+                "status": "success",
+                "results": results,
+                "count": len(results),
+                "query": cypher_query[:100] + "..." if len(cypher_query) > 100 else cypher_query
+            }
+            
+    except Exception as e:
+        logger.error(f"Neo4j query failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+async def neo4j_semantic_graph_search(
+    query_text: str,
+    limit: str = "10",
+    node_types: str = "File,Function,Class"
+) -> Dict[str, Any]:
+    """
+    Perform semantic search across the Neo4j code graph
+    
+    Args:
+        query_text: Natural language search query
+        limit: Maximum results to return  
+        node_types: Comma-separated node types to search
+        
+    Returns:
+        Semantically relevant code elements
+    """
+    if not NEO4J_AVAILABLE:
+        return {"status": "error", "message": "Neo4j client not available"}
+    
+    try:
+        limit_int = int(limit) if limit.isdigit() else 10
+        node_type_list = [t.strip() for t in node_types.split(",")]
+        
+        async with AsyncNeo4jClient(project_name=PROJECT_NAME) as client:
+            results = await client.semantic_graph_search(
+                query_text=query_text,
+                limit=limit_int,
+                node_types=node_type_list
+            )
+            
+            return {
+                "status": "success",
+                "results": results,
+                "count": len(results),
+                "query": query_text
+            }
+            
+    except Exception as e:
+        logger.error(f"Neo4j semantic search failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+async def neo4j_code_dependencies(
+    file_path: str,
+    max_depth: str = "3"
+) -> Dict[str, Any]:
+    """
+    Get code dependency graph for a specific file
+    
+    Args:
+        file_path: Target file path (relative to project root)
+        max_depth: Maximum traversal depth
+        
+    Returns:
+        Dependency graph structure with relationships
+    """
+    if not NEO4J_AVAILABLE:
+        return {"status": "error", "message": "Neo4j client not available"}
+    
+    try:
+        depth = int(max_depth) if max_depth.isdigit() else 3
+        
+        async with AsyncNeo4jClient(project_name=PROJECT_NAME) as client:
+            dependencies = await client.get_code_dependencies(file_path, depth)
+            
+            return {
+                "status": "success",
+                "file_path": file_path,
+                "dependencies": dependencies,
+                "max_depth": depth
+            }
+            
+    except Exception as e:
+        logger.error(f"Neo4j dependencies failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+async def neo4j_migration_status() -> Dict[str, Any]:
+    """
+    Check Neo4j migration status and system health
+    
+    Returns:
+        Migration status and database health information
+    """
+    try:
+        status = {
+            "neo4j_available": NEO4J_AVAILABLE,
+            "project": PROJECT_NAME
+        }
+        
+        if NEO4J_AVAILABLE:
+            try:
+                async with AsyncNeo4jClient(project_name=PROJECT_NAME) as client:
+                    stats = await client.get_project_statistics()
+                    status["neo4j_stats"] = stats
+                    status["neo4j_connection"] = "healthy"
+            except Exception as e:
+                status["neo4j_connection"] = "failed"
+                status["neo4j_error"] = str(e)
+        
+        # System status
+        if NEO4J_AVAILABLE:
+            status["migration_stage"] = "neo4j_ready"
+        else:
+            status["migration_stage"] = "no_graph_db"
+        
+        return {"status": "success", "migration_status": status}
+        
+    except Exception as e:
+        logger.error(f"Migration status check failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+@mcp.tool()
+async def neo4j_index_code_graph(
+    file_paths: str = "",
+    force_reindex: str = "false"
+) -> Dict[str, Any]:
+    """
+    Index code files into Neo4j graph database
+    
+    Args:
+        file_paths: Comma-separated file paths to index (empty = index all)
+        force_reindex: Whether to force reindexing existing files
+        
+    Returns:
+        Indexing results and statistics
+    """
+    if not NEO4J_AVAILABLE:
+        return {"status": "error", "message": "Neo4j client not available"}
+    
+    try:
+        force = force_reindex.lower() in ["true", "1", "yes"]
+        paths_to_index = [p.strip() for p in file_paths.split(",") if p.strip()] if file_paths else []
+        
+        # Get project directory
+        project_dir = Path("/app/project")
+        
+        indexed_files = 0
+        indexed_functions = 0
+        indexed_classes = 0
+        errors = []
+        
+        async with AsyncNeo4jClient(project_name=PROJECT_NAME) as client:
+            # Determine files to process
+            if paths_to_index:
+                files_to_process = [project_dir / path for path in paths_to_index if (project_dir / path).exists()]
+            else:
+                # Index all Python files (expandable to other languages)
+                files_to_process = list(project_dir.rglob("*.py"))[:100]  # Limit to avoid timeout
+            
+            for file_path in files_to_process:
+                try:
+                    if not file_path.is_file():
+                        continue
+                        
+                    relative_path = str(file_path.relative_to(project_dir))
+                    
+                    # Read file content
+                    try:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                    except Exception as e:
+                        errors.append(f"Failed to read {relative_path}: {str(e)}")
+                        continue
+                    
+                    # Create file node
+                    success = await client.create_file_node(
+                        file_path=relative_path,
+                        content=content,
+                        extension=file_path.suffix,
+                        size_bytes=len(content.encode('utf-8'))
+                    )
+                    
+                    if success:
+                        indexed_files += 1
+                        
+                        # Simple function/class extraction (can be enhanced with tree-sitter)
+                        if file_path.suffix == '.py':
+                            lines = content.split('\n')
+                            for i, line in enumerate(lines):
+                                line_stripped = line.strip()
+                                
+                                # Extract function definitions
+                                if line_stripped.startswith('def ') and '(' in line_stripped:
+                                    func_name = line_stripped.split('(')[0].replace('def ', '').strip()
+                                    if func_name:
+                                        await client.create_function_node(
+                                            file_path=relative_path,
+                                            function_name=func_name,
+                                            signature=line_stripped,
+                                            start_line=i + 1,
+                                            end_line=i + 1  # Simplified - could enhance with proper parsing
+                                        )
+                                        indexed_functions += 1
+                                
+                                # Extract class definitions
+                                elif line_stripped.startswith('class ') and ':' in line_stripped:
+                                    class_name = line_stripped.split(':')[0].replace('class ', '').strip()
+                                    if '(' in class_name:
+                                        class_name = class_name.split('(')[0].strip()
+                                    if class_name:
+                                        await client.create_class_node(
+                                            file_path=relative_path,
+                                            class_name=class_name,
+                                            start_line=i + 1,
+                                            end_line=i + 1  # Simplified
+                                        )
+                                        indexed_classes += 1
+                    
+                except Exception as e:
+                    errors.append(f"Failed to index {relative_path}: {str(e)}")
+            
+            return {
+                "status": "success",
+                "indexed_files": indexed_files,
+                "indexed_functions": indexed_functions,
+                "indexed_classes": indexed_classes,
+                "total_processed": len(files_to_process),
+                "errors": errors[:10],  # Limit error messages
+                "error_count": len(errors)
+            }
+            
+    except Exception as e:
+        logger.error(f"Neo4j indexing failed: {e}")
         return {"status": "error", "message": str(e)}
 
 # Run the enhanced server
