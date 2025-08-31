@@ -133,6 +133,8 @@ from dataclasses import dataclass
 
 # Import PRISM scorer for intelligent importance scoring
 try:
+    import sys
+    sys.path.append('/app/project/neural-tools')
     from prism_scorer import PrismScorer
     PRISM_AVAILABLE = True
 except ImportError:
@@ -1508,7 +1510,7 @@ async def semantic_code_search(
                 # Boost search results with PRISM scores
                 formatted_results = prism_scorer.boost_search_results(
                     formatted_results, 
-                    boost_factor=prism_boost
+                    boost_factor=prism_boost_float
                 )
                 
                 # Add PRISM explanation to top results
