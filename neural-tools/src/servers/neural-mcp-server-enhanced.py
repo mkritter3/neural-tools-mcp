@@ -677,9 +677,9 @@ async def memory_store_enhanced(
 async def memory_search_enhanced(
     query: str,
     category: Optional[str] = None,
-    limit: str = "10",  # Accept as string, convert to int
+    limit: int = 10,  # Proper type with integer default
     mode: str = "rrf_hybrid",  # Enhanced search modes
-    diversity_threshold: str = "0.85",  # Accept as string, convert to float
+    diversity_threshold: float = 0.85,  # Proper type with float default
     graph_expand: bool = True
 ) -> Dict[str, Any]:
     """Enhanced search with RRF fusion, MMR diversity, and GraphRAG expansion - ADR-0008 Fix
@@ -696,16 +696,9 @@ async def memory_search_enhanced(
         Dict with results list (required for T2_DATA_RETRIEVAL test)
     """
     try:
-        # Input validation and conversion
-        try:
-            search_limit = int(limit) if limit else 5
-            diversity_lambda = float(diversity_threshold) if diversity_threshold else 0.85
-        except ValueError as ve:
-            return {
-                "status": "error",
-                "message": f"Invalid parameter: {str(ve)}",
-                "results": []
-            }
+        # Input validation 
+        search_limit = max(1, min(limit or 5, 100))  # Clamp between 1-100
+        diversity_lambda = max(0.0, min(diversity_threshold or 0.85, 1.0))  # Clamp between 0-1
         
         collection_name = f"{COLLECTION_PREFIX}{category or 'memory'}"
         
@@ -1170,7 +1163,7 @@ async def schema_customization(
 async def atomic_dependency_tracer(
     target: str,
     trace_type: str = "calls",
-    max_depth: str = "5",  # Accept as string, convert to int
+    max_depth: int = 5,  # Proper integer type
     include_imports: bool = True
 ) -> Dict[str, Any]:
     """Trace atomic dependencies for functions, classes, or modules
@@ -1182,8 +1175,8 @@ async def atomic_dependency_tracer(
         include_imports: Include import dependencies
     """
     try:
-        # Convert string parameters to proper types
-        max_depth_int = int(max_depth) if isinstance(max_depth, str) else max_depth
+        # Input validation
+        max_depth_int = max(1, min(max_depth or 5, 20))  # Clamp between 1-20
         
         if not GRAPHRAG_ENABLED:
             return {"status": "error", "message": "GraphRAG not available"}
@@ -1297,7 +1290,7 @@ async def atomic_dependency_tracer(
 @mcp.tool()
 async def project_understanding(
     scope: str = "full",
-    max_tokens: str = "2000"  # Accept as string, convert to int
+    max_tokens: int = 2000  # Proper integer type
 ) -> Dict[str, Any]:
     """Generate condensed project understanding without reading all files
     
@@ -1306,8 +1299,8 @@ async def project_understanding(
         max_tokens: Maximum tokens for response (string converted to int)
     """
     try:
-        # Convert string parameters to proper types
-        max_tokens_int = int(max_tokens) if isinstance(max_tokens, str) else max_tokens
+        # Input validation
+        max_tokens_int = max(500, min(max_tokens or 2000, 5000))  # Clamp between 500-5000
         
         understanding = {
             "project": PROJECT_NAME,
@@ -1408,10 +1401,10 @@ async def project_understanding(
 async def semantic_code_search(
     query: str,
     search_type: str = "semantic",
-    limit: str = "10",  # Accept as string, convert to int
-    min_score: str = "0.7",  # Accept as string, convert to float
+    limit: int = 10,  # Proper integer type
+    min_score: float = 0.7,  # Proper float type
     use_prism: bool = True,
-    prism_boost: str = "0.3"  # Accept as string, convert to float
+    prism_boost: float = 0.3  # Proper float type
 ) -> Dict[str, Any]:
     """Search code by meaning, not just text matching
     
@@ -1424,10 +1417,10 @@ async def semantic_code_search(
         prism_boost: How much to blend PRISM scores (0.0-1.0)
     """
     try:
-        # Convert string parameters to proper types
-        limit_int = int(limit) if isinstance(limit, str) else limit
-        min_score_float = float(min_score) if isinstance(min_score, str) else min_score
-        prism_boost_float = float(prism_boost) if isinstance(prism_boost, str) else prism_boost
+        # Input validation
+        limit_int = max(1, min(limit or 10, 50))  # Clamp between 1-50
+        min_score_float = max(0.0, min(min_score or 0.7, 1.0))  # Clamp between 0-1
+        prism_boost_float = max(0.0, min(prism_boost or 0.3, 1.0))  # Clamp between 0-1
         
         # Generate embedding for semantic query
         embed_response = await nomic_client.get_embeddings([query])
@@ -1641,7 +1634,7 @@ async def vibe_preservation(
 @mcp.tool()
 async def project_auto_index(
     scope: str = "modified",  # modified, all, git-changes
-    since_minutes: Optional[str] = None,  # Accept as string, convert to int
+    since_minutes: Optional[int] = None,  # Proper optional integer type
     file_patterns: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Smart auto-indexing tool that indexes project files on-demand
@@ -1660,8 +1653,8 @@ async def project_auto_index(
     import subprocess
     
     try:
-        # Convert string parameters to proper types
-        since_minutes_int = int(since_minutes) if since_minutes and isinstance(since_minutes, str) else since_minutes
+        # Input validation
+        since_minutes_int = since_minutes  # Already proper integer type or None
         
         project_dir = Path("/app/project")
         manifest_file = Path("/app/data/index_manifest.json")
@@ -1885,8 +1878,8 @@ async def neural_system_status() -> Dict[str, Any]:
                         "points_count": info.points_count,
                         "status": info.status,
                         "config": {
-                            "distance": info.config.params.vectors.get("dense", {}).get("distance"),
-                            "size": info.config.params.vectors.get("dense", {}).get("size")
+                            "distance": getattr(info.config.params.vectors, "distance", "unknown"),
+                            "size": getattr(info.config.params.vectors, "size", 0)
                         }
                     }
                     total_points += info.points_count
@@ -2094,7 +2087,7 @@ async def neo4j_graph_query(
 @mcp.tool()
 async def neo4j_semantic_graph_search(
     query_text: str,
-    limit: str = "10",
+    limit: int = 10,
     node_types: str = "File,Function,Class"
 ) -> Dict[str, Any]:
     """
@@ -2112,7 +2105,7 @@ async def neo4j_semantic_graph_search(
         return {"status": "error", "message": "Neo4j client not available"}
     
     try:
-        limit_int = int(limit) if limit.isdigit() else 10
+        limit_int = max(1, min(limit or 10, 100))  # Clamp between 1-100
         node_type_list = [t.strip() for t in node_types.split(",")]
         
         async with AsyncNeo4jClient(project_name=PROJECT_NAME) as client:
@@ -2136,7 +2129,7 @@ async def neo4j_semantic_graph_search(
 @mcp.tool()
 async def neo4j_code_dependencies(
     file_path: str,
-    max_depth: str = "3"
+    max_depth: int = 3
 ) -> Dict[str, Any]:
     """
     Get code dependency graph for a specific file
@@ -2152,7 +2145,7 @@ async def neo4j_code_dependencies(
         return {"status": "error", "message": "Neo4j client not available"}
     
     try:
-        depth = int(max_depth) if max_depth.isdigit() else 3
+        depth = max(1, min(max_depth or 3, 10))  # Clamp between 1-10
         
         async with AsyncNeo4jClient(project_name=PROJECT_NAME) as client:
             dependencies = await client.get_code_dependencies(file_path, depth)
@@ -2207,7 +2200,7 @@ async def neo4j_migration_status() -> Dict[str, Any]:
 @mcp.tool()
 async def neo4j_index_code_graph(
     file_paths: str = "",
-    force_reindex: str = "false"
+    force_reindex: bool = False
 ) -> Dict[str, Any]:
     """
     Index code files into Neo4j graph database
@@ -2223,7 +2216,7 @@ async def neo4j_index_code_graph(
         return {"status": "error", "message": "Neo4j client not available"}
     
     try:
-        force = force_reindex.lower() in ["true", "1", "yes"]
+        force = force_reindex  # Already proper boolean type
         paths_to_index = [p.strip() for p in file_paths.split(",") if p.strip()] if file_paths else []
         
         # Get project directory
