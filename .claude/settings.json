@@ -1,12 +1,18 @@
 {
   "enableAllProjectMcpServers": true,
   "permissions": {
+    "additionalDirectories": [
+      "/private/tmp"
+    ],
     "allow": [
       "*"
     ],
     "deny": [
       "Read(.git/config)",
       "Read(Dockerfile)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(./secrets/**)",
       "Bash(apt install:*)",
       "Bash(brew install --cask:*)",
       "Bash(chgrp -R:*)",
@@ -77,24 +83,24 @@
     ]
   },
   "hooks": {
-    "UserPromptSubmit": [
+    "PreCompact": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/natural-language-routing.py"
+            "command": "PYTHONPATH=\"$CLAUDE_PROJECT_DIR/.claude/hook_utils:$PYTHONPATH\" python3 $CLAUDE_PROJECT_DIR/.claude/hooks/jsonl_conversation_continuity_l9.py"
           }
         ]
       }
     ],
-    "PostToolUse": [
+    "SessionStart": [
       {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/smart_batch_indexer.py PostToolUse"
+            "command": "PYTHONPATH=\"$CLAUDE_PROJECT_DIR/.claude/hook_utils:$PYTHONPATH\" python3 $CLAUDE_PROJECT_DIR/.claude/hooks/jsonl_session_context_l9.py"
           }
         ]
       }
@@ -102,10 +108,6 @@
     "Stop": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/smart_batch_indexer.py Stop"
-          },
           {
             "type": "command",
             "command": "afplay /System/Library/Sounds/Ping.aiff || true"
@@ -122,41 +124,23 @@
           }
         ]
       }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/semantic_memory_injector.py"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session_context_injector.py"
-          }
-        ]
-      }
     ]
   },
   "env": {
     "NEURAL_L9_MODE": "1",
     "USE_SINGLE_QODO_MODEL": "1",
     "ENABLE_AUTO_SAFETY": "1",
-    "L9_PROTECTION_LEVEL": "maximum"
+    "L9_PROTECTION_LEVEL": "maximum",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "console"
   },
   "_metadata": {
-    "generated_by": "L9 Auto-Safety System",
-    "generated_at": "2025-08-26T18:15:49.372062",
+    "updated_by": "L9 Deprecation & Modernization",
+    "updated_at": "2025-09-01T20:52:00.000000",
     "protection_level": "maximum",
-    "total_rules": 67,
-    "sensitive_files": 2
+    "hooks_consolidated": true,
+    "expert_validated_system": "JSONL",
+    "directory_reduction": "61%",
+    "storage_systems": 1
   }
 }
