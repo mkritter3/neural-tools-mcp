@@ -385,8 +385,17 @@ class NeuralServiceManager:
         global nomic_client
         
         try:
-            # Initialize client
+            # Initialize client - this always works based on testing
             nomic_client = NomicEmbedClient()
+            
+            # Test the client directly first to ensure it works
+            try:
+                test_embeddings = await nomic_client.get_embeddings(["initialization test"])
+                if len(test_embeddings.embeddings[0]) != 768:
+                    raise Exception(f"Unexpected embedding dimension: {len(test_embeddings.embeddings[0])}")
+            except Exception as client_test_error:
+                nomic_client = None
+                return {"success": False, "message": f"Embedding client test failed: {str(client_test_error)}"}
             
             # Test embeddings service using proper request format (Context7 pattern)
             import httpx
@@ -397,10 +406,10 @@ class NeuralServiceManager:
                 timeout=30.0
             ) as client:
                 
-                # Use correct request format from Context7 research
+                # Use correct request format matching EmbedRequest model
                 test_response = await client.post(
                     self.services["embeddings"]["url"],
-                    json={"text": "test initialization"},  # Correct format
+                    json={"inputs": ["test initialization"], "normalize": True},  # Correct format
                     headers={"Content-Type": "application/json"}
                 )
                 
@@ -410,11 +419,11 @@ class NeuralServiceManager:
                         "message": f"Embeddings service HTTP {test_response.status_code}"
                     }
                 
-                # If 422, try alternative format
+                # If 422, try alternative format  
                 if test_response.status_code == 422:
                     alt_response = await client.post(
                         self.services["embeddings"]["url"],
-                        json={"texts": ["test initialization"]},  # Alternative format
+                        json={"inputs": ["test initialization alternative"], "normalize": True},  # Alternative format
                         headers={"Content-Type": "application/json"}
                     )
                     if alt_response.status_code not in [200, 422]:
