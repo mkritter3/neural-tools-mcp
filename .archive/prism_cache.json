@@ -1,0 +1,607 @@
+{
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hooks/session_context_injector.py": {
+    "mtime": 1756532816.1541166,
+    "complexity": 0.9999815421067044,
+    "prism_score": 0.5899777838813799
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/neural-mcp-server-enhanced.py": {
+    "mtime": 1756623467.6131911,
+    "complexity": 0.999999999986112,
+    "prism_score": 0.754068152629492
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/tree_sitter_ast.py": {
+    "mtime": 1756440679.2098737,
+    "complexity": 0.9995473777767595,
+    "prism_score": 0.5678249344116431
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/nomic_embed_server.py": {
+    "mtime": 1756480201.9069245,
+    "complexity": 0.8698915256370021,
+    "prism_score": 0.5380880728198332
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/file_watcher.py": {
+    "mtime": 1756513413.9227743,
+    "complexity": 0.9878715650157257,
+    "prism_score": 0.5815100991909549
+  },
+  "/Users/mkr/local-coding/claude-l9-template/deprecated/docker-backup-20250829-103920/neural-mcp-server-enhanced.py": {
+    "mtime": 1756489160.512824,
+    "complexity": 0.9997254218438986,
+    "prism_score": 0.7191734130312217
+  },
+  "/Users/mkr/local-coding/claude-l9-template/deprecated/docker-backup-20250829-103920/tree_sitter_ast.py": {
+    "mtime": 1756489160.7872245,
+    "complexity": 0.9995473777767595,
+    "prism_score": 0.5791200655370472
+  },
+  "/Users/mkr/local-coding/claude-l9-template/deprecated/docker-backup-20250829-103920/nomic_embed_server.py": {
+    "mtime": 1756489160.7879636,
+    "complexity": 0.8698915256370021,
+    "prism_score": 0.5402233100623651
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hooks/smart_batch_indexer.py": {
+    "mtime": 1756534229.402694,
+    "complexity": 0.9568927450589139,
+    "prism_score": 0.5774075629029048
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hooks/semantic_memory_injector.py": {
+    "mtime": 1756516408.502951,
+    "complexity": 0.9955037268390589,
+    "prism_score": 0.5845388611516045
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hooks/natural-language-routing.py": {
+    "mtime": 1756534250.1930473,
+    "complexity": 0.995929862284104,
+    "prism_score": 0.5891239456397435
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/docker-legacy/embedding_client.py": {
+    "mtime": 1756437996.9250374,
+    "complexity": 0.7109495026250039,
+    "prism_score": 0.4806389508989761
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/docker-legacy/neural-mcp-server.py": {
+    "mtime": 1756434753.3918507,
+    "complexity": 0.8320183851339245,
+    "prism_score": 0.6562285978229402
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/docker-legacy/embedding_server.py": {
+    "mtime": 1756438102.1470125,
+    "complexity": 0.6456563062257954,
+    "prism_score": 0.4610747525605302
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/docker-legacy/neural-mcp-server-v2.py": {
+    "mtime": 1756437174.7957256,
+    "complexity": 0.998498817743263,
+    "prism_score": 0.7067181966358381
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/neural_embeddings.py": {
+    "mtime": 1756254141.5718727,
+    "complexity": 0.999997739675702,
+    "prism_score": 0.6699585578151608
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/memory_system.py": {
+    "mtime": 1756400961.8790693,
+    "complexity": 0.7685247834990178,
+    "prism_score": 0.48972570456337117
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/config_manager.py": {
+    "mtime": 1756400847.6574378,
+    "complexity": 0.8581489350995123,
+    "prism_score": 0.5165882425621017
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/project_isolation.py": {
+    "mtime": 1756400831.6097293,
+    "complexity": 0.9088770389851438,
+    "prism_score": 0.5318032026744955
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/feature_flags.py": {
+    "mtime": 1756233240.0157812,
+    "complexity": 0.9955037268390589,
+    "prism_score": 0.5248411929543108
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/test_qdrant_basic.py": {
+    "mtime": 1756395492.3324249,
+    "complexity": 0.6681877721681662,
+    "prism_score": 0.5184451333486957
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/bert_tokenizer.py": {
+    "mtime": 1756225505.6017804,
+    "complexity": 0.9478464369215823,
+    "prism_score": 0.5091722169361285
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/shared_model_client.py": {
+    "mtime": 1756400807.7611177,
+    "complexity": 0.9002495108803148,
+    "prism_score": 0.6692097859846992
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/test_qdrant_integration.py": {
+    "mtime": 1756395288.0699048,
+    "complexity": 0.6681877721681662,
+    "prism_score": 0.5184012300682594
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system.claude/performance_benchmarks.py": {
+    "mtime": 1756238653.2912922,
+    "complexity": 0.8698915256370021,
+    "prism_score": 0.4881249717631625
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/hooks/context_injector.py": {
+    "mtime": 1756402778.452916,
+    "complexity": 0.6224593312018546,
+    "prism_score": 0.44629945429228646
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/hooks/persist-session-state.py": {
+    "mtime": 1756225505.5656414,
+    "complexity": 0.9999085841261478,
+    "prism_score": 0.5247908546604778
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/hooks/project_context_loader.py": {
+    "mtime": 1756402792.6358302,
+    "complexity": 0.5,
+    "prism_score": 0.4095647295295691
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/hooks/neural_auto_indexer.py": {
+    "mtime": 1756402764.4705038,
+    "complexity": 0.7310585786300049,
+    "prism_score": 0.618876197394045
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/hooks/session_memory_store.py": {
+    "mtime": 1756402804.783073,
+    "complexity": 0.425557483188341,
+    "prism_score": 0.38723460782648517
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/scripts/neural-mcp-manager.py": {
+    "mtime": 1756437280.3686042,
+    "complexity": 0.995033198349943,
+    "prism_score": 0.7057023277932741
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/scripts/test-mcp-connection.py": {
+    "mtime": 1756269301.1870193,
+    "complexity": 0.401312339887548,
+    "prism_score": 0.4931442755405836
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/scripts/test-tree-sitter-mcp.py": {
+    "mtime": 1756436010.7953022,
+    "complexity": 0.6681877721681662,
+    "prism_score": 0.6073624778553852
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/l9_hybrid_search.py": {
+    "mtime": 1756419674.7121904,
+    "complexity": 0.9986414800495711,
+    "prism_score": 0.5628529407768482
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/tree_sitter_ast.py": {
+    "mtime": 1756436413.0834951,
+    "complexity": 0.9983411989198255,
+    "prism_score": 0.5664991551784395
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/l9_single_model_system.py": {
+    "mtime": 1756419674.721307,
+    "complexity": 0.9088770389851438,
+    "prism_score": 0.6759236104547374
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/neural_embeddings.py": {
+    "mtime": 1756417100.9070897,
+    "complexity": 0.999997739675702,
+    "prism_score": 0.7026916938527744
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/memory_system.py": {
+    "mtime": 1756417100.900867,
+    "complexity": 0.7685247834990178,
+    "prism_score": 0.493249805619948
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/config_manager.py": {
+    "mtime": 1756417100.892059,
+    "complexity": 0.8581489350995123,
+    "prism_score": 0.5201370491508062
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/project_isolation.py": {
+    "mtime": 1756417100.9133155,
+    "complexity": 0.9088770389851438,
+    "prism_score": 0.5353554849933734
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/l9_qdrant_memory_v2.py": {
+    "mtime": 1756419674.726866,
+    "complexity": 0.7310585786300049,
+    "prism_score": 0.4825780735350153
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/feature_flags.py": {
+    "mtime": 1756417100.918546,
+    "complexity": 0.9955037268390589,
+    "prism_score": 0.5613434924856486
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/bert_tokenizer.py": {
+    "mtime": 1756417100.9348996,
+    "complexity": 0.9478464369215823,
+    "prism_score": 0.5470463091066217
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/l9_project_isolation.py": {
+    "mtime": 1756419674.7339466,
+    "complexity": 0.8909031788043871,
+    "prism_score": 0.5305314551281188
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/shared_model_client.py": {
+    "mtime": 1756417100.929746,
+    "complexity": 0.9002495108803148,
+    "prism_score": 0.6727672301420609
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/l9_config_manager.py": {
+    "mtime": 1756419674.7470162,
+    "complexity": 0.8581489350995123,
+    "prism_score": 0.5207051848892574
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/l9_certification_suite.py": {
+    "mtime": 1756419674.7944162,
+    "complexity": 0.9241418199787566,
+    "prism_score": 0.5405030608229535
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/mcp_server_container.py": {
+    "mtime": 1756433020.3623781,
+    "complexity": 0.7109495026250039,
+    "prism_score": 0.6195184710991402
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/l9_auto_safety.py": {
+    "mtime": 1756419674.8225422,
+    "complexity": 0.9926084586557181,
+    "prism_score": 0.5610430586244579
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/neural-system/l9_qdrant_hybrid.py": {
+    "mtime": 1756419674.8285542,
+    "complexity": 0.8581489350995123,
+    "prism_score": 0.520705202878393
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/initial-setup/test_mcp_server.py": {
+    "mtime": 1756229243.9865766,
+    "complexity": 0.8909031788043871,
+    "prism_score": 0.6327507521830026
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/initial-setup/migrate-to-global.py": {
+    "mtime": 1756399919.7743213,
+    "complexity": 0.9983411989198255,
+    "prism_score": 0.5584453301246866
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/initial-setup/neural-setup.py": {
+    "mtime": 1756405172.294781,
+    "complexity": 0.45016600268752216,
+    "prism_score": 0.5351311148741493
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/initial-setup/install.py": {
+    "mtime": 1756228547.5488098,
+    "complexity": 0.9568927450589139,
+    "prism_score": 0.5124241692201698
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/legacy-neural-system/test_benchmarks.py": {
+    "mtime": 1756238778.2776122,
+    "complexity": 0.6456563062257954,
+    "prism_score": 0.48087681417002875
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/legacy-neural-system/mcp_neural_server_v2.py": {
+    "mtime": 1756240335.592258,
+    "complexity": 0.9998492896419403,
+    "prism_score": 0.6674141912848065
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/legacy-neural-system/ast_analyzer.py": {
+    "mtime": 1756225505.6011052,
+    "complexity": 0.9999498278353162,
+    "prism_score": 0.5248032335641387
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/legacy-neural-system/evaluation_harness.py": {
+    "mtime": 1756233529.1202242,
+    "complexity": 0.9820137900379085,
+    "prism_score": 0.5208457258942478
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/legacy-neural-system/test_shadow_indexing.py": {
+    "mtime": 1756232765.5515213,
+    "complexity": 0.6899744811276125,
+    "prism_score": 0.4930979128670208
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/experimental/shared-model-server.py": {
+    "mtime": 1756400780.6022365,
+    "complexity": 0.7685247834990178,
+    "prism_score": 0.6296864930692159
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/experimental/neural-memory-mcp.py": {
+    "mtime": 1756402738.0085082,
+    "complexity": 0.9525741268224334,
+    "prism_score": 0.6853251249637448
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/experimental/test-neural-system.py": {
+    "mtime": 1756400040.4966617,
+    "complexity": 0.9966651926925867,
+    "prism_score": 0.6979686138746738
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/experimental/benchmark-performance.py": {
+    "mtime": 1756400125.3528492,
+    "complexity": 0.9933071490757153,
+    "prism_score": 0.5569795387143177
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_hybrid_search.py": {
+    "mtime": 1756254437.4899166,
+    "complexity": 0.9986414800495711,
+    "prism_score": 0.5296056992562918
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_single_model_system.py": {
+    "mtime": 1756254112.587435,
+    "complexity": 0.9088770389851438,
+    "prism_score": 0.6426170568183782
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/mcp_l9_launcher.py": {
+    "mtime": 1756269610.79505,
+    "complexity": 0.7502601055951177,
+    "prism_score": 0.5978861247056092
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_qdrant_memory_v2.py": {
+    "mtime": 1756395703.7483115,
+    "complexity": 0.7310585786300049,
+    "prism_score": 0.47735182623350014
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_project_isolation.py": {
+    "mtime": 1756395579.805733,
+    "complexity": 0.8909031788043871,
+    "prism_score": 0.5252785588661208
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_qdrant_memory.py": {
+    "mtime": 1756419674.7403047,
+    "complexity": 0.8909031788043871,
+    "prism_score": 0.5305314559997603
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_config_manager.py": {
+    "mtime": 1756395620.2320862,
+    "complexity": 0.8581489350995123,
+    "prism_score": 0.5154609769050399
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_certification_suite.py": {
+    "mtime": 1756255319.0883586,
+    "complexity": 0.9241418199787566,
+    "prism_score": 0.5074168471194689
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_auto_safety.py": {
+    "mtime": 1756254230.5107315,
+    "complexity": 0.9926084586557181,
+    "prism_score": 0.5277580066859606
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/l9-legacy-2025-08-28/l9_qdrant_hybrid.py": {
+    "mtime": 1756395157.1426294,
+    "complexity": 0.8581489350995123,
+    "prism_score": 0.515361442715675
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/host-mcp-2025-08-29/neural-memory-mcp.py": {
+    "mtime": 1756417228.055881,
+    "complexity": 0.9525741268224334,
+    "prism_score": 0.6884926356177551
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/host-mcp-2025-08-29/mcp_server.py": {
+    "mtime": 1756432681.1149516,
+    "complexity": 0.2689414213699951,
+    "prism_score": 0.4868398988756839
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/hooks/context_injector.py": {
+    "mtime": 1756399343.9800787,
+    "complexity": 0.9088770389851438,
+    "prism_score": 0.5314817142268461
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/hooks/style_preserver.py": {
+    "mtime": 1756254293.3076982,
+    "complexity": 0.9781187290638694,
+    "prism_score": 0.5234225510024466
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/hooks/safety_checker.py": {
+    "mtime": 1756254251.4691465,
+    "complexity": 0.8909031788043871,
+    "prism_score": 0.49725024842163323
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/hooks/project_context_loader.py": {
+    "mtime": 1756399390.4410005,
+    "complexity": 0.8909031788043871,
+    "prism_score": 0.5260995883196434
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/hooks/neural_auto_indexer.py": {
+    "mtime": 1756399309.660146,
+    "complexity": 0.7310585786300049,
+    "prism_score": 0.6181287658285222
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/hooks/session_memory_store.py": {
+    "mtime": 1756399433.64884,
+    "complexity": 0.9608342772032357,
+    "prism_score": 0.5470882480465045
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/mock-implementations/project_neural_indexer.py": {
+    "mtime": 1756238813.1040525,
+    "complexity": 0.3775406687981454,
+    "prism_score": 0.4804483672956809
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/mock-implementations/neural_dynamic_memory_system.py": {
+    "mtime": 1756238803.736643,
+    "complexity": 0.5,
+    "prism_score": 0.5171844869910255
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/mock-implementations/mcp_neural_server.py": {
+    "mtime": 1756364128.1405668,
+    "complexity": 0.7109495026250039,
+    "prism_score": 0.6046524832272383
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/host-mcp-2025-08-29/mcp-tools-deprecated/clear_databases.py": {
+    "mtime": 1756225505.5765069,
+    "complexity": 0.8909031788043871,
+    "prism_score": 0.49208923424583245
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/host-mcp-2025-08-29/mcp-tools-deprecated/project_neural_indexer.py": {
+    "mtime": 1756225505.5825846,
+    "complexity": 0.9988874639671398,
+    "prism_score": 0.6644845208598472
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/host-mcp-2025-08-29/mcp-tools-deprecated/neural_flow_tools.py": {
+    "mtime": 1756225505.5816445,
+    "complexity": 0.9426758241011313,
+    "prism_score": 0.6476210287268563
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/host-mcp-2025-08-29/mcp-tools-deprecated/neural_dynamic_memory_system.py": {
+    "mtime": 1756225505.580531,
+    "complexity": 0.9088770389851438,
+    "prism_score": 0.6374813929884773
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/host-mcp-2025-08-29/mcp-tools-deprecated/mcp_neural_server.py": {
+    "mtime": 1756229087.457935,
+    "complexity": 0.9758729785823308,
+    "prism_score": 0.6582139363237658
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.archive/.deprecated/host-mcp-2025-08-29/mcp-tools-deprecated/json_utils.py": {
+    "mtime": 1756225505.578578,
+    "complexity": 0.7310585786300049,
+    "prism_score": 0.5241358545232242
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/prism_scorer.py": {
+    "mtime": 1756521084.3503568,
+    "complexity": 0.997268039236989,
+    "prism_score": 0.7262274188308055
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/validate_hooks.py": {
+    "mtime": 1756533179.5632524,
+    "complexity": 0.6224593312018546,
+    "prism_score": 0.5968127369564793
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hooks/session_context_injector_l9.py": {
+    "mtime": 1756534092.052542,
+    "complexity": 0.9308615796566533,
+    "prism_score": 0.5695635482568099
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hook_utils/base_hook.py": {
+    "mtime": 1756533540.897662,
+    "complexity": 0.8021838885585818,
+    "prism_score": 0.6508211936129974
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hook_utils/dependency_manager.py": {
+    "mtime": 1756533564.476667,
+    "complexity": 0.8581489350995123,
+    "prism_score": 0.5476166543411475
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hook_utils/validators.py": {
+    "mtime": 1756533153.0340202,
+    "complexity": 0.990986701347152,
+    "prism_score": 0.5873642390028644
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hook_utils/__init__.py": {
+    "mtime": 1756532986.7251382,
+    "complexity": 0.2689414213699951,
+    "prism_score": 0.3707087342585094
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hook_utils/fallbacks.py": {
+    "mtime": 1756533105.231606,
+    "complexity": 0.8581489350995123,
+    "prism_score": 0.547500858940539
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hook_utils/utilities.py": {
+    "mtime": 1756533043.0682852,
+    "complexity": 0.8807970779778823,
+    "prism_score": 0.6342796324845518
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hooks/semantic_memory_injector_l9.py": {
+    "mtime": 1756534184.046046,
+    "complexity": 0.8698915256370021,
+    "prism_score": 0.5512957491405278
+  },
+  "/Users/mkr/local-coding/claude-l9-template/.claude/hook_template_l9.py": {
+    "mtime": 1756568498.083261,
+    "complexity": 0.598687660112452,
+    "prism_score": 0.5987694370661153
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/neo4j_client.py": {
+    "mtime": 1756579086.7208009,
+    "complexity": 0.9781187290638694,
+    "prism_score": 0.5953966143832724
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/neo4j_migration_utils.py": {
+    "mtime": 1756583871.6418595,
+    "complexity": 0.998498817743263,
+    "prism_score": 0.6827862632168388
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/fix_infrastructure.py": {
+    "mtime": 1756608665.6141188,
+    "complexity": 0.549833997312478,
+    "prism_score": 0.4749110367748631
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/test_tools_direct_v2.py": {
+    "mtime": 1756611002.5688355,
+    "complexity": 0.9088770389851438,
+    "prism_score": 0.6432677477446729
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/test_mcp_compliance.py": {
+    "mtime": 1756604990.4895937,
+    "complexity": 0.8175744761936437,
+    "prism_score": 0.6942242507235628
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/test_tools_direct.py": {
+    "mtime": 1756605252.7616448,
+    "complexity": 0.9002495108803148,
+    "prism_score": 0.6390986185605997
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/automated_compliance_monitor.py": {
+    "mtime": 1756605540.8993616,
+    "complexity": 0.995929862284104,
+    "prism_score": 0.607881695256985
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/compliance_monitor_simple.py": {
+    "mtime": 1756608910.6928813,
+    "complexity": 0.9852259683067269,
+    "prism_score": 0.6055960602586472
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/test_mcp_protocol.py": {
+    "mtime": 1756619608.181532,
+    "complexity": 0.9370266439430035,
+    "prism_score": 0.7340984231445493
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/test_end_to_end_direct.py": {
+    "mtime": 1756614016.8263226,
+    "complexity": 0.598687660112452,
+    "prism_score": 0.5510438956970526
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/test_rigorous_validation.py": {
+    "mtime": 1756615299.4053853,
+    "complexity": 0.9836975006285591,
+    "prism_score": 0.6669021587095787
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/neural_mcp_server_enhanced.py": {
+    "mtime": 1756617153.456845,
+    "complexity": 0.8320183851339245,
+    "prism_score": 0.7019129804824914
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/test_production_wrapper.py": {
+    "mtime": 1756613910.2353644,
+    "complexity": 0.9478464369215823,
+    "prism_score": 0.6557620218903619
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/test_refactored_functionality.py": {
+    "mtime": 1756651891.057844,
+    "complexity": 0.9677045353015495,
+    "prism_score": 0.6724666031714677
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/tools/memory_tools.py": {
+    "mtime": 1756651635.269844,
+    "complexity": 0.9088770389851438,
+    "prism_score": 0.5947443757755125
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/tools/__init__.py": {
+    "mtime": 1756628716.9091048,
+    "complexity": 0.2689414213699951,
+    "prism_score": 0.3962241480554962
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/common/config.py": {
+    "mtime": 1756628640.386113,
+    "complexity": 0.52497918747894,
+    "prism_score": 0.4730139316575336
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/common/__init__.py": {
+    "mtime": 1756628618.4474182,
+    "complexity": 0.2689414213699951,
+    "prism_score": 0.396196425066509
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/common/utils.py": {
+    "mtime": 1756628673.6038446,
+    "complexity": 0.9370266439430035,
+    "prism_score": 0.6766375206161911
+  },
+  "/Users/mkr/local-coding/claude-l9-template/neural-tools/common/test_base.py": {
+    "mtime": 1756628708.2494695,
+    "complexity": 0.8175744761936437,
+    "prism_score": 0.6208116246121693
+  }
+}

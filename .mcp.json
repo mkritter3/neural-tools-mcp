@@ -8,7 +8,7 @@
         "default-neural",
         "python3",
         "-u",
-        "/app/neural-mcp-server-enhanced.py"
+"/app/neural-tools-src/servers/neural_server_2025.py"
       ],
       "description": "Neural Tools - L9 Enhanced MCP Server with Neo4j GraphRAG + Qdrant + Nomic Embed v2-MoE"
     }

@@ -82,7 +82,23 @@
       "Bash(database:*)"
     ]
   },
+  "outputStyle": "Truth-First-L9",
   "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/truth-addendum.py" }] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { 
+          "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/anti-sycophancy-stop.py", "timeout": 20
+        },
+        {
+          "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/anti-sycophancy-stop.py", "timeout": 20
+        },
+        {
+          "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/mock-policy-stop.py", "timeout": 20
+        }
+    ],
     "PreCompact": [
       {
         "matcher": "*",
@@ -131,8 +147,7 @@
     "USE_SINGLE_QODO_MODEL": "1",
     "ENABLE_AUTO_SAFETY": "1",
     "L9_PROTECTION_LEVEL": "maximum",
-    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-    "OTEL_METRICS_EXPORTER": "console"
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0"
   },
   "_metadata": {
     "updated_by": "L9 Deprecation & Modernization",

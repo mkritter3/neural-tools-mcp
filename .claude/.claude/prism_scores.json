@@ -1,0 +1,14 @@
+{
+  "/test/path/example.py": {
+    "file_path": "/test/path/example.py",
+    "prism_score": 0.85,
+    "prism_components": {
+      "complexity": 0.8,
+      "recency": 0.9,
+      "dependencies": 0.7
+    },
+    "cached_at": 1756700961.5693598,
+    "file_mtime": 1756700961.569359,
+    "importance_label": "CRITICAL"
+  }
+}

@@ -17,21 +17,21 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Install Python dependencies in stages (torch first, then git dependencies)
-COPY requirements-l9-enhanced.txt .
+COPY config/requirements-l9-enhanced.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/torch \
     --mount=type=cache,target=/root/.cache/huggingface \
     pip install --no-cache-dir torch>=2.3.0 numpy>=1.24.0 && \
     pip install --no-cache-dir -r requirements-l9-enhanced.txt
 
-# Copy embedding server
-COPY nomic_embed_server.py .
+# Copy entire src/ directory structure for proper Python module imports
+COPY src/ ./src/
 
 # Create model cache directory
 RUN mkdir -p /app/models
 
-# Set environment variables
-ENV PYTHONPATH=/app
+# Set environment variables for src/ directory structure
+ENV PYTHONPATH=/app:/app/src:/app/src/servers
 ENV PYTHONUNBUFFERED=1
 
 # Nomic Embed v2-MoE configuration
@@ -54,5 +54,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run Nomic Embed v2-MoE server
-CMD ["python", "-m", "uvicorn", "nomic_embed_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Run Nomic Embed v2-MoE server from organized structure
+CMD ["python", "-m", "uvicorn", "src.servers.nomic_embed_server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

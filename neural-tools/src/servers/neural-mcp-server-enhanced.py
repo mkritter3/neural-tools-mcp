@@ -181,70 +181,78 @@ class NomicEmbedResponse:
     usage: Dict[str, int]
 
 class NomicEmbedClient:
-    """Client for Nomic Embed v2-MoE service with enhanced connectivity"""
+    """Client for Nomic Embed v2-MoE service with enhanced connectivity
+    
+    Uses Context7 recommended pattern: fresh httpx.AsyncClient per request
+    to avoid asyncio event loop binding issues in MCP environments.
+    """
     
     def __init__(self):
         host = os.environ.get('EMBEDDING_SERVICE_HOST', 'neural-embeddings')
         port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 8000))
         self.base_url = f"http://{host}:{port}"
         
-        # Enhanced httpx async client with proper timeout and retry configuration
-        # Based on Context7 httpx patterns for async service reliability
-        transport = httpx.AsyncHTTPTransport(retries=1)
-        timeout = httpx.Timeout(
+        # Store configuration for creating clients per request
+        # Context7 pattern: avoid storing AsyncClient in __init__
+        self.timeout = httpx.Timeout(
             connect=10.0,  # Connection timeout
             read=60.0,     # Read timeout
             write=30.0,    # Write timeout
             pool=5.0       # Pool timeout
         )
-        
-        self.client = httpx.AsyncClient(
-            transport=transport,
-            timeout=timeout,
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=5)
-        )
+        self.transport_kwargs = {"retries": 1}
+        self.limits = httpx.Limits(max_connections=20, max_keepalive_connections=5)
         
     async def get_embeddings(self, texts: List[str]) -> NomicEmbedResponse:
-        """Get embeddings using Nomic Embed v2-MoE with enhanced error handling"""
+        """Get embeddings using Nomic Embed v2-MoE with Context7 async client pattern
+        
+        Creates fresh httpx.AsyncClient per request to avoid event loop binding issues.
+        """
         max_retries = 3
         retry_delay = 1.0
         
-        for attempt in range(max_retries):
-            try:
-                response = await self.client.post(
-                    f"{self.base_url}/embed",
-                    json={"inputs": texts, "normalize": True}
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                return NomicEmbedResponse(
-                    embeddings=data["embeddings"],
-                    model=data.get("model", "nomic-v2-moe"),
-                    usage=data.get("usage", {"prompt_tokens": len(texts)})
-                )
-                
-            except httpx.ConnectError as e:
-                if attempt < max_retries - 1:
-                    logger.warning(f"Nomic connection failed (attempt {attempt + 1}/{max_retries}): {e}")
-                    await asyncio.sleep(retry_delay * (attempt + 1))
-                    continue
-                else:
-                    logger.error(f"Nomic connection failed after {max_retries} attempts: {e}")
-                    raise
+        # Context7 recommended pattern: fresh AsyncClient per request
+        async with httpx.AsyncClient(
+            transport=httpx.AsyncHTTPTransport(**self.transport_kwargs),
+            timeout=self.timeout,
+            limits=self.limits
+        ) as client:
+            for attempt in range(max_retries):
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/embed",
+                        json={"inputs": texts, "normalize": True}
+                    )
+                    response.raise_for_status()
+                    data = response.json()
                     
-            except httpx.TimeoutException as e:
-                if attempt < max_retries - 1:
-                    logger.warning(f"Nomic timeout (attempt {attempt + 1}/{max_retries}): {e}")
-                    await asyncio.sleep(retry_delay * (attempt + 1))
-                    continue
-                else:
-                    logger.error(f"Nomic timeout after {max_retries} attempts: {e}")
-                    raise
+                    return NomicEmbedResponse(
+                        embeddings=data["embeddings"],
+                        model=data.get("model", "nomic-v2-moe"),
+                        usage=data.get("usage", {"prompt_tokens": len(texts)})
+                    )
                     
-            except Exception as e:
-                logger.error(f"Nomic embed error: {e}")
-                raise
+                except httpx.ConnectError as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Nomic connection failed (attempt {attempt + 1}/{max_retries}): {e}")
+                        await asyncio.sleep(retry_delay * (attempt + 1))
+                        continue
+                    else:
+                        logger.error(f"Nomic connection failed after {max_retries} attempts: {e}")
+                        raise
+                        
+                except httpx.TimeoutException as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Nomic timeout (attempt {attempt + 1}/{max_retries}): {e}")
+                        await asyncio.sleep(retry_delay * (attempt + 1))
+                        continue
+                    else:
+                        logger.error(f"Nomic timeout after {max_retries} attempts: {e}")
+                        raise
+                        
+                except Exception as e:
+                    logger.error(f"Nomic embed error: {e}")
+                    raise
 
 # =============================================================================
 # ADR-0008: NeuralServiceManager for Service Integration Recovery
@@ -550,6 +558,20 @@ async def ensure_collection(collection_name: str):
     except Exception as e:
         logger.error(f"Failed to ensure collection: {e}")
 
+# Initialize services when first MCP tool is called
+_initialization_done = False
+
+async def ensure_services_initialized():
+    """Ensure services are initialized within MCP event loop"""
+    global _initialization_done
+    if not _initialization_done:
+        try:
+            await initialize()
+            _initialization_done = True
+            logger.info("✅ Services initialized within MCP event loop")
+        except Exception as e:
+            logger.error(f"Service initialization failed: {e}")
+
 @mcp.tool()
 async def memory_store_enhanced(
     content: str,
@@ -569,6 +591,8 @@ async def memory_store_enhanced(
         Dict with status, point_id (required for T1_DATA_PERSISTENCE test)
     """
     try:
+        # Ensure services are initialized within MCP event loop
+        await ensure_services_initialized()
         collection_name = f"{COLLECTION_PREFIX}{category}"
         await ensure_collection(collection_name)
         
@@ -1656,6 +1680,9 @@ async def project_auto_index(
     Returns:
         Index status with files processed and performance metrics
     """
+    # Ensure services are initialized
+    await ensure_services_initialized()
+    
     import hashlib
     import json
     from pathlib import Path
@@ -1867,6 +1894,9 @@ async def project_auto_index(
 async def neural_system_status() -> Dict[str, Any]:
     """Get comprehensive neural system status"""
     try:
+        # Ensure services are initialized
+        await ensure_services_initialized()
+        
         stats = {
             "timestamp": datetime.now().isoformat(),
             "project": PROJECT_NAME,
@@ -1945,17 +1975,25 @@ async def neural_system_status() -> Dict[str, Any]:
         else:
             stats["graphrag"] = {"status": "disabled", "message": "GraphRAG not enabled"}
         
-        # Nomic Embed statistics
+        # Nomic Embed statistics (Context7 pattern)
         try:
-            health_response = await nomic_client.client.get(f"{nomic_client.base_url}/health")
-            if health_response.status_code == 200:
-                stats["embedding"] = {
-                    "service": "nomic-embed-v2-moe",
-                    "status": "healthy",
-                    "url": nomic_client.base_url
-                }
-            else:
-                stats["embedding"] = {"status": "unhealthy"}
+            # Use Context7 pattern: fresh AsyncClient per request
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5.0, read=10.0),
+                limits=httpx.Limits(max_connections=5)
+            ) as client:
+                health_response = await client.get(f"{nomic_client.base_url}/health")
+                if health_response.status_code == 200:
+                    health_data = health_response.json()
+                    stats["embedding"] = {
+                        "service": "nomic-embed-v2-moe",
+                        "status": "healthy",
+                        "url": nomic_client.base_url,
+                        "model": health_data.get("model", "unknown"),
+                        "backend": health_data.get("backend", "unknown")
+                    }
+                else:
+                    stats["embedding"] = {"status": "unhealthy", "status_code": health_response.status_code}
         except Exception as e:
             stats["embedding"] = {"status": "error", "message": str(e)}
         
@@ -2419,5 +2457,5 @@ except Exception as e:
 
 # Run the enhanced server
 if __name__ == "__main__":
-    asyncio.run(initialize())
+    # Initialize within MCP event loop to avoid asyncio conflicts
     mcp.run(transport='stdio')

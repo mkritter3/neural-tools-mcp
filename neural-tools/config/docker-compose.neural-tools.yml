@@ -56,7 +56,7 @@ services:
       # Neo4j GraphRAG configuration
       - NEO4J_URI=bolt://neo4j-graph:7687
       - NEO4J_USERNAME=neo4j
-      - NEO4J_PASSWORD=neural-l9-2025
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-neural-l9-2025}
       - GRAPHRAG_ENABLED=true
       - HYBRID_SEARCH_MODE=enhanced
       
@@ -84,6 +84,14 @@ services:
           cpus: '2.0'
     
     restart: unless-stopped
+    
+    # Health check for MCP server (Zen MCP pattern)
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.path.append('/app/src/servers'); from neural_mcp_wrapper import production_health_check; print('healthy' if production_health_check()['status'] == 'healthy' else exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     
     labels:
       - "mcp.transport=stdio"
@@ -159,7 +167,7 @@ services:
     container_name: neural-embeddings
     
     command: [
-      "python3", "-m", "uvicorn", "neural-tools.nomic_embed_server:app", 
+      "python3", "-m", "uvicorn", "src.servers.nomic_embed_server:app", 
       "--host", "0.0.0.0", "--port", "8000", 
       "--workers", "1"
     ]
@@ -250,7 +258,7 @@ services:
     
     environment:
       # Authentication
-      - NEO4J_AUTH=neo4j/neural-l9-2025
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-neural-l9-2025}
       
       # Memory configuration for GraphRAG workloads
       - NEO4J_server_memory_heap_initial__size=2G
