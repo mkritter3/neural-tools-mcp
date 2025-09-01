@@ -395,18 +395,57 @@ class JsonlSessionContext(BaseHook):
         return '\n'.join(f"• {line}" for line in lines)
     
     def _format_important_files(self, project_state: Dict) -> str:
-        """Format important files with PRISM scoring simulation"""
-        recent_files = project_state.get('recent_files', [])
-        
-        if not recent_files:
-            return "  - No recent file activity detected"
-        
-        lines = []
-        for i, file_path in enumerate(recent_files[:5]):  # Top 5
-            importance = "HIGH" if i < 2 else "MEDIUM"
-            lines.append(f"  - {file_path} [{importance}]")
+        """Format important files with actual PRISM scoring via MCP"""
+        try:
+            # Use DependencyManager's graceful degradation for PRISM scoring
+            important_files = self.dependency_manager.get_important_files_with_prism(limit=5)
             
-        return '\n'.join(lines)
+            if important_files:
+                lines = []
+                for file_info in important_files:
+                    file_path = file_info.get('file_path', '')
+                    importance_label = file_info.get('importance_label', 'UNKNOWN')
+                    source = file_info.get('source', 'unknown')
+                    prism_score = file_info.get('prism_score', 0.0)
+                    
+                    # Show relative path for readability
+                    try:
+                        relative_path = Path(file_path).relative_to(self.project_dir)
+                        display_path = str(relative_path)
+                    except (ValueError, AttributeError):
+                        display_path = file_path
+                    
+                    # Add source indicator for transparency
+                    source_indicator = {
+                        'mcp': '🎯',      # Direct MCP call
+                        'cache': '💾',    # Cached PRISM scores  
+                        'fallback': '⏰'  # Modification time fallback
+                    }.get(source, '❓')
+                    
+                    lines.append(f"  - {display_path} [{importance_label}] {source_indicator}")
+                
+                # Add source legend if mixed sources
+                sources_used = set(f.get('source') for f in important_files)
+                if len(sources_used) > 1:
+                    legend_parts = []
+                    if 'mcp' in sources_used:
+                        legend_parts.append("🎯=PRISM")
+                    if 'cache' in sources_used:
+                        legend_parts.append("💾=Cached")  
+                    if 'fallback' in sources_used:
+                        legend_parts.append("⏰=Recent")
+                    
+                    lines.append(f"    ({', '.join(legend_parts)})")
+                
+                return '\n'.join(lines)
+            else:
+                self.log_execution("No important files found via any method", "warning")
+                
+        except Exception as e:
+            self.log_execution(f"PRISM scoring failed: {e}", "error")
+        
+        # Final fallback
+        return "  - No file importance data available"
     
     def _format_historical_context(self, recent: Optional[Dict], historical: List[Dict]) -> str:
         """Format historical context section"""

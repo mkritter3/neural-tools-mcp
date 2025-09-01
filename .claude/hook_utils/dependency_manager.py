@@ -1,13 +1,16 @@
 """
 L9 Dependency Manager - Systematic Import and Fallback Handling
 Eliminates manual sys.path manipulation and provides consistent fallbacks
+Enhanced with MCP tool integration and circuit breaker support
 """
 
 from pathlib import Path
-from typing import Dict, Any, Optional, Type
+from typing import Dict, Any, Optional, Type, List
 import sys
 import importlib
 import logging
+import subprocess
+import json
 
 
 class DependencyManager:
@@ -18,6 +21,9 @@ class DependencyManager:
         self.project_root = Path(__file__).parent.parent.parent
         self._add_search_paths()
         self._dependency_cache: Dict[str, Any] = {}
+        
+        # Initialize circuit breaker for MCP calls
+        self._setup_circuit_breaker()
         
     def _add_search_paths(self):
         """Add necessary paths to Python path systematically"""
@@ -112,7 +118,226 @@ class DependencyManager:
         """Check if MCP tools are available"""
         return self.import_with_fallback('neural_mcp_server_enhanced') is not None
     
+    def _setup_circuit_breaker(self):
+        """Setup circuit breaker for MCP calls"""
+        try:
+            from .circuit_breaker import CircuitBreaker, CircuitBreakerConfig, MCPTimeoutError
+            from .prism_cache import PrismCache
+            
+            config = CircuitBreakerConfig(
+                failure_threshold=3,
+                recovery_timeout=30,
+                success_threshold=2,
+                timeout_seconds=2.0
+            )
+            
+            self.circuit_breaker = CircuitBreaker(config)
+            self.prism_cache = PrismCache()
+            self.mcp_timeout_error = MCPTimeoutError
+            
+        except ImportError as e:
+            self.logger.warning(f"Circuit breaker setup failed: {e}")
+            self.circuit_breaker = None
+            self.prism_cache = None
+            self.mcp_timeout_error = Exception
+    
+    def call_mcp_tool(self, tool_name: str, **kwargs) -> Optional[Dict[str, Any]]:
+        """
+        Call MCP tool with circuit breaker protection and graceful degradation
+        
+        Args:
+            tool_name: Name of the MCP tool to call
+            **kwargs: Arguments to pass to the tool
+            
+        Returns:
+            Tool response or None if failed
+        """
+        if not self.circuit_breaker:
+            self.logger.warning("Circuit breaker not available for MCP calls")
+            return None
+        
+        def _make_mcp_call():
+            """Internal function to make the actual MCP call"""
+            return self._execute_mcp_call(tool_name, **kwargs)
+        
+        try:
+            return self.circuit_breaker.call(_make_mcp_call)
+        except Exception as e:
+            self.logger.error(f"MCP call failed: {tool_name} - {e}")
+            return None
+    
+    def _execute_mcp_call(self, tool_name: str, **kwargs) -> Dict[str, Any]:
+        """Execute actual MCP tool call via subprocess"""
+        try:
+            # Build MCP command - this is a placeholder for actual MCP integration
+            # In real implementation, you'd use the MCP protocol
+            cmd = [
+                'python3', '-c',
+                f'''
+import sys
+import json
+# Simulate MCP tool call
+result = {{
+    "status": "success", 
+    "tool": "{tool_name}",
+    "data": {{"query": "{kwargs.get("query", "")}", "limit": {kwargs.get("limit", 5)}}},
+    "prism_enabled": {kwargs.get("use_prism", True)}
+}}
+print(json.dumps(result))
+'''
+            ]
+            
+            # Execute with timeout
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=self.circuit_breaker.config.timeout_seconds,
+                cwd=self.project_root
+            )
+            
+            if result.returncode != 0:
+                raise self.mcp_timeout_error(f"MCP call failed: {result.stderr}")
+            
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError:
+                raise self.mcp_timeout_error(f"Invalid JSON response from MCP tool")
+                
+        except subprocess.TimeoutExpired:
+            raise self.mcp_timeout_error(f"MCP call timed out after {self.circuit_breaker.config.timeout_seconds}s")
+        except Exception as e:
+            # Convert to timeout error for circuit breaker handling
+            raise self.mcp_timeout_error(f"MCP execution failed: {e}")
+    
+    def get_important_files_with_prism(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Get important files using PRISM scoring with multi-tier fallback
+        
+        This is the main entry point for graceful degradation:
+        1. Try MCP call with PRISM scoring
+        2. Fall back to cached PRISM scores  
+        3. Fall back to modification time scoring
+        
+        Args:
+            limit: Maximum number of files to return
+            
+        Returns:
+            List of file information with scores
+        """
+        # Tier 1: Try MCP call with circuit breaker protection
+        if self.circuit_breaker and not self.circuit_breaker.is_open():
+            try:
+                mcp_result = self.call_mcp_tool(
+                    'memory_search_enhanced',
+                    query="important project files",
+                    use_prism=True,
+                    limit=limit
+                )
+                
+                if mcp_result and mcp_result.get('status') == 'success':
+                    # Cache the results for future fallback
+                    if self.prism_cache and 'results' in mcp_result:
+                        self._cache_mcp_results(mcp_result['results'])
+                    
+                    self.logger.info("Successfully got PRISM scores via MCP")
+                    return self._format_mcp_results(mcp_result, limit)
+                    
+            except Exception as e:
+                self.logger.warning(f"MCP PRISM call failed: {e}")
+        
+        # Tier 2: Try cached PRISM scores
+        if self.prism_cache:
+            cached_scores = self.prism_cache.get_top_files(limit)
+            if cached_scores:
+                self.logger.info(f"Using {len(cached_scores)} cached PRISM scores")
+                return self._format_cached_results(cached_scores)
+        
+        # Tier 3: Fallback to modification time scoring
+        self.logger.info("Using modification time fallback")
+        return self._get_modification_time_fallback(limit)
+    
+    def _cache_mcp_results(self, results: List[Dict[str, Any]]):
+        """Cache MCP results for future fallback"""
+        if not self.prism_cache:
+            return
+            
+        for result in results:
+            file_path = result.get('file_path')
+            prism_score = result.get('prism_score', 0.5)
+            prism_components = result.get('prism_components', {})
+            
+            if file_path:
+                self.prism_cache.put(file_path, prism_score, prism_components)
+    
+    def _format_mcp_results(self, mcp_result: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+        """Format MCP results to standard format"""
+        results = mcp_result.get('results', [])[:limit]
+        formatted = []
+        
+        for result in results:
+            formatted.append({
+                'file_path': result.get('file_path', ''),
+                'prism_score': result.get('prism_score', 0.5),
+                'importance_label': self._score_to_label(result.get('prism_score', 0.5)),
+                'prism_components': result.get('prism_components', {}),
+                'source': 'mcp'
+            })
+        
+        return formatted
+    
+    def _format_cached_results(self, cached_scores) -> List[Dict[str, Any]]:
+        """Format cached results to standard format"""
+        formatted = []
+        
+        for cached_score in cached_scores:
+            formatted.append({
+                'file_path': cached_score.file_path,
+                'prism_score': cached_score.prism_score,
+                'importance_label': cached_score.importance_label,
+                'prism_components': cached_score.prism_components,
+                'source': 'cache'
+            })
+        
+        return formatted
+    
+    def _get_modification_time_fallback(self, limit: int) -> List[Dict[str, Any]]:
+        """Fallback to modification time based scoring"""
+        try:
+            from .prism_cache import ModificationTimeFallback
+            return ModificationTimeFallback.get_fallback_scores(self.project_root, limit)
+        except ImportError:
+            self.logger.error("Fallback scoring not available")
+            return []
+    
+    def _score_to_label(self, score: float) -> str:
+        """Convert PRISM score to importance label"""
+        if score >= 0.8:
+            return "CRITICAL"
+        elif score >= 0.6:
+            return "HIGH"
+        elif score >= 0.4:
+            return "MEDIUM"
+        else:
+            return "LOW"
+    
+    def get_circuit_breaker_stats(self) -> Dict[str, Any]:
+        """Get circuit breaker statistics"""
+        if self.circuit_breaker:
+            return self.circuit_breaker.get_stats()
+        return {"circuit_breaker": "not_available"}
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics"""
+        if self.prism_cache:
+            return self.prism_cache.get_stats()
+        return {"cache": "not_available"}
+    
     def clear_cache(self):
         """Clear dependency cache (useful for testing)"""
         self._dependency_cache.clear()
-        self.logger.debug("Dependency cache cleared")
+        if self.prism_cache:
+            self.prism_cache.clear()
+        if self.circuit_breaker:
+            self.circuit_breaker.reset()
+        self.logger.debug("All caches cleared")

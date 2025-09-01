@@ -7,6 +7,8 @@ from .base_hook import BaseHook
 from .utilities import estimate_tokens, format_context
 from .dependency_manager import DependencyManager
 from .validators import validate_hook_compliance
+from .circuit_breaker import CircuitBreaker, CircuitBreakerConfig, MCPTimeoutError
+from .prism_cache import PrismCache, CachedPrismScore, ModificationTimeFallback
 
 # Phase 1: New shared utilities to eliminate code duplication
 from .formatters import (
@@ -48,6 +50,14 @@ __all__ = [
     'format_context',
     'DependencyManager',
     'validate_hook_compliance',
+    
+    # Circuit breaker and graceful degradation
+    'CircuitBreaker',
+    'CircuitBreakerConfig', 
+    'MCPTimeoutError',
+    'PrismCache',
+    'CachedPrismScore',
+    'ModificationTimeFallback',
     
     # Shared formatters (eliminates 19 duplicate functions)
     'format_session_metadata',
