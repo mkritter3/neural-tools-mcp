@@ -5,12 +5,25 @@
       "args": [
         "exec",
         "-i",
+        "-e", "QDRANT_HOST=default-neural-storage",
+        "-e", "QDRANT_HTTP_PORT=6333",
+        "-e", "QDRANT_GRPC_PORT=6334",
+        "-e", "NEO4J_HOST=default-neo4j-graph",
+        "-e", "NEO4J_PORT=7687",
+        "-e", "NEO4J_USERNAME=neo4j",
+        "-e", "NEO4J_PASSWORD=neural-l9-2025",
+        "-e", "EMBEDDING_SERVICE_HOST=neural-embeddings",
+        "-e", "EMBEDDING_SERVICE_PORT=8000",
+        "-e", "PYTHONPATH=/app/project/neural-tools/src",
+        "-e", "PROJECT_NAME=claude-l9-template",
+        "-e", "PROJECT_DIR=/app/project",
+        "-e", "PYTHONUNBUFFERED=1",
         "default-neural",
         "python3",
         "-u",
-"/app/neural-tools-src/servers/neural_server_2025.py"
+        "/app/project/neural-tools/src/servers/neural_server_stdio.py"
       ],
-      "description": "Neural Tools - L9 Enhanced MCP Server with Neo4j GraphRAG + Qdrant + Nomic Embed v2-MoE"
+      "description": "Neural Tools GraphRAG for claude-l9-template - L9 Enhanced"
     }
   }
 }
