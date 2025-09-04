@@ -110,7 +110,7 @@ Every decision — frontend, backend, infra, design — must ladder up to delive
 
 | Component Type | Location | Purpose | Examples |
 |---------------|----------|---------|----------|
-| **MCP Tools** | `/neural-tools/` (Docker) | Database operations, search, indexing | `neural-mcp-server-enhanced.py` |
+| **MCP Tools** | `/neural-tools/` (Docker) | Database operations, search, indexing | `neural_server_2025.py` |
 | **Scoring Systems** | `/neural-tools/` (Docker) | PRISM, ranking algorithms | `prism_scorer.py` |
 | **SessionStart Hooks** | `/.claude/hooks/` (Host) | One-time session initialization | `session_context_injector_l9.py` |
 | **Configuration** | `/.claude/` (Host) | IDE and project settings | `settings.json`, `project-config.json` |

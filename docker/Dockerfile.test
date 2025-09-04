@@ -1,0 +1,48 @@
+# L9 Multi-Project Test Build - Minimal Dependencies
+FROM python:3.11-slim
+
+# System dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    curl \
+    git \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install minimal Python dependencies for testing
+COPY requirements/test.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r test.txt
+
+# Copy organized source structure
+COPY src/ ./src/
+
+# Copy neural-tools configuration  
+COPY neural-tools/config/ ./config/
+
+# Copy source for backward compatibility paths
+COPY src/graphrag/services/ ./neural-tools-src/services/
+COPY src/mcp/ ./neural-tools-src/servers/
+
+# Fix import paths for GraphRAG
+RUN mkdir -p /app/src/servers/services && \
+    cp /app/src/graphrag/core/hybrid_retriever.py /app/src/servers/services/
+
+# Create required directories
+RUN mkdir -p /app/data /app/models /var/log /var/run /workspace
+
+# Set environment variables
+ENV PYTHONPATH=/app:/app/src:/app/src/servers:/app/neural-tools-src
+ENV PYTHONUNBUFFERED=1
+ENV PROJECT_NAME=default
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Run supervisord
+CMD ["/usr/bin/supervisord", "-c", "/app/config/supervisord.conf"]

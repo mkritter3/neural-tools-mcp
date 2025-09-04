@@ -27,7 +27,7 @@ class NomicEmbedClient:
     """
     
     def __init__(self):
-        host = os.environ.get('EMBEDDING_SERVICE_HOST', 'neural-embeddings')
+        host = os.environ.get('EMBEDDING_SERVICE_HOST', 'default-neural-embeddings')
         port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 8000))
         self.base_url = f"http://{host}:{port}"
         

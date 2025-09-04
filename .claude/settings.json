@@ -84,43 +84,6 @@
   },
   "outputStyle": "Truth-First-L9",
   "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/truth-addendum.py" }] }
-    ],
-    "Stop": [
-      { "hooks": [
-        { 
-          "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/anti-sycophancy-stop.py", "timeout": 20
-        },
-        {
-          "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/anti-sycophancy-stop.py", "timeout": 20
-        },
-        {
-          "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/mock-policy-stop.py", "timeout": 20
-        }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cd $CLAUDE_PROJECT_DIR/.claude && PYTHONPATH=\"hook_utils:$PYTHONPATH\" python3 hooks/jsonl_conversation_continuity_l9.py"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cd $CLAUDE_PROJECT_DIR/.claude && PYTHONPATH=\"hook_utils:$PYTHONPATH\" python3 hooks/jsonl_session_context_l9.py"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [

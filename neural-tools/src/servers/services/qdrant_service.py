@@ -25,7 +25,7 @@ class QdrantService:
         self.collection_prefix = f"project_{project_name}_"
         
         # Qdrant configuration from environment
-        self.host = os.environ.get('QDRANT_HOST', 'neural-data-storage')
+        self.host = os.environ.get('QDRANT_HOST', 'default-neural-storage')
         self.http_port = int(os.environ.get('QDRANT_HTTP_PORT', 6333))
         self.grpc_port = int(os.environ.get('QDRANT_GRPC_PORT', 6334))
         

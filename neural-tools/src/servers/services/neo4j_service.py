@@ -31,7 +31,7 @@ class AsyncNeo4jClient:
         self.project_name = project_name
         
         # Neo4j configuration from environment
-        neo4j_host = os.environ.get('NEO4J_HOST', 'neo4j-graph')
+        neo4j_host = os.environ.get('NEO4J_HOST', 'default-neo4j-graph')
         neo4j_port = int(os.environ.get('NEO4J_PORT', 7687))
         neo4j_username = os.environ.get('NEO4J_USERNAME', 'neo4j')
         neo4j_password = os.environ.get('NEO4J_PASSWORD', 'neural-l9-2025')
@@ -83,7 +83,7 @@ class AsyncNeo4jClient:
                             "records": records,
                             "summary": {
                                 "query_type": summary.query_type,
-                                "counters": dict(summary.counters) if summary.counters else {},
+                                "counters": summary.counters.__dict__ if hasattr(summary.counters, '__dict__') else {},
                                 "result_available_after": summary.result_available_after,
                                 "result_consumed_after": summary.result_consumed_after
                             }
@@ -93,7 +93,9 @@ class AsyncNeo4jClient:
                         raise tx_error
                 
                 # Execute with managed transaction for retry capability
-                if cypher_query.strip().upper().startswith(('CREATE', 'MERGE', 'SET', 'DELETE')):
+                # Strip whitespace before checking query type
+                query_upper = cypher_query.strip().upper()
+                if query_upper.startswith(('CREATE', 'MERGE', 'SET', 'DELETE')):
                     # Write transaction
                     query_result = await session.execute_write(
                         execute_query_tx, cypher_query, parameters or {}

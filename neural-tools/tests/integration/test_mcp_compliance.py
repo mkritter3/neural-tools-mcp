@@ -123,11 +123,11 @@ class MCPToolTester:
                 "query_text": "function definitions"
             },
             "neo4j_code_dependencies": {
-                "file_path": "neural-mcp-server-enhanced.py"
+                "file_path": "neural_server_2025.py"
             },
             "neo4j_migration_status": {},
             "neo4j_index_code_graph": {
-                "file_paths": "neural-mcp-server-enhanced.py"
+                "file_paths": "neural_server_2025.py"
             }
         }
         

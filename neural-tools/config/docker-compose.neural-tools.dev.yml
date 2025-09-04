@@ -1,0 +1,35 @@
+version: '3.8'
+
+# Development override for Neural Tools System
+# Usage: docker-compose -f docker-compose.neural-tools.yml -f docker-compose.neural-tools.dev.yml up
+
+services:
+  # Override neural-tools-server to mount source code for development
+  neural-tools-server:
+    volumes:
+      # Mount source code for live development (overrides baked-in code)
+      - type: bind
+        source: ../src
+        target: /app/src
+        read_only: false
+      
+      # Also mount to neural-tools-src for compatibility
+      - type: bind
+        source: ../src
+        target: /app/neural-tools-src
+        read_only: false
+      
+      # Mount common utilities
+      - type: bind
+        source: ../common
+        target: /app/common
+        read_only: false
+    
+    environment:
+      # Enable debug logging
+      - LOG_LEVEL=DEBUG
+      - PYTHONDONTWRITEBYTECODE=1
+      
+    # Disable health check during development
+    healthcheck:
+      disable: true

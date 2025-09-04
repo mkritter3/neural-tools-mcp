@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     curl \
     git \
+    supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -26,22 +27,41 @@ COPY src/ ./src/
 COPY common/ ./common/
 COPY config/ ./config/
 
+# Copy source directly for neural-tools-src path compatibility
+COPY src/ ./neural-tools-src/
+
+# Fix import paths for GraphRAG (hybrid_retriever needs to be accessible from servers/)
+RUN cp /app/src/services/hybrid_retriever.py /app/src/servers/services/
+
+# Ensure all service files are available in both locations for MCP server compatibility  
+RUN mkdir -p /app/neural-tools-src/servers/services/ && \
+    cp /app/src/servers/services/*.py /app/neural-tools-src/servers/services/ || true
+
 # Create required directories
-RUN mkdir -p /app/data /app/neo4j-workspace /app/models
+RUN mkdir -p /app/data /app/neo4j-workspace /app/models /var/log /var/run /workspace
 
 # Set environment variables for src/ directory structure
-ENV PYTHONPATH=/app:/app/src:/app/src/servers:/app/common
+ENV PYTHONPATH=/app:/app/src:/app/src/servers:/app/common:/app/neural-tools-src
 ENV PYTHONUNBUFFERED=1
 ENV L9_VERSION=neo4j-production-2025
+ENV PROJECT_NAME=default
 
 # Production configuration - use external embedding service
 ENV USE_EXTERNAL_EMBEDDING=true
 ENV EMBEDDING_SERVICE_HOST=neural-embeddings
 ENV EMBEDDING_SERVICE_PORT=8000
 
+# Database service configuration for proper MCP tool initialization
+ENV NEO4J_HOST=default-neo4j-graph
+ENV NEO4J_PORT=7687
+ENV NEO4J_USERNAME=neo4j
+ENV NEO4J_PASSWORD=neural-l9-2025
+ENV QDRANT_HOST=default-neural-storage
+ENV QDRANT_HTTP_PORT=6333
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import sys; import fastmcp; import neo4j; sys.exit(0)"
 
-# Run the enhanced MCP server from organized structure
-CMD ["python", "-m", "src.servers.neural_mcp_wrapper"]
+# Run supervisord to manage both MCP server and indexer
+CMD ["/usr/bin/supervisord", "-c", "/app/config/supervisord.conf"]
