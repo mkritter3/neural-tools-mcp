@@ -8,7 +8,7 @@ import logging
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
-from .nomic_service import NomicService
+from .nomic_local_service import NomicService
 from .qdrant_service import QdrantService
 from .neo4j_service import Neo4jService
 
