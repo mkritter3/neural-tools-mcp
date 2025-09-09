@@ -30,13 +30,21 @@ class AsyncNeo4jClient:
             
         self.project_name = project_name
         
-        # Neo4j configuration from environment
-        neo4j_host = os.environ.get('NEO4J_HOST', 'default-neo4j-graph')
-        neo4j_port = int(os.environ.get('NEO4J_PORT', 7687))
+        # Neo4j configuration from environment - prefer NEO4J_URI if available
+        neo4j_uri = os.environ.get('NEO4J_URI')
         neo4j_username = os.environ.get('NEO4J_USERNAME', 'neo4j')
         neo4j_password = os.environ.get('NEO4J_PASSWORD', 'neural-l9-2025')
         
-        self.uri = f"bolt://{neo4j_host}:{neo4j_port}"
+        if neo4j_uri:
+            # Use NEO4J_URI when provided (MCP config case)
+            self.uri = neo4j_uri
+            logger.info(f"Using NEO4J_URI: {self.uri}")
+        else:
+            # Fall back to NEO4J_HOST/NEO4J_PORT construction
+            neo4j_host = os.environ.get('NEO4J_HOST', 'default-neo4j-graph')
+            neo4j_port = int(os.environ.get('NEO4J_PORT', 7687))
+            self.uri = f"bolt://{neo4j_host}:{neo4j_port}"
+            logger.info(f"Constructed URI from NEO4J_HOST/PORT: {self.uri}")
         self.driver = AsyncGraphDatabase.driver(
             self.uri, 
             auth=(neo4j_username, neo4j_password)

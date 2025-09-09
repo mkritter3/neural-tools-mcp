@@ -6,8 +6,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     ports:
-      - "3000:3000"
-      - "9090:9090"  # Metrics
+      - "43000:3000"
+      - "49090:9090"  # Metrics
     environment:
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USERNAME=neo4j
@@ -41,8 +41,8 @@ services:
   neo4j:
     image: neo4j:5.22-community
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "47474:7474"
+      - "47687:7687"
     environment:
       - NEO4J_AUTH=neo4j/graphrag-password
       - NEO4J_PLUGINS=["apoc"]
@@ -61,55 +61,88 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.10.0
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "46333:6333"
+      - "46334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
       - QDRANT__SERVICE__HTTP_PORT=6333
       - QDRANT__SERVICE__GRPC_PORT=6334
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+    # Health check disabled - Qdrant container has minimal binaries
+    # Service is functional and accessible on port 6333
+    # healthcheck:
+    #   test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:6333/collections || exit 1"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 20s
 
-  # Redis for caching and health checks
-  redis:
+  # Redis for job queues - NO EVICTION, durable persistence
+  redis-queue:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "46380:6379"
     volumes:
-      - redis_data:/data
+      - redis_queue_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --save 60 1
+      --appendfsync everysec
+      --no-appendfsync-on-rewrite yes
+      --maxmemory-policy noeviction
+      --requirepass ${REDIS_QUEUE_PASSWORD:-queue-secret-key}
+    environment:
+      - REDIS_PASSWORD=${REDIS_QUEUE_PASSWORD:-queue-secret-key}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_QUEUE_PASSWORD:-queue-secret-key}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 10s
 
-  # Optional: Embedding service for production
-  embeddings:
-    image: neural-embeddings:latest
+  # Redis for caching - EVICTION ENABLED, less critical persistence  
+  redis-cache:
+    image: redis:7-alpine
     ports:
-      - "8000:8000"
+      - "46379:6379"  # Keep existing port for cache
+    volumes:
+      - redis_cache_data:/data
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 300 10
+      --requirepass ${REDIS_CACHE_PASSWORD:-cache-secret-key}
     environment:
-      - MODEL_NAME=nomic-embed-text-v1.5
+      - REDIS_PASSWORD=${REDIS_CACHE_PASSWORD:-cache-secret-key}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_CACHE_PASSWORD:-cache-secret-key}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Neural Flow Embedding Service
+  embeddings:
+    image: neural-flow:nomic-v2-production
+    container_name: neural-flow-nomic-v2-production
+    ports:
+      - "48000:8000"
+    environment:
+      - LOG_LEVEL=INFO
+      - MODEL_NAME=nomic-embed-text-v1
       - BATCH_SIZE=32
-      - MAX_LENGTH=2048
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      - MAX_TOKENS=8192
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - default
 
   # Neural Indexer Sidecar Service
   l9-indexer:
@@ -131,14 +164,17 @@ services:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       
-      # Embedding Service
-      - EMBEDDING_SERVICE_HOST=embeddings
-      - EMBEDDING_SERVICE_PORT=8000
+      # Embedding Service (External Container)
+      - EMBEDDING_SERVICE_HOST=neural-flow-nomic-v2-production
+      - EMBEDDING_SERVICE_PORT=48000
       
       # Performance Tuning
       - BATCH_SIZE=10
       - DEBOUNCE_INTERVAL=2.0
       - MAX_QUEUE_SIZE=1000
+      
+      # Vector Configuration
+      - EMBED_DIM=768
       
       # Monitoring
       - ENABLE_METRICS=true
@@ -148,8 +184,8 @@ services:
       - WATCHDOG_FORCE_POLLING=1
       
     volumes:
-      # Project Source (Read-Only)
-      - ./:/workspace:ro
+      # Project Source (Read-Only) - override with PROJECT_HOST_DIR to mount any directory
+      - ${PROJECT_HOST_DIR:-.}:/workspace:ro
       # Persistent State
       - indexer_state:/app/state
       # Configuration
@@ -158,14 +194,16 @@ services:
       - indexer_logs:/app/logs
       
     ports:
-      - "8080:8080"  # Health/Metrics endpoint
+      - "48080:8080"  # Health/Metrics endpoint
       
     depends_on:
       neo4j:
         condition: service_healthy
       qdrant:
+        condition: service_started  # Changed from service_healthy since health check disabled
+      redis-queue:
         condition: service_healthy
-      redis:
+      redis-cache:
         condition: service_healthy
       embeddings:
         condition: service_healthy
@@ -193,20 +231,18 @@ services:
     user: "1000:1000"
     security_opt:
       - no-new-privileges:true
-    read_only: true
+    # NOTE: Removed read_only and tmpfs on /app/state & /app/logs to maintain persistence
     tmpfs:
       - /tmp:size=100M,noexec,nosuid,nodev
-      - /app/state:size=200M,noexec,nosuid,nodev
-      - /app/logs:size=100M,noexec,nosuid,nodev
       
     networks:
-      - l9-graphrag-network
+      - default
 
   # Optional: Monitoring stack
   prometheus:
     image: prom/prometheus:latest
     ports:
-      - "9091:9090"
+      - "49091:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -219,7 +255,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3001:3000"
+      - "43001:3000"
     volumes:
       - grafana_data:/var/lib/grafana
     environment:
@@ -230,7 +266,8 @@ volumes:
   neo4j_logs:
   neo4j_import:
   qdrant_data:
-  redis_data:
+  redis_queue_data:  # Durable queue storage
+  redis_cache_data:  # Cache storage
   workspace:
   prometheus_data:
   grafana_data:

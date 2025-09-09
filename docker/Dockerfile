@@ -25,6 +25,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Copy organized source structure
 COPY src/ ./src/
 
+# Copy neural-tools source so new infrastructure modules are available
+COPY neural-tools/src/ ./src/
+
 # Copy neural-tools configuration  
 COPY neural-tools/config/ ./config/
 
@@ -49,6 +52,22 @@ ENV PROJECT_NAME=default
 ENV USE_EXTERNAL_EMBEDDING=true
 ENV EMBEDDING_SERVICE_HOST=neural-embeddings
 ENV EMBEDDING_SERVICE_PORT=8000
+
+# Optional: Pre-download reranker model to avoid cold start (set at build time)
+ARG DOWNLOAD_RERANKER_WEIGHTS=false
+ARG RERANKER_MODEL=BAAI/bge-reranker-base
+ENV RERANKER_MODEL_PATH=/app/models/reranker
+
+RUN if [ "$DOWNLOAD_RERANKER_WEIGHTS" = "true" ]; then \
+      python - << 'PY' && mkdir -p /app/models/reranker ; \
+from sentence_transformers import CrossEncoder
+import os
+model_id = os.environ.get('RERANKER_MODEL', 'BAAI/bge-reranker-base')
+model = CrossEncoder(model_id, trust_remote_code=False)
+model.save('/app/models/reranker')
+print('Saved reranker model to /app/models/reranker')
+PY
+    ; fi
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

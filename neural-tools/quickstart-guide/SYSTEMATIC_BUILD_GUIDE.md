@@ -67,7 +67,7 @@ The `build-and-run.sh` script provides systematic control:
 Edit files in `neural-tools/src/`:
 ```bash
 # Example: Adding a new MCP tool
-vim src/servers/neural_server_stdio.py
+vim src/mcp/neural_server_stdio.py
 ```
 
 ### Step 2: Test in Development Mode
@@ -109,7 +109,7 @@ docker-compose -f config/docker-compose.neural-tools.yml down
 neural-tools/
 ├── src/                          # Source code (edit here)
 │   ├── servers/
-│   │   ├── neural_server_stdio.py  # MCP server with tools
+│   │   ├── neural_server_stdio.py  # MCP server with tools (canonical)
 │   │   └── services/             # Service integrations
 │   └── services/
 │       └── indexer_service.py   # IncrementalIndexer
@@ -124,7 +124,7 @@ neural-tools/
 ## Critical Changes Made
 
 ### 1. Added `project_indexer` Tool
-Location: `src/servers/neural_server_stdio.py`
+Location: `src/mcp/neural_server_stdio.py`
 - Tool definition in `__init__` method
 - Implementation in `project_indexer_impl` method
 - Proper service initialization

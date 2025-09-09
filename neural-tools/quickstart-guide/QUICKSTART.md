@@ -116,7 +116,7 @@ Trace what depends on what:
 
 1. **Edit the code**:
 ```bash
-vim src/servers/neural_server_stdio.py
+vim src/mcp/neural_server_stdio.py
 ```
 
 2. **If in dev mode** - changes apply immediately!
@@ -128,7 +128,7 @@ vim src/servers/neural_server_stdio.py
 
 ### Adding a New MCP Tool
 
-1. Add tool definition in `src/servers/neural_server_stdio.py`:
+1. Add tool definition in `src/mcp/neural_server_stdio.py`:
 ```python
 # In __init__ method
 types.Tool(
@@ -258,7 +258,7 @@ Your Project Directory
 neural-tools/
 ├── src/
 │   ├── servers/
-│   │   └── neural_server_stdio.py  # MCP server & tools
+│   │   └── neural_server_stdio.py  # MCP server & tools (canonical)
 │   └── services/
 │       ├── indexer_service.py      # File indexing
 │       ├── neo4j_service.py        # Graph operations
@@ -276,7 +276,7 @@ neural-tools/
 1. **Index your code**: Use `project_indexer` tool
 2. **Try searches**: Test different search tools
 3. **Explore the graph**: Open Neo4j browser
-4. **Add custom tools**: Extend `neural_server_stdio.py`
+4. **Add custom tools**: Extend `src/mcp/neural_server_stdio.py`
 
 ## Common Workflows
 

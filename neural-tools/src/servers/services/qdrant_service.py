@@ -2,6 +2,7 @@
 """
 Qdrant Vector Database Service - Extracted from monolithic neural-mcp-server-enhanced.py
 Provides vector storage and retrieval operations with hybrid search capabilities
+Enhanced with comprehensive error handling and graceful degradation
 """
 
 import os
@@ -9,10 +10,15 @@ import logging
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     PointStruct, VectorParams, Distance, CollectionStatus,
     SearchRequest, Filter, FieldCondition, MatchValue
+)
+
+from infrastructure.error_handling import (
+    database_retry, VectorDatabaseException, error_handler, 
+    graceful_degradation, ErrorCategory, ErrorSeverity
 )
 
 logger = logging.getLogger(__name__)
@@ -24,14 +30,48 @@ class QdrantService:
         self.project_name = project_name
         self.collection_prefix = f"project_{project_name}_"
         
-        # Qdrant configuration from environment
-        self.host = os.environ.get('QDRANT_HOST', 'default-neural-storage')
-        self.http_port = int(os.environ.get('QDRANT_HTTP_PORT', 6333))
+        # Qdrant configuration via central runtime config (with fallbacks)
+        try:
+            from servers.config import get_runtime_config
+            cfg = get_runtime_config()
+            self.host = cfg.database.qdrant_host
+            self.http_port = int(cfg.database.qdrant_port)
+        except Exception:
+            # Fallback to environment if config package unavailable
+            self.host = os.environ.get('QDRANT_HOST', 'localhost')
+            self.http_port = int(os.environ.get('QDRANT_HTTP_PORT') or os.environ.get('QDRANT_PORT', 6333))
         self.grpc_port = int(os.environ.get('QDRANT_GRPC_PORT', 6334))
         
         self.client = None
         self.initialized = False
         
+        # Register fallback search function
+        self._register_fallbacks()
+    
+    def _register_fallbacks(self):
+        """Register fallback functions for graceful degradation"""
+        graceful_degradation.register_fallback("qdrant_search", self._fallback_search)
+        graceful_degradation.register_fallback("qdrant_hybrid", self._fallback_hybrid_search)
+    
+    async def _fallback_search(self, *args, **kwargs) -> List[Dict[str, Any]]:
+        """Fallback search when Qdrant is unavailable"""
+        logger.warning("Using fallback search - Qdrant unavailable")
+        return [{
+            "id": "fallback",
+            "score": 0.0,
+            "payload": {
+                "content": "Service temporarily unavailable",
+                "file_path": "system/fallback",
+                "source": "fallback"
+            }
+        }]
+    
+    async def _fallback_hybrid_search(self, *args, **kwargs) -> List[Dict[str, Any]]:
+        """Fallback hybrid search when Qdrant is unavailable"""
+        logger.warning("Using fallback hybrid search - Qdrant unavailable")
+        return await self._fallback_search(*args, **kwargs)
+        
+    @database_retry
     async def initialize(self) -> Dict[str, Any]:
         """Initialize Qdrant client with connection verification"""
         try:
@@ -43,49 +83,67 @@ class QdrantService:
                 response = await client.get(f"http://{self.host}:{self.http_port}/collections")
                 
                 if response.status_code != 200:
-                    return {
-                        "success": False, 
-                        "message": f"Qdrant HTTP connectivity failed: {response.status_code}"
-                    }
+                    raise VectorDatabaseException(
+                        f"Qdrant HTTP connectivity failed: {response.status_code}",
+                        context={
+                            "host": self.host,
+                            "port": self.http_port,
+                            "status_code": response.status_code
+                        }
+                    )
             
-            # Initialize GRPC client for operations
-            self.client = QdrantClient(
+            # Initialize async client for operations (HTTP fallback since GRPC port not exposed)
+            self.client = AsyncQdrantClient(
                 host=self.host,
-                port=self.grpc_port, 
-                prefer_grpc=True
+                port=self.http_port,  # Use HTTP port since GRPC not exposed in Docker
+                prefer_grpc=False     # Use HTTP for Docker setup
             )
             
-            # Test client operations
-            collections = self.client.get_collections()
+            # Test client operations  
+            collections_response = await self.client.get_collections()
+            # AsyncQdrantClient returns response with .result.collections structure
             self.initialized = True
+            
+            # Mark service as healthy
+            graceful_degradation.mark_service_healthy("qdrant")
             
             return {
                 "success": True,
                 "message": "Qdrant service initialized successfully",
-                "collections_count": len(collections.collections),
+                "collections_count": len(collections_response.result.collections),
                 "grpc_endpoint": f"{self.host}:{self.grpc_port}"
             }
             
         except Exception as e:
-            logger.error(f"Qdrant initialization failed: {e}")
+            await error_handler.handle_error(
+                e, 
+                context={"service": "qdrant", "host": self.host, "port": self.http_port},
+                operation_name="qdrant_initialize"
+            )
+            graceful_degradation.mark_service_unhealthy("qdrant")
             return {
                 "success": False,
                 "message": f"Qdrant initialization failed: {str(e)}"
             }
     
+    @database_retry
     async def ensure_collection(self, collection_name: str, vector_size: int = 1536) -> bool:
         """Ensure collection exists with proper configuration"""
         if not self.initialized or not self.client:
-            raise RuntimeError("Qdrant service not initialized")
+            raise VectorDatabaseException(
+                "Qdrant service not initialized",
+                context={"collection_name": collection_name, "vector_size": vector_size}
+            )
             
         try:
             # Check if collection exists
-            collections = self.client.get_collections()
-            existing_names = [col.name for col in collections.collections]
+            collections_response = await self.client.get_collections()
+            # AsyncQdrantClient returns response with .result.collections structure
+            existing_names = [col.name for col in collections_response.result.collections]
             
             if collection_name not in existing_names:
                 # Create collection with optimized settings (named vectors)
-                self.client.create_collection(
+                await self.client.create_collection(
                     collection_name=collection_name,
                     vectors_config={
                         "dense": VectorParams(
@@ -109,20 +167,45 @@ class QdrantService:
             return True
             
         except Exception as e:
-            logger.error(f"Collection setup failed for {collection_name}: {e}")
-            return False
+            await error_handler.handle_error(
+                e,
+                context={"collection_name": collection_name, "vector_size": vector_size},
+                operation_name="ensure_collection"
+            )
+            raise VectorDatabaseException(
+                f"Collection setup failed for {collection_name}: {e}",
+                context={"collection_name": collection_name},
+                original_exception=e
+            )
     
     async def upsert_points(
         self, 
         collection_name: str, 
         points: List[PointStruct]
     ) -> Dict[str, Any]:
-        """Upsert points with proper error handling"""
+        """Upsert points with proper error handling and dimension validation"""
         if not self.initialized or not self.client:
             raise RuntimeError("Qdrant service not initialized")
             
         try:
-            operation_info = self.client.upsert(
+            # Validate embedding dimensions against collection configuration
+            if points:
+                # Get collection info to check expected dimensions
+                collection_info = await self.client.get_collection(collection_name)
+                expected_dim = collection_info.config.params.vectors.size
+                
+                # Check first point's vector dimensions
+                first_point = points[0]
+                if hasattr(first_point, 'vector') and first_point.vector:
+                    actual_dim = len(first_point.vector)
+                    if actual_dim != expected_dim:
+                        error_msg = f"Embedding dimension mismatch for collection '{collection_name}': expected {expected_dim}, got {actual_dim}. Check EMBED_DIM environment variable."
+                        logger.error(error_msg)
+                        raise ValueError(error_msg)
+                    
+                    logger.debug(f"Dimension validation passed: {actual_dim}D vectors for collection {collection_name}")
+            
+            operation_info = await self.client.upsert(
                 collection_name=collection_name,
                 points=points,
                 wait=True
@@ -141,6 +224,7 @@ class QdrantService:
                 "message": str(e)
             }
     
+    @database_retry
     async def search_vectors(
         self,
         collection_name: str,
@@ -149,12 +233,15 @@ class QdrantService:
         score_threshold: float = 0.0,
         filter_conditions: Optional[Filter] = None
     ) -> List[Dict[str, Any]]:
-        """Perform vector similarity search"""
+        """Perform vector similarity search with error handling"""
         if not self.initialized or not self.client:
-            raise RuntimeError("Qdrant service not initialized")
+            raise VectorDatabaseException(
+                "Qdrant service not initialized",
+                context={"collection_name": collection_name, "limit": limit}
+            )
             
         try:
-            search_results = self.client.search(
+            search_results = await self.client.search(
                 collection_name=collection_name,
                 query_vector=("dense", query_vector),
                 limit=limit,
@@ -175,7 +262,18 @@ class QdrantService:
             return results
             
         except Exception as e:
-            logger.error(f"Vector search failed for {collection_name}: {e}")
+            await error_handler.handle_error(
+                e,
+                context={
+                    "collection_name": collection_name,
+                    "limit": limit,
+                    "score_threshold": score_threshold
+                },
+                operation_name="search_vectors"
+            )
+            
+            # Return empty results for graceful degradation
+            logger.warning(f"Vector search failed for {collection_name}, returning empty results")
             return []
     
     async def scroll_collection(
@@ -189,7 +287,7 @@ class QdrantService:
             raise RuntimeError("Qdrant service not initialized")
             
         try:
-            scroll_result = self.client.scroll(
+            scroll_result = await self.client.scroll(
                 collection_name=collection_name,
                 limit=limit,
                 scroll_filter=filter_conditions,
@@ -288,23 +386,131 @@ class QdrantService:
             if not self.initialized:
                 return {"healthy": False, "message": "Service not initialized"}
             
-            collections = self.client.get_collections()
+            collections_response = await self.client.get_collections()
+            # AsyncQdrantClient returns response with .result.collections structure
             return {
                 "healthy": True,
-                "collections_count": len(collections.collections),
+                "collections_count": len(collections_response.result.collections),
                 "endpoint": f"{self.host}:{self.grpc_port}"
             }
             
         except Exception as e:
             return {"healthy": False, "error": str(e)}
     
+    async def get_collections(self) -> List[str]:
+        """Get list of all collection names"""
+        if not self.initialized or not self.client:
+            return []
+            
+        try:
+            collections_response = await self.client.get_collections()
+            # AsyncQdrantClient returns response with .result.collections structure
+            return [col.name for col in collections_response.result.collections]
+            
+        except Exception as e:
+            logger.error(f"Failed to get collections: {e}")
+            return []
+    
+    async def get_collection(self, collection_name: str):
+        """Get collection information (raw client method wrapper)"""
+        if not self.initialized or not self.client:
+            raise RuntimeError("Qdrant service not initialized")
+            
+        try:
+            return await self.client.get_collection(collection_name)
+        except Exception as e:
+            logger.error(f"Failed to get collection {collection_name}: {e}")
+            raise
+    
+    async def delete_collection(self, collection_name: str) -> bool:
+        """Delete a collection"""
+        if not self.initialized or not self.client:
+            raise RuntimeError("Qdrant service not initialized")
+            
+        try:
+            await self.client.delete_collection(collection_name)
+            logger.info(f"Deleted collection: {collection_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete collection {collection_name}: {e}")
+            return False
+
+    async def delete_points(
+        self,
+        collection_name: str,
+        points_selector: Optional[List[str]] = None,
+        filter_conditions: Optional[Filter] = None
+    ) -> Dict[str, Any]:
+        """Delete points by IDs or filter conditions
+        
+        Args:
+            collection_name: Name of the collection
+            points_selector: List of point IDs to delete
+            filter_conditions: Qdrant Filter object for conditional deletion
+            
+        Returns:
+            Dict with operation status and details
+        """
+        if not self.initialized or not self.client:
+            return {"status": "error", "message": "Service not initialized"}
+
+        if not points_selector and not filter_conditions:
+            return {"status": "error", "message": "Either points_selector or filter_conditions must be provided"}
+
+        try:
+            # Import required models
+            from qdrant_client.models import PointIdsList, FilterSelector, Filter as QFilter
+
+            # Determine selector type (accept PointIdsList or list[str])
+            selector = None
+            if points_selector is not None:
+                if isinstance(points_selector, PointIdsList):
+                    selector = points_selector
+                    logger.info(f"Deleting points by IDs (PointIdsList) from {collection_name}")
+                elif isinstance(points_selector, list):
+                    selector = PointIdsList(points=points_selector)
+                    logger.info(f"Deleting {len(points_selector)} points by IDs from {collection_name}")
+                else:
+                    return {"status": "error", "message": "Unsupported points_selector type"}
+            else:
+                # Delete by filter conditions (accept FilterSelector, Filter, or dict)
+                if isinstance(filter_conditions, FilterSelector):
+                    selector = filter_conditions
+                elif isinstance(filter_conditions, QFilter):
+                    selector = FilterSelector(filter=filter_conditions)
+                elif isinstance(filter_conditions, dict):
+                    # Best-effort conversion from dict to Qdrant Filter
+                    selector = FilterSelector(filter=QFilter(**filter_conditions))
+                else:
+                    return {"status": "error", "message": "Unsupported filter_conditions type"}
+
+            # Perform deletion
+            operation_info = await self.client.delete(
+                collection_name=collection_name,
+                points_selector=selector,
+                wait=True
+            )
+
+            return {
+                "status": "success",
+                "operation_id": getattr(operation_info, 'operation_id', None),
+                "selector_type": "ids" if points_selector is not None else "filter"
+            }
+
+        except Exception as e:
+            logger.error(f"Delete points failed for {collection_name}: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+
     async def get_collection_info(self, collection_name: str) -> Dict[str, Any]:
         """Get collection information and statistics"""
         if not self.initialized or not self.client:
             return {"exists": False, "message": "Service not initialized"}
             
         try:
-            collection_info = self.client.get_collection(collection_name)
+            collection_info = await self.client.get_collection(collection_name)
             return {
                 "exists": True,
                 "points_count": collection_info.points_count,

@@ -184,7 +184,7 @@ class IndexerRunner:
         
         # Run health server in background task
         self.health_task = asyncio.create_task(self.health_server.serve())
-        logger.info("Health server started on port 8080")
+        logger.info("Health server started on port 8080 (external: 48080)")
         
     async def run_indexer(self, project_path: str, project_name: str, initial_index: bool):
         """Run the neural indexer service"""
@@ -199,25 +199,65 @@ class IndexerRunner:
             # Initialize service container with real services
             container = ServiceContainer()
             
-            # Create and configure indexer
+            # Create and configure indexer with proper parameters
             self.indexer = IncrementalIndexer(
-                project_path=Path(project_path),
+                project_path=project_path,  # Pass as string, not Path
                 project_name=project_name,
                 container=container
             )
             
+            # Initialize async queue for docker sidecar runner
+            if self.indexer.pending_queue is None:
+                self.indexer.pending_queue = asyncio.Queue(maxsize=self.indexer.max_queue_size)
+                logger.info(f"Initialized pending queue in docker runner with max size {self.indexer.max_queue_size}")
+            
             # Set health status to healthy
             health_status.set(1)
+            
+            # Initialize services if needed
+            if hasattr(self.indexer, 'initialize_services'):
+                logger.info("Initializing indexer services...")
+                await self.indexer.initialize_services()
             
             # Perform initial indexing if requested
             if initial_index:
                 logger.info("Performing initial project indexing...")
-                await self.indexer.initial_index()
+                if hasattr(self.indexer, 'initial_index'):
+                    await self.indexer.initial_index()
+                elif hasattr(self.indexer, 'index_project'):
+                    await self.indexer.index_project()
+                else:
+                    logger.warning("No initial indexing method found on indexer")
                 logger.info("Initial indexing complete")
             
             # Start continuous monitoring
             logger.info("Starting continuous file monitoring...")
-            await self.indexer.start_monitoring()
+            if hasattr(self.indexer, 'start_monitoring'):
+                await self.indexer.start_monitoring()
+            elif hasattr(self.indexer, 'start_watching'):
+                await self.indexer.start_watching()
+            else:
+                # Start basic file monitoring manually
+                from watchdog.observers import Observer
+                from servers.services.indexer_service import DebouncedEventHandler
+                
+                observer = Observer()
+                event_handler = DebouncedEventHandler(self.indexer)
+                observer.schedule(event_handler, project_path, recursive=True)
+                observer.start()
+                self.indexer.observer = observer
+                
+                logger.info("File monitoring started with watchdog observer")
+                
+                # Keep the service running
+                try:
+                    while not self.shutdown_event.is_set():
+                        await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    logger.info("Monitoring task cancelled")
+                finally:
+                    observer.stop()
+                    observer.join()
             
         except Exception as e:
             logger.error(f"Error in indexer service: {e}", exc_info=True)

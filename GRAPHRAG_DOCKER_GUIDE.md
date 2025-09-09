@@ -51,9 +51,9 @@ docker run -d --name l9-graphrag \
 
 ```
 Container Structure:
-├── /app/src/servers/neural_server_stdio.py  # MCP server with GraphRAG tools
+├── /app/src/mcp/neural_server_stdio.py  # MCP server with GraphRAG tools (canonical)
 ├── /app/neural-tools-src/services/indexer_service.py  # File indexing with GraphRAG
-├── /app/src/services/hybrid_retriever.py  # GraphRAG query implementation
+├── /app/src/servers/services/hybrid_retriever.py  # GraphRAG query implementation
 ├── /app/config/supervisord.conf  # Service management
 └── /app/.neural-tools/  # Neo4j + Qdrant data (mounted volume)
 ```

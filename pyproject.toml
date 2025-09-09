@@ -92,6 +92,14 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-report=html",
 ]
+markers = [
+    "benchmark: marks tests as performance benchmarks",
+    "resilience: marks tests as resilience/recovery tests",
+    "accuracy: marks tests as accuracy validation tests", 
+    "stress: marks tests as stress/load tests",
+    "integration: marks tests as integration tests",
+    "contract: marks tests as API contract validation tests"
+]
 
 [tool.coverage.run]
 source = ["src"]

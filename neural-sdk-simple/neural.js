@@ -53,18 +53,26 @@ async function createMCPConfig(projectInfo, configPath) {
     command: 'docker',
     args: [
       'exec',
-      '-i', 
-      'neural-multi-project-final', // Use our existing container
+      '-i',
+      '-e', 'QDRANT_HOST=default-neural-storage',
+      '-e', 'QDRANT_HTTP_PORT=6333',
+      '-e', 'QDRANT_GRPC_PORT=6334',
+      '-e', 'NEO4J_HOST=default-neo4j-graph',
+      '-e', 'NEO4J_PORT=7687',
+      '-e', 'NEO4J_USERNAME=neo4j',
+      '-e', 'NEO4J_PASSWORD=neural-l9-2025',
+      '-e', 'EMBEDDING_SERVICE_HOST=neural-embeddings',
+      '-e', 'EMBEDDING_SERVICE_PORT=8000',
+      '-e', `PYTHONPATH=/app/src`,
+      '-e', `PROJECT_NAME=${projectInfo.name}`,
+      '-e', `PROJECT_DIR=/app/project`,
+      '-e', 'PYTHONUNBUFFERED=1',
+      'default-neural',
       'python3',
       '-u',
-      '/app/neural-tools-src/servers/neural_server_stdio.py'
+      '/app/src/mcp/neural_server_stdio.py'
     ],
-    env: {
-      PROJECT_NAME: projectInfo.name,
-      PROJECT_DIR: `/workspace/${projectInfo.name}`,
-      PYTHONUNBUFFERED: '1'
-    },
-    description: `Neural Tools GraphRAG for ${projectInfo.name} - Auto-configured`
+    description: `Neural Tools GraphRAG for ${projectInfo.name} - L9 Enhanced`
   };
   
   await fs.ensureDir(path.dirname(configPath));

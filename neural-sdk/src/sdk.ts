@@ -6,6 +6,8 @@ import { ContainerManager } from './container-manager';
 import { MCPConfigManager } from './mcp-config';
 import { ProjectDetector, ProjectInfo } from './project-detector';
 import { FileWatcher } from './file-watcher';
+import { createNeuralMCPClient, testMCPConnection } from './mcp-client';
+import { MCPContractValidator, ValidationResult, formatValidationReport } from './contract/validator';
 import chalk from 'chalk';
 import path from 'path';
 import os from 'os';
@@ -15,6 +17,7 @@ export interface InitializeOptions {
   port?: number;
   autoStart?: boolean;
   customImage?: string;
+  enableContractValidation?: boolean;
 }
 
 export interface SystemStatus {
@@ -27,6 +30,7 @@ export interface SystemStatus {
   mcp: {
     configured: boolean;
     configPath: string;
+    contractValid?: boolean;
   };
   project: {
     name: string;
@@ -97,7 +101,7 @@ export class NeuralSDK {
     
     // Step 6: Validate
     logStep('Validating setup...');
-    await this.validateSetup(projectInfo);
+    await this.validateSetup(projectInfo, options.enableContractValidation);
     
     console.log(chalk.green('🎉 Neural Tools ready!'));
   }
@@ -118,9 +122,23 @@ export class NeuralSDK {
     // Get project metrics
     const projectStats = await this.getProjectStats(projectInfo);
     
+    // Test contract validation if configured
+    let contractValid: boolean | undefined;
+    if (mcpStatus.configured) {
+      try {
+        const contractResult = await this.validateMCPContract(projectInfo);
+        contractValid = contractResult.success;
+      } catch (error) {
+        contractValid = false;
+      }
+    }
+    
     return {
       containers,
-      mcp: mcpStatus,
+      mcp: {
+        ...mcpStatus,
+        contractValid
+      },
       project: {
         name: projectInfo.name,
         path: projectInfo.path,
@@ -172,7 +190,7 @@ export class NeuralSDK {
   /**
    * Validate that everything is working
    */
-  private async validateSetup(projectInfo: ProjectInfo): Promise<void> {
+  private async validateSetup(projectInfo: ProjectInfo, enableContractValidation?: boolean): Promise<void> {
     // Test container connectivity
     const healthy = await this.containerManager.healthCheck(projectInfo.name);
     if (!healthy) {
@@ -187,6 +205,19 @@ export class NeuralSDK {
     
     // Test basic functionality
     await this.testBasicFunctionality(projectInfo);
+    
+    // Optional contract validation
+    if (enableContractValidation) {
+      console.log(chalk.blue('Running contract validation...'));
+      const contractResult = await this.validateMCPContract(projectInfo);
+      
+      if (!contractResult.success) {
+        console.log(chalk.yellow('⚠️  Contract validation warnings:'));
+        console.log(formatValidationReport(contractResult));
+      } else {
+        console.log(chalk.green('✅ All contracts validated successfully'));
+      }
+    }
   }
   
   /**
@@ -199,6 +230,120 @@ export class NeuralSDK {
       await this.containerManager.testMCPConnection(projectInfo.name);
     } catch (error) {
       throw new Error(`MCP functionality test failed: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Validate MCP contract compatibility
+   */
+  async validateMCPContract(projectInfo: ProjectInfo, options?: {
+    includeExecutionTests?: boolean;
+    performanceThresholdMs?: number;
+    testToolNames?: string[];
+  }): Promise<ValidationResult> {
+    try {
+      // Create MCP client for contract testing
+      const client = await createNeuralMCPClient(projectInfo.path);
+      await client.connect();
+      
+      // First check API version compatibility
+      const validator = new MCPContractValidator(client, {
+        apiVersion: '1.0.0',
+        includeExecutionTests: options?.includeExecutionTests || false,
+        performanceThresholdMs: options?.performanceThresholdMs || 5000,
+        testToolNames: options?.testToolNames
+      });
+      
+      const versionCheck = await validator.checkApiVersion();
+      
+      // Run contract validation
+      const result = await validator.validateAllTools();
+      
+      // Add version compatibility warnings
+      if (!versionCheck.compatible) {
+        result.warnings.unshift({
+          type: 'version_mismatch',
+          toolName: 'version_compatibility',
+          message: `Version mismatch: Client expects ${versionCheck.clientVersion}, Server reports ${versionCheck.serverVersion}`
+        });
+      }
+      
+      // Cleanup
+      await client.disconnect();
+      
+      return result;
+      
+    } catch (error) {
+      return {
+        success: false,
+        errors: [{
+          type: 'execution_error',
+          toolName: 'contract_validator',
+          message: `Contract validation failed: ${error instanceof Error ? error.message : String(error)}`
+        }],
+        warnings: [],
+        totalTests: 0,
+        passedTests: 0,
+        executionTimeMs: 0
+      };
+    }
+  }
+  
+  /**
+   * Check API version compatibility
+   */
+  async checkApiCompatibility(projectInfo: ProjectInfo): Promise<{
+    compatible: boolean;
+    clientVersion: string;
+    serverVersion?: string;
+    message?: string;
+  }> {
+    try {
+      const client = await createNeuralMCPClient(projectInfo.path);
+      await client.connect();
+      
+      const validator = new MCPContractValidator(client, {
+        apiVersion: '1.0.0'
+      });
+      
+      const versionCheck = await validator.checkApiVersion();
+      
+      await client.disconnect();
+      
+      return {
+        ...versionCheck,
+        message: versionCheck.compatible 
+          ? `API versions compatible (${versionCheck.clientVersion})`
+          : `API version mismatch: client ${versionCheck.clientVersion}, server ${versionCheck.serverVersion}`
+      };
+      
+    } catch (error) {
+      return {
+        compatible: false,
+        clientVersion: '1.0.0',
+        serverVersion: 'error',
+        message: `Version check failed: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+  }
+  
+  /**
+   * Test MCP connection and basic functionality
+   */
+  async testMCPConnection(projectInfo: ProjectInfo): Promise<{
+    connected: boolean;
+    error?: string;
+    tools?: string[];
+    responseTime?: number;
+  }> {
+    try {
+      const client = await createNeuralMCPClient(projectInfo.path);
+      return await testMCPConnection(client);
+    } catch (error) {
+      return {
+        connected: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
     }
   }
   

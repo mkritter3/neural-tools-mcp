@@ -341,11 +341,10 @@ async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextCo
         # Use Qdrant client wrapper
         collection_name = f"project_{project_name}_code"
         try:
-            search_results = await container.qdrant.search(
+            search_results = await container.qdrant.search_vectors(
                 collection_name=collection_name,
                 query_vector=query_vector,
-                limit=limit,
-                with_payload=True
+                limit=limit
             )
         except Exception as e:
             logger.error(f"Qdrant search failed: {e}")
@@ -353,10 +352,16 @@ async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextCo
 
         formatted = []
         for hit in search_results:
-            payload = hit.payload if hasattr(hit, 'payload') else hit
+            if isinstance(hit, dict):
+                payload = hit.get("payload", {})
+                score = hit.get("score", 0.0)
+            else:
+                # Fallback for client object shape
+                payload = getattr(hit, 'payload', {}) or {}
+                score = float(getattr(hit, 'score', 0.0))
             content = payload.get("content", "")
             formatted.append({
-                "score": getattr(hit, 'score', payload.get("score", 1.0)),
+                "score": float(score),
                 "file_path": payload.get("file_path", ""),
                 "snippet": (content[:200] + "...") if len(content) > 200 else content
             })
@@ -545,8 +550,8 @@ async def indexer_status_impl() -> List[types.TextContent]:
     
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            # Try to connect to indexer sidecar on localhost:8080
-            response = await client.get("http://localhost:8080/status")
+            # Try to connect to indexer sidecar on localhost:48080
+            response = await client.get("http://localhost:48080/status")
             
             if response.status_code == 200:
                 status_data = response.json()
@@ -582,7 +587,7 @@ async def indexer_status_impl() -> List[types.TextContent]:
             type="text",
             text=json.dumps({
                 "indexer_status": "disconnected",
-                "error": "Could not connect to indexer sidecar on localhost:8080",
+                "error": "Could not connect to indexer sidecar on localhost:48080",
                 "sidecar_connection": "failed",
                 "note": "Indexer sidecar may not be running in container mode"
             }, indent=2)
@@ -612,7 +617,7 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Send reindex request to sidecar
             response = await client.post(
-                "http://localhost:8080/reindex-path",
+                "http://localhost:48080/reindex-path",
                 params={"path": path}
             )
             
@@ -641,7 +646,7 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
             type="text",
             text=json.dumps({
                 "status": "failed",
-                "error": "Could not connect to indexer sidecar on localhost:8080",
+                "error": "Could not connect to indexer sidecar on localhost:48080",
                 "path": path,
                 "note": "Indexer sidecar may not be running in container mode"
             }, indent=2)

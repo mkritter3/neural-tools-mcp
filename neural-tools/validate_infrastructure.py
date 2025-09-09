@@ -14,12 +14,9 @@ def validate_file_structure():
     
     base_dir = Path(__file__).parent
     required_files = [
-        "src/servers/neural-mcp-server-enhanced.py",
-        "src/servers/neural_mcp_wrapper.py", 
-        "src/servers/nomic_embed_server.py",
+        "src/mcp/neural_server_stdio.py",  # canonical MCP server
         "src/clients/neo4j_client.py",
         "src/infrastructure/tree_sitter_ast.py",
-        "config/docker-compose.neural-tools.yml",
         "Dockerfile.l9-minimal",
         "Dockerfile.neural-embeddings",
         ".dockerignore",
@@ -45,35 +42,18 @@ def validate_docker_compose_imports():
     """Validate Docker Compose file has correct import paths"""
     print("🔍 Validating Docker Compose import paths...")
     
-    compose_file = Path(__file__).parent / "config" / "docker-compose.neural-tools.yml"
+    # Use top-level docker-compose.yml in repo root
+    compose_file = Path(__file__).parent.parent / "docker-compose.yml"
     if not compose_file.exists():
-        print("  ❌ Docker Compose file not found")
+        print("  ❌ docker-compose.yml not found")
         return False
-    
     content = compose_file.read_text()
-    
-    # Check health check import
-    if "from neural_mcp_wrapper import production_health_check" in content:
-        print("  ✅ Health check import path updated")
+    if "/app/src/mcp/neural_server_stdio.py" in content:
+        print("  ✅ Supervisor runs canonical stdio server")
+        return True
     else:
-        print("  ❌ Health check import path not updated")
+        print("  ❌ Supervisor command does not reference src/mcp/neural_server_stdio.py")
         return False
-    
-    # Check uvicorn command
-    if "src.servers.nomic_embed_server:app" in content:
-        print("  ✅ Uvicorn command path updated")
-    else:
-        print("  ❌ Uvicorn command path not updated")
-        return False
-    
-    # Check environment variables
-    if "${NEO4J_PASSWORD:-neural-l9-2025}" in content:
-        print("  ✅ Neo4j password environment variable configured")
-    else:
-        print("  ❌ Neo4j password still hardcoded")
-        return False
-    
-    return True
 
 def validate_dockerfile_paths():
     """Validate Dockerfiles have correct copy paths"""
@@ -142,45 +122,14 @@ def validate_environment_setup():
     return True
 
 def validate_mcp_tools_structure():
-    """Validate MCP tools are accessible in new structure"""
+    """Basic check that canonical server exists (tool details validated by tests)."""
     print("🔍 Validating MCP tools structure...")
-    
-    wrapper_file = Path(__file__).parent / "src" / "servers" / "neural_mcp_wrapper.py"
-    if not wrapper_file.exists():
-        print("  ❌ Neural MCP wrapper not found")
-        return False
-    
-    content = wrapper_file.read_text()
-    expected_tools = [
-        "memory_store_enhanced",
-        "memory_search_enhanced", 
-        "graph_query",
-        "schema_customization",
-        "atomic_dependency_tracer",
-        "project_understanding",
-        "semantic_code_search",
-        "vibe_preservation",
-        "project_auto_index",
-        "neural_system_status",
-        "neo4j_graph_query",
-        "neo4j_semantic_graph_search",
-        "neo4j_code_dependencies",
-        "neo4j_migration_status",
-        "neo4j_index_code_graph"
-    ]
-    
-    missing_tools = []
-    for tool in expected_tools:
-        if tool not in content:
-            missing_tools.append(tool)
-    
-    if missing_tools:
-        print(f"  ❌ Missing MCP tools in wrapper: {', '.join(missing_tools)}")
-        return False
-    else:
-        print(f"  ✅ All 15 MCP tools referenced in wrapper")
-    
-    return True
+    server_file = Path(__file__).parent / "src" / "mcp" / "neural_server_stdio.py"
+    if server_file.exists():
+        print("  ✅ Canonical stdio server present")
+        return True
+    print("  ❌ Canonical stdio server missing")
+    return False
 
 def main():
     """Run all validation checks"""

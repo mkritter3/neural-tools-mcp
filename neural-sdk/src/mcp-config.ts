@@ -55,7 +55,7 @@ export class MCPConfigManager {
         `neural-${projectInfo.name}`,
         'python3',
         '-u',
-        '/app/src/neural_mcp/neural_server_stdio.py',
+        '/app/src/mcp/neural_server_stdio.py',
         ...(options.customArgs || [])
       ],
       env: {
@@ -210,7 +210,7 @@ export class MCPConfigManager {
           `neural-${projectInfo.name}`,
           'python3',
           '-u',
-          '/app/src/neural_mcp/neural_server_stdio.py'
+          '/app/src/mcp/neural_server_stdio.py'
         ];
         serverConfig.args = [...baseArgs, ...updates.customArgs];
       }

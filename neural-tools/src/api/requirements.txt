@@ -1,0 +1,19 @@
+# FastAPI Neural Search API Dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.4.0
+httpx>=0.25.0
+watchdog>=3.0.0
+
+# CLI Dependencies
+typer>=0.9.0
+psutil>=5.9.0
+
+# Already available from neural-tools
+# qdrant-client>=1.6.0
+# asyncio (built-in)
+# pathlib (built-in)
+# hashlib (built-in)
+# uuid (built-in)
+# time (built-in)
+# logging (built-in)

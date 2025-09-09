@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-MCP STDIO Wrapper for Neural Tools Server
-Provides stdio-based MCP communication for Claude Code integration
+DEPRECATED: Legacy MCP STDIO wrapper
+
+Use the unified stdio server instead:
+  neural-tools/run_mcp_server.py  (which launches src/servers/neural_server_stdio.py)
+
+This file is kept for backward compatibility but should not be used in new setups.
 """
 
 import asyncio

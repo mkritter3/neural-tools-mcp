@@ -1,29 +1,24 @@
 {
   "mcpServers": {
-    "neural-tools-claude-l9-template": {
-      "command": "docker",
-      "args": [
-        "exec",
-        "-i",
-        "-e", "QDRANT_HOST=default-neural-storage",
-        "-e", "QDRANT_HTTP_PORT=6333",
-        "-e", "QDRANT_GRPC_PORT=6334",
-        "-e", "NEO4J_HOST=default-neo4j-graph",
-        "-e", "NEO4J_PORT=7687",
-        "-e", "NEO4J_USERNAME=neo4j",
-        "-e", "NEO4J_PASSWORD=neural-l9-2025",
-        "-e", "EMBEDDING_SERVICE_HOST=neural-embeddings",
-        "-e", "EMBEDDING_SERVICE_PORT=8000",
-        "-e", "PYTHONPATH=/app/project/neural-tools/src",
-        "-e", "PROJECT_NAME=claude-l9-template",
-        "-e", "PROJECT_DIR=/app/project",
-        "-e", "PYTHONUNBUFFERED=1",
-        "default-neural",
-        "python3",
-        "-u",
-        "/app/project/neural-tools/src/servers/neural_server_stdio.py"
-      ],
-      "description": "Neural Tools GraphRAG for claude-l9-template - L9 Enhanced"
+    "neural-tools": {
+      "command": "python3",
+      "args": ["/Users/mkr/local-coding/claude-l9-template/neural-tools/run_mcp_server.py"],
+      "cwd": "/Users/mkr/local-coding/claude-l9-template",
+      "env": {
+        "PYTHONPATH": "/Users/mkr/local-coding/claude-l9-template/neural-tools/src",
+        "PROJECT_NAME": "default",
+        "NEO4J_URI": "bolt://localhost:47687",
+        "QDRANT_HOST": "localhost",
+        "QDRANT_PORT": "46333",
+        "EMBED_DIM": "768",
+        "PYTHONUNBUFFERED": "1",
+        "REDIS_CACHE_HOST": "localhost",
+        "REDIS_CACHE_PORT": "46379",
+        "REDIS_CACHE_PASSWORD": "cache-secret-key",
+        "REDIS_QUEUE_HOST": "localhost",
+        "REDIS_QUEUE_PORT": "46380",
+        "REDIS_QUEUE_PASSWORD": "queue-secret-key"
+      }
     }
   }
 }

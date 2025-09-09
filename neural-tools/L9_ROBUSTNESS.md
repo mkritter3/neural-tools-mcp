@@ -105,7 +105,7 @@ python3 neural-tools/src/servers/health_check.py
 # Test MCP server directly
 echo '{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "Test", "version": "1.0"}}}' | \
 docker exec -i -e NEO4J_PORT=7688 -e QDRANT_HTTP_PORT=6681 [...] default-neural \
-python3 -u /app/project/neural-tools/src/servers/neural_server_stdio.py
+python3 -u /app/src/mcp/neural_server_stdio.py
 ```
 
 ## What NOT to Do (Avoiding Overengineering)

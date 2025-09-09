@@ -3,10 +3,14 @@
 GraphRAG Hybrid Retriever for L9 Neural Tools
 Combines Qdrant semantic search with Neo4j graph traversal
 Enables powerful hybrid queries across both databases
+Enhanced with caching layer for improved performance
 """
 
 import asyncio
+import hashlib
+import json
 import logging
+import time
 from typing import List, Dict, Optional, Any, Tuple
 from pathlib import Path
 
@@ -63,11 +67,10 @@ class HybridRetriever:
             
             # Step 2: Semantic search in Qdrant
             collection_name = f"{self.collection_prefix}code"
-            search_results = await self.container.qdrant.search(
+            search_results = await self.container.qdrant.search_vectors(
                 collection_name=collection_name,
                 query_vector=query_vector,
-                limit=limit,
-                with_payload=True
+                limit=limit
             )
             
             if not search_results:
@@ -78,20 +81,26 @@ class HybridRetriever:
             chunk_ids = []
             
             for hit in search_results:
+                if isinstance(hit, dict):
+                    _payload = hit.get('payload', {})
+                    _score = hit.get('score', 0.0)
+                else:
+                    _payload = getattr(hit, 'payload', {}) or {}
+                    _score = float(getattr(hit, 'score', 0.0))
                 result = {
-                    'score': hit.score,
-                    'chunk_id': hit.payload.get('chunk_hash'),
-                    'neo4j_chunk_id': hit.payload.get('neo4j_chunk_id'),
-                    'file_path': hit.payload.get('file_path'),
-                    'content': hit.payload.get('content'),
-                    'start_line': hit.payload.get('start_line'),
-                    'end_line': hit.payload.get('end_line'),
-                    'file_type': hit.payload.get('file_type')
+                    'score': float(_score),
+                    'chunk_id': _payload.get('chunk_hash'),
+                    'neo4j_chunk_id': _payload.get('neo4j_chunk_id'),
+                    'file_path': _payload.get('file_path'),
+                    'content': _payload.get('content'),
+                    'start_line': _payload.get('start_line'),
+                    'end_line': _payload.get('end_line'),
+                    'file_type': _payload.get('file_type')
                 }
                 results.append(result)
                 
-                if hit.payload.get('neo4j_chunk_id'):
-                    chunk_ids.append(hit.payload['neo4j_chunk_id'])
+                if _payload.get('neo4j_chunk_id'):
+                    chunk_ids.append(_payload['neo4j_chunk_id'])
             
             # Step 3: Enrich with graph context from Neo4j
             if include_graph_context and chunk_ids and self.container.neo4j:
@@ -420,6 +429,242 @@ class HybridRetriever:
             recommendations.append(f"Run tests for all {affected_count} affected files")
         
         return recommendations
+
+class CachedHybridRetriever:
+    """
+    Cached wrapper around HybridRetriever for improved performance
+    Implements transparent caching with configurable TTL
+    """
+    
+    def __init__(self, hybrid_retriever: HybridRetriever, cache_ttl: int = 300):
+        """
+        Initialize cached retriever
+        
+        Args:
+            hybrid_retriever: Instance of HybridRetriever to wrap
+            cache_ttl: Cache TTL in seconds (default 5 minutes)
+        """
+        self.retriever = hybrid_retriever
+        self.cache_ttl = cache_ttl
+        self._cache: Dict[str, Tuple[Any, float]] = {}  # key -> (result, expiry_time)
+        
+        # Cache metrics
+        self.metrics = {
+            'hits': 0,
+            'misses': 0,
+            'total_queries': 0,
+            'cache_size': 0,
+            'avg_response_time_ms': 0
+        }
+        
+        logger.info(f"Initialized cached hybrid retriever with {cache_ttl}s TTL")
+    
+    def _generate_cache_key(self, method: str, **kwargs) -> str:
+        """Generate cache key for method call with parameters"""
+        key_data = {
+            'method': method,
+            'project': self.retriever.container.project_name,
+            **kwargs
+        }
+        
+        # Sort and serialize for consistent keys
+        key_string = json.dumps(key_data, sort_keys=True, default=str)
+        return hashlib.md5(key_string.encode()).hexdigest()
+    
+    def _is_cache_valid(self, key: str) -> bool:
+        """Check if cache entry is still valid"""
+        if key not in self._cache:
+            return False
+        
+        _, expiry_time = self._cache[key]
+        return time.time() < expiry_time
+    
+    def _get_from_cache(self, key: str) -> Optional[Any]:
+        """Get value from cache if valid"""
+        if self._is_cache_valid(key):
+            result, _ = self._cache[key]
+            self.metrics['hits'] += 1
+            return result
+        
+        # Remove expired entry
+        if key in self._cache:
+            del self._cache[key]
+        
+        self.metrics['misses'] += 1
+        return None
+    
+    def _set_cache(self, key: str, value: Any) -> None:
+        """Set value in cache with TTL"""
+        expiry_time = time.time() + self.cache_ttl
+        self._cache[key] = (value, expiry_time)
+        self.metrics['cache_size'] = len(self._cache)
+    
+    async def find_similar_with_context(
+        self,
+        query: str,
+        limit: int = 5,
+        include_graph_context: bool = True,
+        max_hops: int = 2
+    ) -> List[Dict[str, Any]]:
+        """
+        Cached version of find_similar_with_context
+        """
+        start_time = time.time()
+        self.metrics['total_queries'] += 1
+        
+        # Generate cache key
+        cache_key = self._generate_cache_key(
+            method='find_similar_with_context',
+            query=query.strip().lower(),
+            limit=limit,
+            include_graph_context=include_graph_context,
+            max_hops=max_hops
+        )
+        
+        # Try cache first
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result is not None:
+            response_time = (time.time() - start_time) * 1000
+            logger.debug(f"Cache HIT for query '{query[:50]}...' ({response_time:.1f}ms)")
+            return cached_result
+        
+        # Cache miss - compute result
+        logger.debug(f"Cache MISS for query '{query[:50]}...'")
+        
+        result = await self.retriever.find_similar_with_context(
+            query=query,
+            limit=limit,
+            include_graph_context=include_graph_context,
+            max_hops=max_hops
+        )
+        
+        # Cache the result
+        self._set_cache(cache_key, result)
+        
+        response_time = (time.time() - start_time) * 1000
+        logger.debug(f"Query computed and cached ({response_time:.1f}ms)")
+        
+        # Update average response time
+        total_time = self.metrics['avg_response_time_ms'] * (self.metrics['total_queries'] - 1)
+        self.metrics['avg_response_time_ms'] = (total_time + response_time) / self.metrics['total_queries']
+        
+        return result
+    
+    async def find_dependencies(
+        self,
+        file_path: str,
+        direction: str = 'both'
+    ) -> Dict[str, List[str]]:
+        """Cached version of find_dependencies"""
+        cache_key = self._generate_cache_key(
+            method='find_dependencies',
+            file_path=file_path,
+            direction=direction
+        )
+        
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result is not None:
+            return cached_result
+        
+        result = await self.retriever.find_dependencies(file_path, direction)
+        self._set_cache(cache_key, result)
+        
+        return result
+    
+    async def analyze_impact(
+        self,
+        file_path: str,
+        change_type: str = 'modify'
+    ) -> Dict[str, Any]:
+        """Cached version of analyze_impact"""
+        cache_key = self._generate_cache_key(
+            method='analyze_impact',
+            file_path=file_path,
+            change_type=change_type
+        )
+        
+        cached_result = self._get_from_cache(cache_key)
+        if cached_result is not None:
+            return cached_result
+        
+        result = await self.retriever.analyze_impact(file_path, change_type)
+        self._set_cache(cache_key, result)
+        
+        return result
+    
+    def invalidate_file_cache(self, file_path: str) -> int:
+        """
+        Invalidate cache entries related to a specific file
+        Returns number of entries invalidated
+        """
+        keys_to_remove = []
+        
+        for key, (cached_data, _) in self._cache.items():
+            # Check if cached data contains references to the file
+            if isinstance(cached_data, (list, dict)):
+                data_str = json.dumps(cached_data, default=str).lower()
+                if file_path.lower() in data_str:
+                    keys_to_remove.append(key)
+            elif isinstance(cached_data, str) and file_path.lower() in cached_data.lower():
+                keys_to_remove.append(key)
+        
+        # Remove identified keys
+        for key in keys_to_remove:
+            del self._cache[key]
+        
+        self.metrics['cache_size'] = len(self._cache)
+        
+        if keys_to_remove:
+            logger.info(f"Invalidated {len(keys_to_remove)} cache entries for {file_path}")
+        
+        return len(keys_to_remove)
+    
+    def clear_cache(self) -> int:
+        """Clear all cache entries"""
+        cache_size = len(self._cache)
+        self._cache.clear()
+        self.metrics['cache_size'] = 0
+        
+        if cache_size > 0:
+            logger.info(f"Cleared {cache_size} cache entries")
+        
+        return cache_size
+    
+    def cleanup_expired(self) -> int:
+        """Remove expired cache entries"""
+        current_time = time.time()
+        expired_keys = []
+        
+        for key, (_, expiry_time) in self._cache.items():
+            if current_time >= expiry_time:
+                expired_keys.append(key)
+        
+        for key in expired_keys:
+            del self._cache[key]
+        
+        self.metrics['cache_size'] = len(self._cache)
+        
+        if expired_keys:
+            logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
+        
+        return len(expired_keys)
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache performance statistics"""
+        hit_rate = 0
+        if self.metrics['total_queries'] > 0:
+            hit_rate = (self.metrics['hits'] / self.metrics['total_queries']) * 100
+        
+        return {
+            'hit_rate_percent': hit_rate,
+            'cache_ttl_seconds': self.cache_ttl,
+            **self.metrics
+        }
+    
+    def reset_metrics(self) -> None:
+        """Reset cache metrics"""
+        for key in ['hits', 'misses', 'total_queries', 'avg_response_time_ms']:
+            self.metrics[key] = 0
 
 # Example usage
 async def example_usage():

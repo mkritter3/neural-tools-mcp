@@ -17,8 +17,8 @@ RUN groupadd -g 1000 indexer && useradd -u 1000 -g indexer indexer
 
 WORKDIR /app
 
-# Copy and install requirements as root (for system packages)
-COPY neural-tools/config/requirements-l9-enhanced.txt ./requirements.txt
+# Copy and install lean requirements (NO ML dependencies)
+COPY neural-tools/config/requirements-indexer-lean.txt ./requirements.txt
 
 # Install Python dependencies with cache mount
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -26,6 +26,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir fastapi uvicorn[standard] prometheus-client
 
 # Copy source code
+ARG CACHEBUST=1
 COPY neural-tools/src/ ./src/
 
 # Create directories with proper ownership

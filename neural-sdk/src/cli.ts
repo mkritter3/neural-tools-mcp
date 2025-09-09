@@ -28,6 +28,7 @@ program
   .option('-g, --global', 'Install globally for all projects')
   .option('-y, --yes', 'Skip interactive prompts')
   .option('--port <port>', 'Custom MCP port', '3000')
+  .option('--contract-validation', 'Enable contract validation during setup')
   .action(async (options) => {
     const spinner = ora('Initializing Neural Tools...').start();
     
@@ -57,7 +58,8 @@ program
       await sdk.initialize(projectInfo, {
         global: options.global,
         port: parseInt(options.port),
-        autoStart: true
+        autoStart: true,
+        enableContractValidation: options.contractValidation
       });
       
       spinner.succeed(`Neural Tools initialized for ${projectInfo.name}`);
@@ -68,6 +70,7 @@ program
       console.log('  neural watch     - Start file watching');
       console.log('  neural stop      - Stop services');
       console.log('  neural logs      - View logs');
+      console.log('  neural validate  - Validate contracts');
       console.log('\n💡 Your project files are now automatically indexed!');
       
     } catch (error) {
@@ -99,6 +102,11 @@ program
       console.log(chalk.bold('\nMCP Integration:'));
       const mcpIcon = status.mcp.configured ? '🟢' : '🔴';
       console.log(`  ${mcpIcon} Configuration: ${status.mcp.configured ? 'Active' : 'Missing'}`);
+      
+      if (status.mcp.configured && status.mcp.contractValid !== undefined) {
+        const contractIcon = status.mcp.contractValid ? '🟢' : '🔴';
+        console.log(`  ${contractIcon} Contract Validation: ${status.mcp.contractValid ? 'Valid' : 'Failed'}`);
+      }
       
       // Project status
       console.log(chalk.bold('\nProject:'));
@@ -177,6 +185,45 @@ program
       });
     } catch (error) {
       console.error(chalk.red(`Logs failed: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('validate')
+  .description('Validate MCP contracts and compatibility')
+  .option('--execution-tests', 'Include execution tests (slower but more thorough)')
+  .option('--performance-threshold <ms>', 'Performance threshold in milliseconds', '5000')
+  .option('--tools <tools>', 'Comma-separated list of specific tools to test')
+  .action(async (options) => {
+    const spinner = ora('Running contract validation...').start();
+    
+    try {
+      const detector = new ProjectDetector();
+      const projectInfo = await detector.detectProject(process.cwd());
+      
+      const result = await sdk.validateMCPContract(projectInfo);
+      spinner.stop();
+      
+      console.log(chalk.blue('🧪 MCP Contract Validation Results\n'));
+      
+      if (result.success) {
+        console.log(chalk.green('✅ All contracts validated successfully!'));
+      } else {
+        console.log(chalk.red('❌ Contract validation failed'));
+      }
+      
+      // Import formatValidationReport
+      const { formatValidationReport } = await import('./contract/validator');
+      console.log('\n' + formatValidationReport(result));
+      
+      // Exit with error code if validation failed
+      if (!result.success) {
+        process.exit(1);
+      }
+      
+    } catch (error) {
+      spinner.fail(`Contract validation failed: ${error.message}`);
       process.exit(1);
     }
   });

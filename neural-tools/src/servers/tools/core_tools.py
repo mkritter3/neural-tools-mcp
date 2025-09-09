@@ -49,9 +49,9 @@ def register_core_tools(mcp: FastMCP, container=None):
                 }
             
             try:
-                collections = qdrant_client.client.get_collections().collections
+                collection_names = await qdrant_client.get_collections()
                 collection_prefix = f"project_{PROJECT_NAME}_"
-                project_collections = [c.name for c in collections if c.name.startswith(collection_prefix)]
+                project_collections = [name for name in collection_names if name.startswith(collection_prefix)]
                 
                 understanding["indexed_categories"] = [
                     c.replace(collection_prefix, "") for c in project_collections
@@ -61,21 +61,31 @@ def register_core_tools(mcp: FastMCP, container=None):
                 code_collection = f"{collection_prefix}code"
                 if code_collection in project_collections:
                     # Get diverse samples using MMR-style selection
-                    search_results = qdrant_client.client.search(
+                    # Determine embed dimension (default 768)
+                    import os
+                    try:
+                        embed_dim = int(os.environ.get('EMBED_DIM', os.environ.get('EMBEDDING_DIMENSION', '768')))
+                    except Exception:
+                        embed_dim = 768
+                    neutral = [0.1] * embed_dim
+                    search_results = await qdrant_client.search_vectors(
                         collection_name=code_collection,
-                        query_vector=("dense", [0.1] * 1536),  # Neutral query with correct dimensions
-                        limit=10,
-                        with_payload=True
+                        query_vector=neutral,
+                        limit=10
                     )
                     
-                    understanding["code_patterns"] = [
-                        {
-                            "type": hit.payload.get("type", "unknown"),
-                            "category": hit.payload.get("category", "general"),
-                            "summary": hit.payload.get("content", "")[:100]
-                        }
-                        for hit in search_results
-                    ]
+                    patterns = []
+                    for hit in search_results:
+                        if isinstance(hit, dict):
+                            payload = hit.get('payload', {})
+                        else:
+                            payload = getattr(hit, 'payload', {}) or {}
+                        patterns.append({
+                            "type": payload.get("type", "unknown"),
+                            "category": payload.get("category", "general"),
+                            "summary": (payload.get("content", "") or "")[:100]
+                        })
+                    understanding["code_patterns"] = patterns
             except Exception as e:
                 logger.warning(f"Qdrant collection analysis failed: {e}")
             

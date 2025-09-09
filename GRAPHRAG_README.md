@@ -28,7 +28,7 @@ docker run -d --name l9-graphrag l9-mcp-graphrag:production
 ### Core Implementation
 - `neural-tools/src/services/hybrid_retriever.py` - GraphRAG query engine
 - `neural-tools/src/services/indexer_service.py` - Enhanced indexer with GraphRAG
-- `neural-tools/src/servers/neural_server_stdio.py` - MCP server with GraphRAG tools
+- `src/mcp/neural_server_stdio.py` - MCP server with GraphRAG tools (canonical)
 
 ### Configuration
 - `neural-tools/config/requirements-l9-enhanced.txt` - All dependencies (includes `watchdog`)

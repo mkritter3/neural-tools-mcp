@@ -48,7 +48,7 @@ MCP Client (Claude, VS Code, etc.)
 ## 🛠️ Development
 
 ### Add a New Tool
-1. Edit `src/servers/neural_server_stdio.py`
+1. Edit `src/mcp/neural_server_stdio.py` (canonical MCP stdio server)
 2. Test with `./build-and-run.sh --dev`
 3. Deploy with `./build-and-run.sh --rebuild`
 

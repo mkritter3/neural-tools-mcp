@@ -12,7 +12,7 @@ import hashlib
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, Set, Optional, List, Tuple
+from typing import Dict, Set, Optional, List, Tuple, Any
 from datetime import datetime, timedelta
 from collections import deque
 import json
@@ -22,10 +22,12 @@ from watchdog.events import FileSystemEventHandler
 from threading import Timer, Lock
 from qdrant_client import models
 
-# Add parent directory to path for imports
-sys.path.append(str(Path(__file__).parent.parent))
+# Add services directory to path for imports
+services_dir = Path(__file__).parent
+sys.path.insert(0, str(services_dir))
 
-from servers.services.service_container import ServiceContainer
+from service_container import ServiceContainer
+from collection_config import get_collection_manager, CollectionType
 
 # Configure logging to stderr for Docker
 logging.basicConfig(
@@ -114,14 +116,19 @@ class IncrementalIndexer(FileSystemEventHandler):
     Integrates with Neo4j GraphRAG, Qdrant vectors, and Nomic embeddings
     """
     
-    def __init__(self, project_path: str, project_name: str = "default"):
+    def __init__(self, project_path: str, project_name: str = "default", container: ServiceContainer = None):
         self.project_path = Path(project_path)
         self.project_name = project_name
+        self.collection_manager = get_collection_manager(project_name)
+        # Keep legacy collection_prefix for backward compatibility
         self.collection_prefix = f"project_{project_name}_"
         
         # Service container for accessing Neo4j, Qdrant, Nomic
-        self.container = None
+        self.container = container
         self.services_initialized = False
+        
+        # Observer for file system watching (will be set externally)
+        self.observer = None
         
         # File tracking with deduplication
         self.file_hashes: Dict[str, str] = {}
@@ -129,7 +136,7 @@ class IncrementalIndexer(FileSystemEventHandler):
         self.cooldown_seconds = 3  # Prevent rapid re-indexing
         
         # Bounded queue for memory management
-        self.pending_queue: asyncio.Queue = None  # Will init with asyncio
+        self.pending_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self.max_queue_size = 1000
         self.queue_warning_threshold = 800
         
@@ -170,7 +177,14 @@ class IncrementalIndexer(FileSystemEventHandler):
             'avg_index_time_ms': 0,
             'total_index_time_ms': 0,
             'dedup_hits': 0,  # Files skipped due to unchanged hash
-            'event_storms_handled': 0  # Debouncing events
+            'event_storms_handled': 0,  # Debouncing events
+            # Error tracking
+            'error_categories': {},
+            'critical_errors': 0,  # Errors that prevent indexing
+            'warning_count': 0,  # Non-critical issues
+            'recovery_attempts': 0,  # Service reconnection attempts
+            'last_error_time': None,
+            'error_rate_per_minute': 0.0
         }
         
         # Graceful degradation flags
@@ -189,7 +203,10 @@ class IncrementalIndexer(FileSystemEventHandler):
             try:
                 logger.info(f"Initializing services (attempt {attempt + 1}/{max_retries})")
                 
-                self.container = ServiceContainer(self.project_name)
+                # Create container if not provided
+                if self.container is None:
+                    self.container = ServiceContainer(self.project_name)
+                
                 result = await self.container.initialize_all_services()
                 
                 # Check individual service health
@@ -208,12 +225,29 @@ class IncrementalIndexer(FileSystemEventHandler):
                     
                 if self.container.nomic:
                     self.degraded_mode['nomic'] = False
+                    
+                    # Capture actual embedding dimension for dynamic alignment
+                    try:
+                        health = await self.container.nomic.health_check()
+                        embedding_dim = health.get('embedding_dim')
+                        if embedding_dim and embedding_dim != self.collection_manager.embedding_dimension:
+                            logger.info(f"Detected embedding dimension: {embedding_dim}, reinitializing collection manager")
+                            # Reinitialize collection manager with correct dimension
+                            from collection_config import CollectionManager
+                            self.collection_manager = CollectionManager(
+                                self.project_name, 
+                                embedding_dimension=embedding_dim
+                            )
+                            logger.info(f"Collection manager updated with embedding dimension: {embedding_dim}")
+                    except Exception as e:
+                        logger.warning(f"Could not detect embedding dimension: {e}")
+                        
                 else:
                     logger.warning("Nomic unavailable - continuing without semantic embeddings")
                     self.degraded_mode['nomic'] = True
                 
                 self.services_initialized = True
-                logger.info(f"Services initialized: {result.get('overall_health', 'degraded')}")
+                logger.info(f"Services initialized: {'healthy' if result else 'degraded'}")
                 return True
                 
             except Exception as e:
@@ -226,22 +260,19 @@ class IncrementalIndexer(FileSystemEventHandler):
                     return False
     
     async def _ensure_collections(self):
-        """Ensure required Qdrant collections exist"""
+        """Ensure required Qdrant collections exist using battle-tested patterns"""
         if self.degraded_mode['qdrant']:
             return
-            
-        code_collection = f"{self.collection_prefix}code"
         
-        try:
-            await self.container.qdrant.get_collection_info(code_collection)
-        except:
-            # Create collection with hybrid search config
-            await self.container.qdrant.create_collection(
-                collection_name=code_collection,
-                vector_size=768,  # Nomic v2 dimension
-                enable_sparse=True
-            )
-            logger.info(f"Created collection: {code_collection}")
+        # Use centralized collection management
+        success = await self.collection_manager.ensure_collection_exists(
+            CollectionType.CODE, 
+            self.container.qdrant
+        )
+        
+        if not success:
+            logger.error("Failed to ensure code collection exists")
+            self.degraded_mode['qdrant'] = True
     
     def should_index(self, file_path: str) -> bool:
         """Check if file should be indexed with security filters"""
@@ -336,6 +367,12 @@ class IncrementalIndexer(FileSystemEventHandler):
                 await self._index_graph(file_path, relative_path, content)
                 success = True
             
+            # 3. Fallback: Basic file tracking when all services are degraded
+            if not success and self.degraded_mode['neo4j'] and self.degraded_mode['qdrant']:
+                # At minimum, track that we've seen the file
+                logger.debug(f"All services degraded - basic tracking for: {file_path}")
+                success = True
+            
             if success:
                 # Update hash tracking
                 self.file_hashes[file_path] = current_hash
@@ -356,66 +393,361 @@ class IncrementalIndexer(FileSystemEventHandler):
                 self.metrics['files_skipped'] += 1
                 
         except Exception as e:
-            logger.error(f"Failed to index {file_path}: {e}")
+            error_category = self._categorize_error(e, file_path)
+            logger.error(f"Failed to index {file_path} ({error_category}): {e}")
             self.metrics['errors'] += 1
+            
+            # Use comprehensive error handling
+            self._handle_error_metrics(error_category)
+            
+            # Attempt service recovery for service-related errors
+            service_errors = {
+                'neo4j': 'neo4j',
+                'qdrant': 'qdrant', 
+                'embedding': 'nomic',
+                'embedding_generation': 'nomic',
+                'connectivity': None  # Could be any service
+            }
+            
+            if error_category in service_errors and service_errors[error_category]:
+                service_name = service_errors[error_category]
+                if self.degraded_mode[service_name]:
+                    # Try recovery if service is degraded and enough time has passed
+                    await self._attempt_service_recovery(service_name)
+    
+    def _categorize_error(self, error: Exception, file_path: str) -> str:
+        """Categorize errors for better monitoring and debugging"""
+        error_type = type(error).__name__
+        error_msg = str(error).lower()
+        
+        # File system errors
+        if isinstance(error, (FileNotFoundError, PermissionError)):
+            return 'filesystem'
+        if isinstance(error, UnicodeDecodeError):
+            return 'encoding'
+        if 'no space left' in error_msg or 'disk full' in error_msg:
+            return 'disk_space'
+            
+        # Network/service errors
+        if 'connection' in error_msg or 'timeout' in error_msg:
+            return 'connectivity'
+        if 'authentication' in error_msg or 'auth' in error_msg:
+            return 'authentication'
+        if 'neo4j' in error_msg:
+            return 'neo4j'
+        if 'qdrant' in error_msg:
+            return 'qdrant'
+        if 'embedding' in error_msg or 'nomic' in error_msg:
+            return 'embedding'
+            
+        # Content processing errors
+        if isinstance(error, (ValueError, TypeError)) and 'chunk' in error_msg:
+            return 'chunking'
+        if 'embedding' in error_msg:
+            return 'embedding_generation'
+        if 'cypher' in error_msg or 'query' in error_msg:
+            return 'query_execution'
+            
+        # File-specific categorization
+        if file_path:
+            file_ext = Path(file_path).suffix.lower()
+            if file_ext in ['.py', '.js', '.ts'] and 'syntax' in error_msg:
+                return 'syntax_error'
+            if Path(file_path).stat().st_size > self.max_file_size:
+                return 'file_too_large'
+                
+        # Memory/resource errors
+        if isinstance(error, MemoryError) or 'memory' in error_msg:
+            return 'memory'
+        if 'queue full' in error_msg:
+            return 'queue_overflow'
+            
+        # Default classification
+        return f'unknown_{error_type.lower()}'
+    
+    def _is_critical_error(self, error_category: str) -> bool:
+        """Determine if an error category is critical (prevents indexing)"""
+        critical_categories = {
+            'filesystem', 'disk_space', 'memory', 'queue_overflow',
+            'authentication', 'file_too_large'
+        }
+        return error_category in critical_categories
+    
+    def _handle_error_metrics(self, error_category: str):
+        """Update error metrics with categorization and criticality"""
+        # Update error categories
+        if 'error_categories' not in self.metrics:
+            self.metrics['error_categories'] = {}
+        self.metrics['error_categories'][error_category] = self.metrics['error_categories'].get(error_category, 0) + 1
+        
+        # Track critical vs warning errors
+        if self._is_critical_error(error_category):
+            self.metrics['critical_errors'] += 1
+        else:
+            self.metrics['warning_count'] += 1
+        
+        # Update timestamp and calculate error rate
+        self.metrics['last_error_time'] = datetime.now().isoformat()
+        self._update_error_rate()
+    
+    def _update_error_rate(self):
+        """Calculate errors per minute for monitoring"""
+        if self.metrics['total_index_time_ms'] > 0:
+            time_minutes = self.metrics['total_index_time_ms'] / (1000 * 60)
+            self.metrics['error_rate_per_minute'] = self.metrics['errors'] / max(time_minutes, 1)
+    
+    async def _attempt_service_recovery(self, service_name: str):
+        """Attempt to recover a failed service"""
+        try:
+            self.metrics['recovery_attempts'] += 1
+            logger.info(f"Attempting recovery of {service_name} service")
+            
+            if service_name == 'neo4j':
+                # Reinitialize Neo4j connection
+                result = await self.container.neo4j.initialize()
+                if result.get('success'):
+                    self.degraded_mode['neo4j'] = False
+                    logger.info("Neo4j service recovered successfully")
+                    return True
+                    
+            elif service_name == 'qdrant':
+                # Reinitialize Qdrant connection
+                result = await self.container.qdrant.health_check()
+                if result.get('healthy'):
+                    self.degraded_mode['qdrant'] = False
+                    await self._ensure_collections()
+                    logger.info("Qdrant service recovered successfully")
+                    return True
+                    
+            elif service_name == 'nomic':
+                # Test Nomic embedding service
+                test_result = await self.container.nomic.get_embeddings(['test'])
+                if test_result:
+                    self.degraded_mode['nomic'] = False
+                    logger.info("Nomic embedding service recovered successfully")
+                    return True
+                    
+        except Exception as e:
+            logger.warning(f"Recovery attempt failed for {service_name}: {e}")
+        
+        return False
+    
+    def get_error_summary(self) -> Dict[str, Any]:
+        """Get comprehensive error summary for monitoring"""
+        total_operations = self.metrics['files_indexed'] + self.metrics['files_skipped'] + self.metrics['errors']
+        
+        summary = {
+            'error_overview': {
+                'total_errors': self.metrics['errors'],
+                'critical_errors': self.metrics['critical_errors'],
+                'warnings': self.metrics['warning_count'],
+                'error_rate': self.metrics['error_rate_per_minute'],
+                'last_error': self.metrics['last_error_time']
+            },
+            'error_categories': self.metrics.get('error_categories', {}),
+            'service_health': {
+                'degraded_services': [k for k, v in self.degraded_mode.items() if v],
+                'service_failures': self.metrics['service_failures'],
+                'recovery_attempts': self.metrics['recovery_attempts']
+            },
+            'operational_health': {
+                'success_rate': (self.metrics['files_indexed'] / max(total_operations, 1)) * 100,
+                'queue_health': 'healthy' if self.metrics['queue_depth'] < self.queue_warning_threshold else 'warning',
+                'dedup_efficiency': (self.metrics['dedup_hits'] / max(self.metrics['files_indexed'] + self.metrics['dedup_hits'], 1)) * 100
+            }
+        }
+        
+        return summary
+    
+    def get_health_status(self) -> str:
+        """Get overall system health status"""
+        # Critical: Any critical errors or all services degraded
+        if (self.metrics['critical_errors'] > 0 or 
+            all(self.degraded_mode.values())):
+            return 'critical'
+        
+        # Warning: Some services degraded or high error rate
+        elif (any(self.degraded_mode.values()) or 
+              self.metrics['error_rate_per_minute'] > 5.0 or
+              self.metrics['queue_depth'] > self.queue_warning_threshold):
+            return 'warning'
+        
+        # Healthy: All services operational, low error rate
+        else:
+            return 'healthy'
     
     def _chunk_content(self, content: str, file_path: str) -> List[Dict]:
-        """Intelligently chunk content for indexing"""
-        max_chunk_lines = 100  # Smaller chunks for better precision
-        lines = content.split('\n')
+        """Battle-tested semantic chunking based on LlamaIndex patterns"""
         chunks = []
         
-        # For code files, try to chunk at logical boundaries
-        if file_path.endswith(('.py', '.js', '.ts', '.java', '.go')):
-            # Simple heuristic: break at function/class definitions
-            current_chunk = []
-            current_start = 1
+        # Battle-tested parameters from LlamaIndex research
+        CHUNK_SIZE = 512  # tokens (optimal for semantic search)
+        CHUNK_OVERLAP = 50  # 10% overlap for context preservation
+        MIN_CHUNK_SIZE = 100  # minimum viable chunk
+        
+        # Estimate tokens (rough: ~4 chars per token)
+        approx_tokens = len(content) // 4
+        
+        if approx_tokens <= CHUNK_SIZE:
+            # Single chunk for small content
+            return [{
+                'text': content,
+                'start_line': 1,
+                'end_line': len(content.split('\n')),
+                'chunk_type': 'single',
+                'tokens_estimate': approx_tokens
+            }]
+        
+        # Semantic chunking for code files
+        if file_path.endswith(('.py', '.js', '.ts', '.java', '.go', '.cpp', '.c', '.h')):
+            chunks = self._semantic_code_chunking(content, file_path, CHUNK_SIZE, CHUNK_OVERLAP)
+        else:
+            # Hierarchical chunking for documentation/text
+            chunks = self._hierarchical_text_chunking(content, CHUNK_SIZE, CHUNK_OVERLAP)
+        
+        # Ensure minimum chunk quality
+        quality_chunks = []
+        for chunk in chunks:
+            if len(chunk['text'].strip()) >= MIN_CHUNK_SIZE:
+                chunk['file_path'] = file_path
+                chunk['chunk_id'] = f"{file_path}:{chunk['start_line']}-{chunk['end_line']}"
+                quality_chunks.append(chunk)
+        
+        logger.debug(f"Chunked {file_path}: {len(quality_chunks)} chunks from {approx_tokens} tokens")
+        return quality_chunks
+    
+    def _semantic_code_chunking(self, content: str, file_path: str, chunk_size: int, overlap: int) -> List[Dict]:
+        """Semantic chunking for code following LlamaIndex patterns"""
+        lines = content.split('\n')
+        chunks = []
+        current_chunk = []
+        current_start = 1
+        current_tokens = 0
+        
+        # Enhanced code boundary detection
+        boundary_keywords = {
+            '.py': ['def ', 'class ', 'async def ', '@', 'if __name__'],
+            '.js': ['function ', 'const ', 'let ', 'var ', 'class ', 'export ', 'import '],
+            '.ts': ['function ', 'const ', 'let ', 'var ', 'class ', 'export ', 'import ', 'interface ', 'type '],
+            '.java': ['public class ', 'private class ', 'public interface ', 'public ', 'private '],
+            '.go': ['func ', 'type ', 'var ', 'const ', 'package '],
+            '.cpp': ['class ', 'struct ', 'namespace ', 'template ', 'void ', 'int ', 'bool '],
+            '.c': ['struct ', 'void ', 'int ', 'bool ', 'static ', 'extern '],
+            '.h': ['struct ', 'void ', 'int ', 'bool ', 'typedef ', '#define ']
+        }
+        
+        ext = next((k for k in boundary_keywords.keys() if file_path.endswith(k)), '.py')
+        keywords = boundary_keywords[ext]
+        
+        for i, line in enumerate(lines, 1):
+            line_tokens = len(line) // 4  # rough token estimate
             
-            for i, line in enumerate(lines, 1):
-                # Detect function/class boundaries (simplified)
-                if any(line.strip().startswith(kw) for kw in ['def ', 'class ', 'function ', 'const ', 'export ']):
-                    if current_chunk and len(current_chunk) > 10:
-                        chunks.append({
-                            'text': '\n'.join(current_chunk),
-                            'start_line': current_start,
-                            'end_line': i - 1
-                        })
-                        current_chunk = [line]
-                        current_start = i
-                    else:
-                        current_chunk.append(line)
-                else:
-                    current_chunk.append(line)
-                    
-                # Force break at max size
-                if len(current_chunk) >= max_chunk_lines:
-                    chunks.append({
-                        'text': '\n'.join(current_chunk),
-                        'start_line': current_start,
-                        'end_line': i
-                    })
-                    current_chunk = []
-                    current_start = i + 1
+            # Check for logical boundary
+            is_boundary = any(line.strip().startswith(kw) for kw in keywords)
             
-            # Add remaining
-            if current_chunk:
+            # Chunk decision: size limit OR semantic boundary with sufficient content
+            should_chunk = (current_tokens + line_tokens > chunk_size) or \
+                          (is_boundary and current_tokens > chunk_size // 2)
+            
+            if should_chunk and current_chunk:
+                # Create chunk with overlap handling
                 chunks.append({
                     'text': '\n'.join(current_chunk),
                     'start_line': current_start,
-                    'end_line': len(lines)
+                    'end_line': i - 1,
+                    'chunk_type': 'semantic_code',
+                    'tokens_estimate': current_tokens,
+                    'boundary_type': 'semantic' if is_boundary else 'size'
                 })
-        else:
-            # Simple line-based chunking for other files
-            for i in range(0, len(lines), max_chunk_lines):
-                chunk_lines = lines[i:i + max_chunk_lines]
-                if '\n'.join(chunk_lines).strip():
-                    chunks.append({
-                        'text': '\n'.join(chunk_lines),
-                        'start_line': i + 1,
-                        'end_line': min(i + max_chunk_lines, len(lines))
-                    })
+                
+                # Handle overlap: keep last few lines for context
+                overlap_lines = min(overlap // 10, len(current_chunk) // 4, 5)
+                if overlap_lines > 0:
+                    current_chunk = current_chunk[-overlap_lines:] + [line]
+                    current_start = i - overlap_lines
+                    current_tokens = sum(len(l) // 4 for l in current_chunk)
+                else:
+                    current_chunk = [line]
+                    current_start = i
+                    current_tokens = line_tokens
+            else:
+                current_chunk.append(line)
+                current_tokens += line_tokens
         
-        return chunks if chunks else [{'text': content, 'start_line': 1, 'end_line': len(lines)}]
+        # Handle final chunk
+        if current_chunk:
+            chunks.append({
+                'text': '\n'.join(current_chunk),
+                'start_line': current_start,
+                'end_line': len(lines),
+                'chunk_type': 'semantic_code',
+                'tokens_estimate': current_tokens,
+                'boundary_type': 'final'
+            })
+        
+        return chunks
+    
+    def _hierarchical_text_chunking(self, content: str, chunk_size: int, overlap: int) -> List[Dict]:
+        """Hierarchical chunking for text/docs following LlamaIndex patterns"""
+        # Split by sentences/paragraphs for better semantic coherence
+        import re
+        
+        # Enhanced sentence splitting that preserves code blocks
+        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', content)
+        chunks = []
+        current_chunk = []
+        current_start_pos = 0
+        current_tokens = 0
+        
+        for sentence in sentences:
+            sentence_tokens = len(sentence) // 4
+            
+            # Check if adding this sentence exceeds chunk size
+            if current_tokens + sentence_tokens > chunk_size and current_chunk:
+                # Create chunk
+                chunk_text = ' '.join(current_chunk)
+                chunks.append({
+                    'text': chunk_text,
+                    'start_line': self._estimate_line_number(content, current_start_pos),
+                    'end_line': self._estimate_line_number(content, current_start_pos + len(chunk_text)),
+                    'chunk_type': 'hierarchical_text',
+                    'tokens_estimate': current_tokens,
+                    'boundary_type': 'sentence'
+                })
+                
+                # Handle overlap
+                overlap_sentences = min(overlap // 20, len(current_chunk) // 2)
+                if overlap_sentences > 0:
+                    current_chunk = current_chunk[-overlap_sentences:] + [sentence]
+                    current_start_pos += len(' '.join(current_chunk[:-overlap_sentences-1])) + 1
+                    current_tokens = sum(len(s) // 4 for s in current_chunk)
+                else:
+                    current_chunk = [sentence]
+                    current_start_pos += len(' '.join(current_chunk[:-1])) + 1
+                    current_tokens = sentence_tokens
+            else:
+                current_chunk.append(sentence)
+                current_tokens += sentence_tokens
+        
+        # Handle final chunk
+        if current_chunk:
+            chunk_text = ' '.join(current_chunk)
+            chunks.append({
+                'text': chunk_text,
+                'start_line': self._estimate_line_number(content, current_start_pos),
+                'end_line': self._estimate_line_number(content, current_start_pos + len(chunk_text)),
+                'chunk_type': 'hierarchical_text',
+                'tokens_estimate': current_tokens,
+                'boundary_type': 'final'
+            })
+        
+        return chunks
+    
+    def _estimate_line_number(self, content: str, char_position: int) -> int:
+        """Estimate line number from character position"""
+        if char_position >= len(content):
+            return len(content.split('\n'))
+        return content[:char_position].count('\n') + 1
     
     async def _index_semantic(self, file_path: str, relative_path: Path, chunks: List[Dict]):
         """Index with full semantic embeddings and GraphRAG cross-references"""
@@ -477,8 +809,8 @@ class IncrementalIndexer(FileSystemEventHandler):
                     'content': chunk['text']  # Add content to be stored in Neo4j
                 })
             
-            # Upsert to Qdrant
-            collection_name = f"{self.collection_prefix}code"
+            # Upsert to Qdrant using proper collection management
+            collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
             await self.container.qdrant.upsert_points(collection_name, points)
             
             # Update Neo4j with chunk references (if available)
@@ -487,8 +819,12 @@ class IncrementalIndexer(FileSystemEventHandler):
                 self.metrics['cross_references_created'] += len(neo4j_chunk_ids)
             
         except Exception as e:
-            logger.error(f"Semantic indexing failed for {file_path}: {e}")
+            error_category = self._categorize_error(e, file_path)
+            logger.error(f"Semantic indexing failed for {file_path} ({error_category}): {e}")
             self.metrics['service_failures']['nomic'] += 1
+            self._handle_error_metrics(error_category)
+            
+            # Enter degraded mode after threshold failures
             if self.metrics['service_failures']['nomic'] > 10:
                 logger.warning("Nomic failures exceeded threshold - entering degraded mode")
                 self.degraded_mode['nomic'] = True
@@ -525,12 +861,19 @@ class IncrementalIndexer(FileSystemEventHandler):
                 }
                 points.append(point)
             
-            collection_name = f"{self.collection_prefix}code"
+            collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
             await self.container.qdrant.upsert_points(collection_name, points)
             
         except Exception as e:
-            logger.error(f"Keyword indexing failed for {file_path}: {e}")
+            error_category = self._categorize_error(e, file_path)
+            logger.error(f"Keyword indexing failed for {file_path} ({error_category}): {e}")
             self.metrics['service_failures']['qdrant'] += 1
+            self._handle_error_metrics(error_category)
+            
+            # Enter degraded mode after threshold failures
+            if self.metrics['service_failures']['qdrant'] > 10:
+                logger.warning("Qdrant failures exceeded threshold - entering degraded mode")
+                self.degraded_mode['qdrant'] = True
     
     def _extract_keywords(self, text: str, max_keywords: int = 100) -> Tuple[List[int], List[float]]:
         """Extract keywords for sparse vector representation"""
@@ -611,8 +954,12 @@ class IncrementalIndexer(FileSystemEventHandler):
                         logger.warning(f"Failed to create import relationship: {result.get('message')}")
             
         except Exception as e:
-            logger.error(f"Graph indexing failed for {file_path}: {e}")
+            error_category = self._categorize_error(e, file_path)
+            logger.error(f"Graph indexing failed for {file_path} ({error_category}): {e}")
             self.metrics['service_failures']['neo4j'] += 1
+            self._handle_error_metrics(error_category)
+            
+            # Enter degraded mode after threshold failures
             if self.metrics['service_failures']['neo4j'] > 10:
                 logger.warning("Neo4j failures exceeded threshold - entering degraded mode")
                 self.degraded_mode['neo4j'] = True
@@ -650,6 +997,9 @@ class IncrementalIndexer(FileSystemEventHandler):
         try:
             # Batch create/update chunk nodes
             for chunk_info in chunk_ids:
+                # Use centralized collection management
+                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
+                
                 cypher = """
                 MERGE (c:CodeChunk {id: $chunk_id})
                 SET c.qdrant_id = $qdrant_id,
@@ -658,6 +1008,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                     c.end_line = $end_line,
                     c.type = $chunk_type,
                     c.content = $content,
+                    c.collection_name = $collection_name,
                     c.indexed_at = datetime(),
                     c.project = $project
                 WITH c
@@ -677,6 +1028,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                     'end_line': chunk_info['end_line'],
                     'chunk_type': chunk_info['chunk_type'],
                     'content': content_to_store,  # Include content in parameters
+                    'collection_name': collection_name,  # Add collection name parameter
                     'project': self.project_name
                 })
                 
@@ -689,7 +1041,9 @@ class IncrementalIndexer(FileSystemEventHandler):
             logger.debug(f"Created/updated {len(chunk_ids)} chunk nodes in Neo4j")
             
         except Exception as e:
-            logger.error(f"Failed to update Neo4j chunks: {e}")
+            error_category = self._categorize_error(e, "")
+            logger.error(f"Failed to update Neo4j chunks ({error_category}): {e}")
+            self._handle_error_metrics(error_category)
             # Don't mark as degraded for chunk updates - file node is more important
     
     def _extract_imports(self, content: str, file_type: str) -> List[str]:
@@ -747,7 +1101,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             
             # Remove from Qdrant
             if not self.degraded_mode['qdrant']:
-                collection_name = f"{self.collection_prefix}code"
+                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
                 
                 if chunk_ids_to_remove:
                     # Remove specific chunks by ID (more precise)
@@ -759,14 +1113,18 @@ class IncrementalIndexer(FileSystemEventHandler):
                         )
                         logger.info(f"Removed {len(qdrant_ids)} chunks from Qdrant for {file_path}")
                 else:
-                    # Fallback: Delete by file path filter
+                    # Fallback: Delete by file path filter (use Qdrant models)
+                    file_filter = models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key='full_path',
+                                match=models.MatchValue(value=file_path)
+                            )
+                        ]
+                    )
                     await self.container.qdrant.delete_points(
                         collection_name,
-                        filter={
-                            'must': [
-                                {'key': 'full_path', 'match': {'value': file_path}}
-                            ]
-                        }
+                        filter_conditions=file_filter
                     )
                     logger.info(f"Removed {file_path} from Qdrant")
             
@@ -793,6 +1151,12 @@ class IncrementalIndexer(FileSystemEventHandler):
     
     async def process_queue(self):
         """Process pending file changes from queue"""
+        # Initialize queue if not already done
+        if self.pending_queue is None:
+            self.pending_queue = asyncio.Queue(maxsize=self.max_queue_size)
+            logger.warning("Queue was not initialized in process_queue, creating it now")
+            return  # Nothing to process yet
+        
         batch = []
         
         try:
@@ -848,6 +1212,11 @@ class IncrementalIndexer(FileSystemEventHandler):
     async def _queue_change(self, file_path: str, event_type: str):
         """Add file change to processing queue"""
         try:
+            # Initialize queue if not already done
+            if self.pending_queue is None:
+                self.pending_queue = asyncio.Queue(maxsize=self.max_queue_size)
+                logger.warning("Queue was not initialized, creating it now")
+            
             await self.pending_queue.put((file_path, event_type))
         except asyncio.QueueFull:
             logger.error(f"Queue full! Dropping event: {file_path} ({event_type})")
@@ -860,7 +1229,7 @@ class IncrementalIndexer(FileSystemEventHandler):
         # Check if we've already indexed
         if not self.degraded_mode['qdrant']:
             try:
-                collection_name = f"{self.collection_prefix}code"
+                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
                 info = await self.container.qdrant.get_collection_info(collection_name)
                 if info.get('points_count', 0) > 0:
                     logger.info("Collection already has data - skipping initial index")
@@ -887,6 +1256,239 @@ class IncrementalIndexer(FileSystemEventHandler):
         
         logger.info(f"Initial indexing complete: {self.metrics['files_indexed']} files")
     
+    async def start_monitoring(self):
+        """Start file system monitoring for continuous indexing"""
+        try:
+            # Initialize async queue if not already initialized
+            if self.pending_queue is None:
+                self.pending_queue = asyncio.Queue(maxsize=self.max_queue_size)
+                logger.info(f"Initialized pending queue with max size {self.max_queue_size}")
+            
+            # Load any existing state
+            await self._load_persistent_state()
+            
+            # Set up file watcher with debouncing
+            from watchdog.observers import Observer
+            self.observer = Observer()
+            debounced_handler = DebouncedEventHandler(self, debounce_interval=2.0)
+            self.observer.schedule(debounced_handler, str(self.project_path), recursive=True)
+            self.observer.start()
+            
+            logger.info(f"File system monitoring started for {self.project_path}")
+            
+            # Start queue processing loop
+            await self._queue_processing_loop()
+            
+        except Exception as e:
+            logger.error(f"Error starting monitoring: {e}", exc_info=True)
+            raise
+    
+    async def _queue_processing_loop(self):
+        """Continuous queue processing loop with periodic state saving"""
+        logger.info("Starting queue processing loop...")
+        
+        last_state_save = time.time()
+        state_save_interval = 300  # Save state every 5 minutes
+        
+        while True:
+            try:
+                # Process queue items
+                await self.process_queue()
+                
+                # Periodic state saving
+                current_time = time.time()
+                if current_time - last_state_save > state_save_interval:
+                    try:
+                        await self._save_persistent_state()
+                        last_state_save = current_time
+                        logger.debug("Periodic state save completed")
+                    except Exception as e:
+                        logger.warning(f"Periodic state save failed: {e}")
+                
+                # Small delay to prevent CPU spinning
+                await asyncio.sleep(0.1)
+                
+            except asyncio.CancelledError:
+                logger.info("Queue processing loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in queue processing loop: {e}", exc_info=True)
+                await asyncio.sleep(1.0)  # Back off on errors
+    
+    async def shutdown(self):
+        """Graceful shutdown procedure for container environments"""
+        logger.info("Starting graceful indexer shutdown...")
+        
+        try:
+            # Stop accepting new file events (observer should be stopped externally)
+            if hasattr(self, 'observer') and self.observer:
+                logger.info("Stopping file system observer...")
+                self.observer.stop()
+                self.observer.join(timeout=5.0)
+            
+            # Process any remaining items in queue
+            if self.pending_queue and not self.pending_queue.empty():
+                logger.info(f"Processing {self.pending_queue.qsize()} remaining items in queue...")
+                # Process up to 50 items during shutdown to avoid hanging
+                processed = 0
+                while not self.pending_queue.empty() and processed < 50:
+                    try:
+                        await asyncio.wait_for(self.process_queue(), timeout=2.0)
+                        processed += 1
+                    except asyncio.TimeoutError:
+                        logger.warning("Timeout processing queue item during shutdown")
+                        break
+                    except Exception as e:
+                        logger.error(f"Error processing queue item during shutdown: {e}")
+                        break
+            
+            # Save any pending state
+            await self._save_persistent_state()
+            
+            # Close service connections
+            if self.container:
+                logger.info("Closing service connections...")
+                if hasattr(self.container, 'close'):
+                    await self.container.close()
+                elif hasattr(self.container, 'neo4j') and self.container.neo4j:
+                    try:
+                        self.container.neo4j.close()
+                    except Exception as e:
+                        logger.warning(f"Error closing Neo4j connection: {e}")
+            
+            logger.info("Graceful shutdown complete")
+            
+        except Exception as e:
+            logger.error(f"Error during graceful shutdown: {e}", exc_info=True)
+            
+    async def _save_persistent_state(self):
+        """Save indexer state for recovery after restart with atomic writes and backup"""
+        try:
+            state_dir = Path("/app/state")
+            state_dir.mkdir(parents=True, exist_ok=True)
+            
+            state_file = state_dir / "indexer_state.json"
+            temp_file = state_dir / "indexer_state_temp.json"
+            backup_file = state_dir / "indexer_state_backup.json"
+            
+            state = {
+                "file_hashes": self.file_hashes,
+                "metrics": self.metrics,
+                "project_name": self.project_name,
+                "last_save": datetime.now().isoformat(),
+                "version": "1.0"  # For future schema migrations
+            }
+            
+            # Atomic write: write to temp file first, then rename
+            with open(temp_file, 'w') as f:
+                json.dump(state, f, indent=2)
+                f.flush()  # Ensure data is written to disk
+                
+            # Create backup before replacing current state
+            if state_file.exists():
+                import shutil
+                shutil.copy2(state_file, backup_file)
+            
+            # Atomically replace the state file
+            temp_file.replace(state_file)
+                
+            logger.debug(f"Saved indexer state to {state_file}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to save persistent state: {e}")
+            # Clean up temp file if it exists
+            try:
+                temp_file = Path("/app/state/indexer_state_temp.json")
+                if temp_file.exists():
+                    temp_file.unlink()
+            except Exception:
+                pass
+    
+    async def _load_persistent_state(self):
+        """Load indexer state from previous run with corruption detection"""
+        try:
+            state_file = Path("/app/state/indexer_state.json")
+            backup_file = Path("/app/state/indexer_state_backup.json")
+            
+            if not state_file.exists() and not backup_file.exists():
+                logger.info("No persistent state found, starting fresh")
+                return
+                
+            # Try to load primary state file
+            state = None
+            state_source = "primary"
+            
+            try:
+                if state_file.exists():
+                    with open(state_file, 'r') as f:
+                        state = json.load(f)
+                    
+                    # Validate state structure
+                    if not isinstance(state, dict) or "file_hashes" not in state:
+                        raise ValueError("Invalid state file structure")
+                        
+                    logger.info(f"Loaded primary state file")
+                else:
+                    raise FileNotFoundError("Primary state file missing")
+                    
+            except Exception as e:
+                logger.warning(f"Primary state file corrupted or missing: {e}")
+                
+                # Try backup file
+                if backup_file.exists():
+                    try:
+                        with open(backup_file, 'r') as f:
+                            state = json.load(f)
+                        
+                        if not isinstance(state, dict) or "file_hashes" not in state:
+                            raise ValueError("Invalid backup state structure")
+                            
+                        state_source = "backup"
+                        logger.info("Loaded backup state file")
+                    except Exception as backup_error:
+                        logger.error(f"Backup state file also corrupted: {backup_error}")
+                        logger.info("Starting fresh - all previous state lost")
+                        return
+            
+            if state:
+                # Restore state
+                self.file_hashes = state.get("file_hashes", {})
+                
+                # Merge metrics, keeping counters from saved state  
+                saved_metrics = state.get("metrics", {})
+                self.metrics.update({
+                    k: v for k, v in saved_metrics.items() 
+                    if k in ["files_indexed", "chunks_created", "cross_references_created"]
+                })
+                
+                # Validate loaded data
+                if not isinstance(self.file_hashes, dict):
+                    logger.warning("Invalid file_hashes in state, resetting")
+                    self.file_hashes = {}
+                
+                logger.info(f"Loaded persistent state from {state_source}: {len(self.file_hashes)} file hashes, {self.metrics['files_indexed']} files indexed")
+                
+                # Create backup of current state for next time
+                if state_source == "primary":
+                    await self._create_backup_state()
+            
+        except Exception as e:
+            logger.error(f"Critical error loading persistent state: {e}")
+            logger.info("Starting fresh due to state loading failure")
+    
+    async def _create_backup_state(self):
+        """Create backup of current state"""
+        try:
+            state_file = Path("/app/state/indexer_state.json")
+            backup_file = Path("/app/state/indexer_state_backup.json")
+            
+            if state_file.exists():
+                import shutil
+                shutil.copy2(state_file, backup_file)
+                logger.debug("State backup created")
+        except Exception as e:
+            logger.warning(f"Failed to create state backup: {e}")
+
     def get_metrics(self) -> Dict:
         """Get current metrics for monitoring with GraphRAG insights"""
         return {
@@ -905,7 +1507,10 @@ class IncrementalIndexer(FileSystemEventHandler):
             'dedup_efficiency': (
                 self.metrics['dedup_hits'] / max(self.metrics['files_indexed'] + self.metrics['dedup_hits'], 1)
                 if (self.metrics['files_indexed'] + self.metrics['dedup_hits']) > 0 else 0
-            )
+            ),
+            # Enhanced error reporting
+            'health_status': self.get_health_status(),
+            'error_summary': self.get_error_summary()
         }
 
 async def run_indexer(project_path: str, project_name: str = "default", initial_index: bool = False):
