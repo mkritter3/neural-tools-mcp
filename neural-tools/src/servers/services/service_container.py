@@ -32,6 +32,7 @@ class ServiceContainer:
         self._redis_cache_client = None
         self._redis_queue_client = None  
         self._job_queue = None
+        self._dlq_service = None
     
     async def get_redis_cache_client(self):
         """Get async Redis client for caching"""
@@ -66,6 +67,16 @@ class ServiceContainer:
             )
             self._job_queue = await create_pool(redis_settings)
         return self._job_queue
+    
+    async def get_dlq_service(self):
+        """Get dead letter queue service using queue Redis instance"""
+        if self._dlq_service is None:
+            redis_client = await self.get_redis_queue_client()
+            from servers.services.dead_letter_service import DeadLetterService
+            self._dlq_service = DeadLetterService(redis_client)
+            # Initialize DLQ consumer groups
+            await self._dlq_service.initialize()
+        return self._dlq_service
         
     def ensure_neo4j_client(self):
         """Initialize REAL Neo4j client connection"""
@@ -157,7 +168,9 @@ class ServiceContainer:
         try:
             from servers.services.nomic_service import NomicService
             self.nomic = NomicService()
-            logger.info("✅ Nomic service object created")
+            # Connect service to container for queue/cache access
+            self.nomic.set_service_container(self)
+            logger.info("✅ Nomic service object created with container integration")
         except ImportError as e:
             logger.error(f"Failed to import NomicService: {e}")
             self.nomic = None

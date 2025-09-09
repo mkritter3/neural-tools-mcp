@@ -241,6 +241,126 @@ class RedisHealthChecker(DependencyHealthChecker):
             return False
 
 
+class QueueHealthChecker(DependencyHealthChecker):
+    """Health checker for ARQ job queue system"""
+    
+    def __init__(self, service_container, timeout: float = 2.0):
+        super().__init__("job_queue", timeout)
+        self.container = service_container
+        self.queue_depth_warning_threshold = int(os.getenv('BACKPRESSURE_THRESHOLD', 800))
+        self.queue_depth_critical_threshold = int(os.getenv('MAX_QUEUE_DEPTH', 1000))
+    
+    async def _perform_health_check(self) -> bool:
+        """Check job queue health including depth and worker availability"""
+        if not self.container:
+            return False
+        
+        try:
+            # Check Redis queue connectivity first
+            redis_queue = await self.container.get_redis_queue_client()
+            ping_result = await redis_queue.ping()
+            if not ping_result:
+                logger.warning("Queue health check: Redis queue not responding")
+                return False
+            
+            # Get queue manager for detailed health check
+            from servers.services.queue_manager import QueueManager
+            queue_manager = QueueManager(self.container)
+            
+            # Get queue statistics
+            queue_stats = await queue_manager.get_queue_stats()
+            
+            if queue_stats.get('error'):
+                logger.warning(f"Queue health check failed: {queue_stats['error']}")
+                return False
+            
+            queue_depth = queue_stats.get('queue_depth', 0)
+            active_workers = queue_stats.get('active_workers', 0)
+            health_score = queue_stats.get('health_score', 0.0)
+            
+            # Health criteria:
+            # 1. Queue depth within limits
+            # 2. At least some workers available (or queue is empty)
+            # 3. Overall health score above minimum threshold
+            
+            depth_healthy = queue_depth < self.queue_depth_critical_threshold
+            workers_healthy = active_workers > 0 or queue_depth == 0
+            score_healthy = health_score >= 0.5  # At least 50% health score
+            
+            overall_healthy = depth_healthy and workers_healthy and score_healthy
+            
+            if not overall_healthy:
+                logger.warning(
+                    f"Queue health check failed: depth={queue_depth}/{self.queue_depth_critical_threshold}, "
+                    f"workers={active_workers}, score={health_score}"
+                )
+            else:
+                logger.debug(
+                    f"Queue health check passed: depth={queue_depth}, workers={active_workers}, score={health_score}"
+                )
+            
+            return overall_healthy
+            
+        except Exception as e:
+            logger.warning(f"Queue health check error: {e}")
+            return False
+
+
+class DeadLetterQueueHealthChecker(DependencyHealthChecker):
+    """Health checker for dead letter queue system"""
+    
+    def __init__(self, service_container, timeout: float = 1.0):
+        super().__init__("dead_letter_queue", timeout)
+        self.container = service_container
+        self.dlq_error_rate_threshold = 0.1  # 10% max error rate
+    
+    async def _perform_health_check(self) -> bool:
+        """Check DLQ health and error rates"""
+        if not self.container:
+            return False
+        
+        try:
+            # Get DLQ service
+            dlq_service = await self.container.get_dlq_service()
+            
+            # Get DLQ statistics
+            dlq_stats = await dlq_service.get_dlq_stats()
+            
+            if dlq_stats.get('error'):
+                logger.warning(f"DLQ health check failed: {dlq_stats['error']}")
+                return False
+            
+            total_failures = dlq_stats.get('total_failures', 0)
+            manual_intervention_rate = dlq_stats.get('manual_intervention_rate', 0)
+            
+            # Health criteria:
+            # 1. DLQ system is responsive
+            # 2. Manual intervention rate is reasonable
+            # 3. Not excessive failure accumulation
+            
+            intervention_healthy = manual_intervention_rate <= self.dlq_error_rate_threshold
+            failure_count_healthy = total_failures < 10000  # Reasonable limit
+            
+            overall_healthy = intervention_healthy and failure_count_healthy
+            
+            if not overall_healthy:
+                logger.warning(
+                    f"DLQ health check failed: failures={total_failures}, "
+                    f"manual_rate={manual_intervention_rate:.3f}"
+                )
+            else:
+                logger.debug(
+                    f"DLQ health check passed: failures={total_failures}, "
+                    f"manual_rate={manual_intervention_rate:.3f}"
+                )
+            
+            return overall_healthy
+            
+        except Exception as e:
+            logger.warning(f"DLQ health check error: {e}")
+            return False
+
+
 class APIKeyHealthChecker(DependencyHealthChecker):
     """Health checker for API key availability"""
     
@@ -586,6 +706,24 @@ def setup_health_endpoints(app, container=None):
                 health_checker.add_dependency_checker(queue_checker)
             except Exception as e:
                 logger.warning("Failed to add Redis queue health checker", error=str(e))
+        
+        # Add ARQ job queue health checker
+        if hasattr(container, 'get_job_queue'):
+            try:
+                queue_health_checker = QueueHealthChecker(container, 2.0)
+                health_checker.add_dependency_checker(queue_health_checker)
+                logger.info("✅ Job queue health checker added")
+            except Exception as e:
+                logger.warning(f"Failed to add job queue health checker: {e}")
+        
+        # Add Dead Letter Queue health checker
+        if hasattr(container, 'get_dlq_service'):
+            try:
+                dlq_health_checker = DeadLetterQueueHealthChecker(container, 1.0)
+                health_checker.add_dependency_checker(dlq_health_checker)
+                logger.info("✅ DLQ health checker added")
+            except Exception as e:
+                logger.warning(f"Failed to add DLQ health checker: {e}")
     
     # Always add API key checker
     health_checker.add_api_key_checker("ANTHROPIC_API_KEY")
