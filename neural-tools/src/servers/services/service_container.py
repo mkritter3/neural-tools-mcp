@@ -33,6 +33,10 @@ class ServiceContainer:
         self._redis_queue_client = None  
         self._job_queue = None
         self._dlq_service = None
+        
+        # Phase 3: Intelligent caching services
+        self._cache_warmer = None
+        self._cache_metrics = None
     
     async def get_redis_cache_client(self):
         """Get async Redis client for caching"""
@@ -77,6 +81,22 @@ class ServiceContainer:
             # Initialize DLQ consumer groups
             await self._dlq_service.initialize()
         return self._dlq_service
+    
+    async def get_cache_warmer(self):
+        """Get cache warming service"""
+        if self._cache_warmer is None:
+            from servers.services.cache_warmer import CacheWarmer
+            self._cache_warmer = CacheWarmer(self)
+            await self._cache_warmer.initialize()
+        return self._cache_warmer
+    
+    async def get_cache_metrics(self):
+        """Get cache metrics service"""
+        if self._cache_metrics is None:
+            from servers.services.cache_metrics import CacheMetricsService
+            self._cache_metrics = CacheMetricsService(self)
+            await self._cache_metrics.initialize()
+        return self._cache_metrics
         
     def ensure_neo4j_client(self):
         """Initialize REAL Neo4j client connection"""
@@ -153,6 +173,8 @@ class ServiceContainer:
         if neo4j_ok:
             from servers.services.neo4j_service import Neo4jService
             self.neo4j = Neo4jService(self.project_name)
+            # Connect service to container for cache access
+            self.neo4j.set_service_container(self)
             # Initialize the service asynchronously later
         else:
             self.neo4j = None
@@ -160,6 +182,8 @@ class ServiceContainer:
         if qdrant_ok:
             from servers.services.qdrant_service import QdrantService
             self.qdrant = QdrantService(self.project_name)
+            # Connect service to container for cache access
+            self.qdrant.set_service_container(self)
             # Initialize the service asynchronously later
         else:
             self.qdrant = None

@@ -7,6 +7,8 @@ Provides GraphRAG operations and code relationship analysis
 import os
 import logging
 import json
+import hashlib
+import time
 from typing import Dict, List, Any, Optional
 import asyncio
 
@@ -143,13 +145,66 @@ class AsyncNeo4jClient:
             }
 
 class Neo4jService:
-    """Service class for Neo4j GraphRAG operations"""
+    """Service class for Neo4j GraphRAG operations with intelligent caching"""
     
     def __init__(self, project_name: str = "default"):
         self.project_name = project_name
         self.client = None
         self.initialized = False
         self.available = NEO4J_AVAILABLE
+        self.service_container = None  # Will be set by service container for cache access
+        
+        # Cache configuration
+        self.enable_caching = os.getenv('NEO4J_ENABLE_CACHING', 'true').lower() == 'true'
+        self.cache_ttl_default = int(os.getenv('NEO4J_CACHE_TTL', 3600))  # 1 hour default
+        self.cache_ttl_semantic = int(os.getenv('NEO4J_SEMANTIC_CACHE_TTL', 1800))  # 30 min for semantic queries
+    
+    def set_service_container(self, container):
+        """Set reference to service container for cache access"""
+        self.service_container = container
+    
+    def _generate_cache_key(self, query: str, parameters: Optional[Dict] = None, key_type: str = "query") -> str:
+        """Generate cache key for Neo4j queries with parameters"""
+        # Create deterministic hash from query and parameters
+        query_content = f"{query}:{json.dumps(parameters or {}, sort_keys=True)}"
+        query_hash = hashlib.sha256(query_content.encode()).hexdigest()[:16]
+        return f"l9:prod:neural_tools:neo4j:{key_type}:{self.project_name}:{query_hash}"
+    
+    async def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Get query result from cache if available"""
+        if not self.enable_caching or not self.service_container:
+            return None
+        
+        try:
+            redis_cache = await self.service_container.get_redis_cache_client()
+            cached_result = await redis_cache.get(cache_key)
+            
+            if cached_result:
+                result = json.loads(cached_result)
+                # Refresh TTL on cache hit for frequently accessed queries
+                await redis_cache.expire(cache_key, self.cache_ttl_default)
+                logger.debug(f"Neo4j cache hit for key: {cache_key[:50]}...")
+                return result
+                
+        except Exception as e:
+            logger.warning(f"Failed to get from Neo4j cache: {e}")
+        
+        return None
+    
+    async def _store_in_cache(self, cache_key: str, result: Dict[str, Any], ttl: Optional[int] = None):
+        """Store query result in cache"""
+        if not self.enable_caching or not self.service_container:
+            return
+        
+        try:
+            redis_cache = await self.service_container.get_redis_cache_client()
+            cache_ttl = ttl or self.cache_ttl_default
+            
+            await redis_cache.setex(cache_key, cache_ttl, json.dumps(result))
+            logger.debug(f"Neo4j result cached with TTL {cache_ttl}s")
+            
+        except Exception as e:
+            logger.warning(f"Failed to store in Neo4j cache: {e}")
         
     async def initialize(self) -> Dict[str, Any]:
         """Initialize Neo4j service with connectivity check"""
@@ -207,20 +262,67 @@ class Neo4jService:
             logger.warning(f"Could not create constraints: {e}")
     
     async def execute_cypher(self, cypher_query: str, parameters: Optional[Dict] = None) -> Dict[str, Any]:
-        """Execute Cypher query with service validation"""
+        """Execute Cypher query with service validation and intelligent caching"""
         if not self.initialized or not self.client:
             return {
                 "status": "error",
                 "message": "Neo4j service not initialized"
             }
+        
+        # Check cache for read queries (SELECT-like operations)
+        is_read_query = self._is_read_only_query(cypher_query)
+        cache_key = None
+        
+        if is_read_query and self.enable_caching:
+            cache_key = self._generate_cache_key(cypher_query, parameters, "cypher")
+            cached_result = await self._get_from_cache(cache_key)
             
-        return await self.client.execute_query(cypher_query, parameters)
+            if cached_result:
+                # Add cache metadata to result
+                cached_result["cache_hit"] = True
+                cached_result["cached_at"] = cached_result.get("cached_at", int(time.time()))
+                return cached_result
+        
+        # Execute query
+        result = await self.client.execute_query(cypher_query, parameters)
+        
+        # Cache successful read queries
+        if is_read_query and self.enable_caching and result.get("status") == "success":
+            # Add caching metadata
+            result["cache_hit"] = False
+            result["cached_at"] = int(time.time())
+            await self._store_in_cache(cache_key, result, self.cache_ttl_default)
+        
+        return result
+    
+    def _is_read_only_query(self, cypher_query: str) -> bool:
+        """Check if Cypher query is read-only (cacheable)"""
+        # Convert to lowercase for checking
+        query_lower = cypher_query.strip().lower()
+        
+        # Write operations that should not be cached
+        write_keywords = ['create', 'merge', 'set', 'delete', 'remove', 'drop']
+        
+        # Check if query starts with write operations
+        first_word = query_lower.split()[0] if query_lower.split() else ""
+        
+        return first_word not in write_keywords
     
     async def semantic_search(self, query_text: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Perform semantic search across graph entities"""
+        """Perform semantic search across graph entities with intelligent caching"""
         if not self.initialized:
             return []
-            
+        
+        # Check cache for semantic search results (shorter TTL due to content sensitivity)
+        search_params = {"query": query_text.lower(), "limit": limit}
+        cache_key = self._generate_cache_key(f"semantic_search:{query_text}", search_params, "semantic")
+        
+        if self.enable_caching:
+            cached_result = await self._get_from_cache(cache_key)
+            if cached_result:
+                logger.debug(f"Semantic search cache hit for: {query_text[:50]}...")
+                return cached_result.get("search_results", [])
+        
         # Search across files, classes, and methods for relevant text
         cypher = """
         MATCH (n) 
@@ -232,13 +334,22 @@ class Neo4jService:
         LIMIT $limit
         """
         
-        result = await self.execute_cypher(cypher, {
-            "query": query_text.lower(),
-            "limit": limit
-        })
+        result = await self.execute_cypher(cypher, search_params)
         
         if result["status"] == "success":
-            return result["result"]
+            search_results = result["result"]
+            
+            # Cache semantic search results with shorter TTL
+            if self.enable_caching:
+                cache_result = {
+                    "search_results": search_results,
+                    "query": query_text,
+                    "limit": limit,
+                    "cached_at": int(time.time())
+                }
+                await self._store_in_cache(cache_key, cache_result, self.cache_ttl_semantic)
+            
+            return search_results
         else:
             logger.error(f"Semantic search failed: {result.get('message')}")
             return []

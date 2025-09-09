@@ -8,6 +8,9 @@ Enhanced with comprehensive error handling and graceful degradation
 import os
 import logging
 import asyncio
+import json
+import hashlib
+import time
 from typing import List, Dict, Any, Optional
 import httpx
 from qdrant_client import AsyncQdrantClient
@@ -45,6 +48,15 @@ class QdrantService:
         self.client = None
         self.initialized = False
         
+        # Cache configuration for intelligent caching
+        self.cache_enabled = os.getenv('QDRANT_CACHE_ENABLED', 'true').lower() == 'true'
+        self.default_ttl = int(os.getenv('QDRANT_CACHE_TTL', 1800))  # 30 minutes default
+        self.search_cache_ttl = int(os.getenv('QDRANT_SEARCH_CACHE_TTL', 900))  # 15 minutes for search results
+        self.collection_cache_ttl = int(os.getenv('QDRANT_COLLECTION_CACHE_TTL', 3600))  # 1 hour for collections
+        
+        # Service container reference for cache access
+        self.service_container = None
+        
         # Register fallback search function
         self._register_fallbacks()
     
@@ -70,6 +82,75 @@ class QdrantService:
         """Fallback hybrid search when Qdrant is unavailable"""
         logger.warning("Using fallback hybrid search - Qdrant unavailable")
         return await self._fallback_search(*args, **kwargs)
+    
+    def set_service_container(self, container):
+        """Set service container for cache access"""
+        self.service_container = container
+    
+    def _generate_cache_key(self, operation: str, **params) -> str:
+        """Generate cache key for Qdrant operations with parameters"""
+        params_str = json.dumps(params, sort_keys=True)
+        params_hash = hashlib.sha256(params_str.encode()).hexdigest()[:16]
+        return f"l9:prod:neural_tools:qdrant:{operation}:{self.project_name}:{params_hash}"
+    
+    async def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Get data from Redis cache with analytics tracking"""
+        if not self.cache_enabled or not self.service_container:
+            return None
+            
+        try:
+            redis_cache = await self.service_container.get_redis_cache_client()
+            cached_data = await redis_cache.get(cache_key)
+            
+            if cached_data:
+                ttl_remaining = await redis_cache.ttl(cache_key)
+                
+                # Record cache hit for analytics
+                if hasattr(self.service_container, 'get_dlq_service'):
+                    dlq_service = await self.service_container.get_dlq_service()
+                    if hasattr(dlq_service.redis_client, 'lpush'):  # Check if analytics method exists
+                        try:
+                            # Use CacheWarmer analytics if available
+                            cache_warmer = getattr(self.service_container, '_cache_warmer', None)
+                            if cache_warmer and hasattr(cache_warmer, 'analytics'):
+                                await cache_warmer.analytics.record_cache_access(
+                                    cache_key, hit=True, ttl_remaining=ttl_remaining
+                                )
+                        except Exception:
+                            pass  # Don't fail operations due to analytics issues
+                
+                return json.loads(cached_data)
+                
+            # Record cache miss for analytics  
+            if hasattr(self.service_container, 'get_dlq_service'):
+                dlq_service = await self.service_container.get_dlq_service()
+                if hasattr(dlq_service.redis_client, 'lpush'):
+                    try:
+                        cache_warmer = getattr(self.service_container, '_cache_warmer', None)
+                        if cache_warmer and hasattr(cache_warmer, 'analytics'):
+                            await cache_warmer.analytics.record_cache_access(
+                                cache_key, hit=False, ttl_remaining=None
+                            )
+                    except Exception:
+                        pass
+                        
+        except Exception as e:
+            logger.warning(f"Cache get failed for {cache_key}: {e}")
+            
+        return None
+    
+    async def _store_in_cache(self, cache_key: str, data: Any, ttl: int) -> bool:
+        """Store data in Redis cache"""
+        if not self.cache_enabled or not self.service_container:
+            return False
+            
+        try:
+            redis_cache = await self.service_container.get_redis_cache_client()
+            await redis_cache.setex(cache_key, ttl, json.dumps(data, default=str))
+            return True
+        except Exception as e:
+            logger.warning(f"Cache store failed for {cache_key}: {e}")
+            return False
         
     @database_retry
     async def initialize(self) -> Dict[str, Any]:
@@ -233,12 +314,28 @@ class QdrantService:
         score_threshold: float = 0.0,
         filter_conditions: Optional[Filter] = None
     ) -> List[Dict[str, Any]]:
-        """Perform vector similarity search with error handling"""
+        """Perform vector similarity search with intelligent caching"""
         if not self.initialized or not self.client:
             raise VectorDatabaseException(
                 "Qdrant service not initialized",
                 context={"collection_name": collection_name, "limit": limit}
             )
+        
+        # Generate cache key for vector search
+        cache_params = {
+            "collection_name": collection_name,
+            "query_vector_hash": hashlib.sha256(str(query_vector).encode()).hexdigest()[:16],
+            "limit": limit,
+            "score_threshold": score_threshold,
+            "filter_hash": hashlib.sha256(str(filter_conditions).encode()).hexdigest()[:8] if filter_conditions else None
+        }
+        cache_key = self._generate_cache_key("search_vectors", **cache_params)
+        
+        # Try cache first
+        cached_results = await self._get_from_cache(cache_key)
+        if cached_results is not None:
+            logger.debug(f"Vector search cache hit for collection {collection_name}")
+            return cached_results
             
         try:
             search_results = await self.client.search(
@@ -258,6 +355,10 @@ class QdrantService:
                     "score": float(result.score),
                     "payload": result.payload or {}
                 })
+            
+            # Cache the results
+            await self._store_in_cache(cache_key, results, self.search_cache_ttl)
+            logger.debug(f"Cached vector search results for collection {collection_name}")
                 
             return results
             
@@ -316,9 +417,25 @@ class QdrantService:
         limit: int = 10,
         k: int = 60
     ) -> List[Dict[str, Any]]:
-        """Perform RRF hybrid search combining vector and text search"""
+        """Perform RRF hybrid search combining vector and text search with caching"""
+        # Generate cache key for hybrid search
+        cache_params = {
+            "collection_name": collection_name,
+            "query_vector_hash": hashlib.sha256(str(query_vector).encode()).hexdigest()[:16],
+            "query_text": query_text,
+            "limit": limit,
+            "k": k
+        }
+        cache_key = self._generate_cache_key("rrf_hybrid_search", **cache_params)
+        
+        # Try cache first
+        cached_results = await self._get_from_cache(cache_key)
+        if cached_results is not None:
+            logger.debug(f"Hybrid search cache hit for collection {collection_name}")
+            return cached_results
+        
         try:
-            # Vector search
+            # Vector search (will use its own caching)
             vector_results = await self.search_vectors(
                 collection_name=collection_name,
                 query_vector=query_vector,
@@ -343,7 +460,13 @@ class QdrantService:
             )
             
             # Combine using RRF
-            return self._combine_with_rrf(vector_results, text_results, k=k)[:limit]
+            results = self._combine_with_rrf(vector_results, text_results, k=k)[:limit]
+            
+            # Cache the hybrid search results
+            await self._store_in_cache(cache_key, results, self.search_cache_ttl)
+            logger.debug(f"Cached hybrid search results for collection {collection_name}")
+            
+            return results
             
         except Exception as e:
             logger.error(f"RRF hybrid search failed: {e}")
@@ -398,14 +521,29 @@ class QdrantService:
             return {"healthy": False, "error": str(e)}
     
     async def get_collections(self) -> List[str]:
-        """Get list of all collection names"""
+        """Get list of all collection names with intelligent caching"""
         if not self.initialized or not self.client:
             return []
+        
+        # Generate cache key for collections list
+        cache_key = self._generate_cache_key("get_collections")
+        
+        # Try cache first
+        cached_collections = await self._get_from_cache(cache_key)
+        if cached_collections is not None:
+            logger.debug("Collections list cache hit")
+            return cached_collections
             
         try:
             collections_response = await self.client.get_collections()
             # AsyncQdrantClient returns response with .result.collections structure
-            return [col.name for col in collections_response.result.collections]
+            collections = [col.name for col in collections_response.result.collections]
+            
+            # Cache the collections list
+            await self._store_in_cache(cache_key, collections, self.collection_cache_ttl)
+            logger.debug("Cached collections list")
+            
+            return collections
             
         except Exception as e:
             logger.error(f"Failed to get collections: {e}")
@@ -505,13 +643,22 @@ class QdrantService:
             }
 
     async def get_collection_info(self, collection_name: str) -> Dict[str, Any]:
-        """Get collection information and statistics"""
+        """Get collection information and statistics with intelligent caching"""
         if not self.initialized or not self.client:
             return {"exists": False, "message": "Service not initialized"}
+        
+        # Generate cache key for collection info
+        cache_key = self._generate_cache_key("get_collection_info", collection_name=collection_name)
+        
+        # Try cache first
+        cached_info = await self._get_from_cache(cache_key)
+        if cached_info is not None:
+            logger.debug(f"Collection info cache hit for {collection_name}")
+            return cached_info
             
         try:
             collection_info = await self.client.get_collection(collection_name)
-            return {
+            info = {
                 "exists": True,
                 "points_count": collection_info.points_count,
                 "vectors_count": collection_info.vectors_count,
@@ -522,6 +669,15 @@ class QdrantService:
                 }
             }
             
+            # Cache collection info with shorter TTL since it changes frequently
+            await self._store_in_cache(cache_key, info, self.default_ttl // 2)
+            logger.debug(f"Cached collection info for {collection_name}")
+            
+            return info
+            
         except Exception as e:
             logger.warning(f"Collection {collection_name} info failed: {e}")
-            return {"exists": False, "error": str(e)}
+            error_info = {"exists": False, "error": str(e)}
+            # Cache errors briefly to avoid hammering failed collections
+            await self._store_in_cache(cache_key, error_info, 300)  # 5 minutes
+            return error_info
