@@ -7,6 +7,8 @@ mcp==1.0.0
 # Database Clients (lightweight versions)
 qdrant-client==1.10.0
 neo4j>=5.22.0
+redis>=5.0.0
+arq>=0.25.0
 
 # File Processing & Monitoring
 watchdog>=3.0.0

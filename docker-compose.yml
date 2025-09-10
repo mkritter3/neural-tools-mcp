@@ -59,7 +59,7 @@ services:
       start_period: 30s
 
   qdrant:
-    image: qdrant/qdrant:v1.10.0
+    image: qdrant/qdrant:v1.12.4
     ports:
       - "46333:6333"
       - "46334:6334"
@@ -155,7 +155,7 @@ services:
       - PROJECT_PATH=/workspace
       - PROJECT_NAME=${PROJECT_NAME:-default}
       - INITIAL_INDEX=true
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
       
       # Database Connections
       - NEO4J_URI=bolt://neo4j:7687
@@ -165,8 +165,8 @@ services:
       - QDRANT_PORT=6333
       
       # Embedding Service (External Container)
-      - EMBEDDING_SERVICE_HOST=neural-flow-nomic-v2-production
-      - EMBEDDING_SERVICE_PORT=48000
+      - EMBEDDING_SERVICE_HOST=embeddings
+      - EMBEDDING_SERVICE_PORT=8000
       
       # Performance Tuning
       - BATCH_SIZE=10
@@ -175,6 +175,9 @@ services:
       
       # Vector Configuration
       - EMBED_DIM=768
+      
+      # Feature Flags
+      - STRUCTURE_EXTRACTION_ENABLED=true
       
       # Monitoring
       - ENABLE_METRICS=true

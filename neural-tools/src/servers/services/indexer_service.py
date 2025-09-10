@@ -30,12 +30,24 @@ from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
 
 # Configure logging to stderr for Docker
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, log_level, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     stream=sys.stderr
 )
 logger = logging.getLogger(__name__)
+logger.info(f"Logging level set to: {log_level}")
+
+# Import tree-sitter extractor if structure extraction is enabled
+STRUCTURE_EXTRACTION_ENABLED = os.getenv("STRUCTURE_EXTRACTION_ENABLED", "false").lower() == "true"
+if STRUCTURE_EXTRACTION_ENABLED:
+    try:
+        from tree_sitter_extractor import TreeSitterExtractor
+        logger.info("Tree-sitter extraction enabled")
+    except ImportError as e:
+        logger.warning(f"Tree-sitter extraction not available: {e}")
+        STRUCTURE_EXTRACTION_ENABLED = False
 
 class DebouncedEventHandler(FileSystemEventHandler):
     """
@@ -126,6 +138,16 @@ class IncrementalIndexer(FileSystemEventHandler):
         # Service container for accessing Neo4j, Qdrant, Nomic
         self.container = container
         self.services_initialized = False
+        
+        # Initialize tree-sitter extractor if enabled
+        self.tree_sitter_extractor = None
+        if STRUCTURE_EXTRACTION_ENABLED:
+            try:
+                self.tree_sitter_extractor = TreeSitterExtractor()
+                logger.info("Tree-sitter extractor initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize tree-sitter extractor: {e}")
+                self.tree_sitter_extractor = None
         
         # Observer for file system watching (will be set externally)
         self.observer = None
@@ -752,6 +774,34 @@ class IncrementalIndexer(FileSystemEventHandler):
     async def _index_semantic(self, file_path: str, relative_path: Path, chunks: List[Dict]):
         """Index with full semantic embeddings and GraphRAG cross-references"""
         try:
+            # Extract symbols if tree-sitter is available
+            symbols_data = None
+            if self.tree_sitter_extractor and file_path.endswith(('.py', '.js', '.jsx', '.ts', '.tsx')):
+                logger.debug(f"Attempting symbol extraction for {file_path}")
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    
+                    symbols_result = await self.tree_sitter_extractor.extract_symbols_from_file(
+                        file_path, content, timeout=5.0
+                    )
+                    
+                    if symbols_result and not symbols_result.get('error'):
+                        symbols_data = symbols_result.get('symbols', [])
+                        logger.info(f"✓ Extracted {len(symbols_data)} symbols from {file_path}")
+                        # Log first few symbols for verification
+                        for symbol in symbols_data[:3]:
+                            logger.debug(f"  - {symbol['type']}: {symbol['name']}")
+                    else:
+                        logger.debug(f"No symbols extracted from {file_path}: {symbols_result.get('error', 'unknown')}")
+                except Exception as e:
+                    logger.warning(f"Symbol extraction failed for {file_path}: {e}")
+            else:
+                if not self.tree_sitter_extractor:
+                    logger.debug("Tree-sitter extractor not available")
+                elif not file_path.endswith(('.py', '.js', '.jsx', '.ts', '.tsx')):
+                    logger.debug(f"Skipping symbol extraction for non-supported file: {file_path}")
+            
             # Prepare texts for embedding
             texts = [f"File: {relative_path}\n{chunk['text'][:500]}" for chunk in chunks]
             
@@ -776,28 +826,57 @@ class IncrementalIndexer(FileSystemEventHandler):
                 # Create sparse vector from keywords
                 sparse_indices, sparse_values = self._extract_keywords(chunk['text'])
                 
+                # Find symbols that overlap with this chunk
+                chunk_symbols = []
+                if symbols_data:
+                    for symbol in symbols_data:
+                        # Check if symbol is within this chunk's line range
+                        if (symbol['start_line'] >= chunk['start_line'] and 
+                            symbol['start_line'] <= chunk['end_line']):
+                            chunk_symbols.append({
+                                'type': symbol['type'],
+                                'name': symbol['name'],
+                                'qualified_name': symbol.get('qualified_name', symbol['name']),
+                                'line': symbol['start_line'],
+                                'language': symbol.get('language', 'unknown')
+                            })
+                
+                payload = {
+                    'file_path': str(relative_path),
+                    'full_path': file_path,
+                    'chunk_index': i,
+                    'total_chunks': len(chunks),
+                    'start_line': chunk['start_line'],
+                    'end_line': chunk['end_line'],
+                    'content': chunk['text'][:1000],
+                    'file_type': relative_path.suffix,
+                    'indexed_at': datetime.now().isoformat(),
+                    'project': self.project_name,
+                    # GraphRAG: Store Neo4j node ID reference
+                    'neo4j_chunk_id': chunk_id_hash,
+                    'chunk_hash': chunk_id_hash
+                }
+                
+                # Add symbol information if available
+                if chunk_symbols:
+                    payload['symbols'] = chunk_symbols
+                    payload['symbol_count'] = len(chunk_symbols)
+                    payload['has_symbols'] = True
+                    # Add primary symbol for better search
+                    if chunk_symbols:
+                        payload['primary_symbol'] = chunk_symbols[0]['qualified_name']
+                else:
+                    payload['has_symbols'] = False
+                    payload['symbol_count'] = 0
+                
                 point = {
                     'id': chunk_id,
-                    'vector': embedding,
+                    'vector': {"dense": embedding},  # CRITICAL: Named vector format for consistency
                     'sparse_vector': {
                         'indices': sparse_indices,
                         'values': sparse_values
                     },
-                    'payload': {
-                        'file_path': str(relative_path),
-                        'full_path': file_path,
-                        'chunk_index': i,
-                        'total_chunks': len(chunks),
-                        'start_line': chunk['start_line'],
-                        'end_line': chunk['end_line'],
-                        'content': chunk['text'][:1000],
-                        'file_type': relative_path.suffix,
-                        'indexed_at': datetime.now().isoformat(),
-                        'project': self.project_name,
-                        # GraphRAG: Store Neo4j node ID reference
-                        'neo4j_chunk_id': chunk_id_hash,
-                        'chunk_hash': chunk_id_hash
-                    }
+                    'payload': payload
                 }
                 points.append(point)
                 neo4j_chunk_ids.append({
@@ -815,7 +894,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             
             # Update Neo4j with chunk references (if available)
             if not self.degraded_mode['neo4j'] and neo4j_chunk_ids:
-                await self._update_neo4j_chunks(file_path, relative_path, neo4j_chunk_ids)
+                await self._update_neo4j_chunks(file_path, relative_path, neo4j_chunk_ids, symbols_data)
                 self.metrics['cross_references_created'] += len(neo4j_chunk_ids)
             
         except Exception as e:
@@ -992,8 +1071,8 @@ class IncrementalIndexer(FileSystemEventHandler):
         else:
             return 'code'
     
-    async def _update_neo4j_chunks(self, file_path: str, relative_path: Path, chunk_ids: List[Dict]):
-        """Create CodeChunk nodes in Neo4j with Qdrant cross-references"""
+    async def _update_neo4j_chunks(self, file_path: str, relative_path: Path, chunk_ids: List[Dict], symbols_data: Optional[List[Dict]] = None):
+        """Create CodeChunk nodes in Neo4j with Qdrant cross-references and symbol information"""
         try:
             # Batch create/update chunk nodes
             for chunk_info in chunk_ids:
@@ -1039,6 +1118,53 @@ class IncrementalIndexer(FileSystemEventHandler):
                     raise ValueError(f"Neo4j chunk update failed: {result.get('message')}")
             
             logger.debug(f"Created/updated {len(chunk_ids)} chunk nodes in Neo4j")
+            
+            # Create symbol nodes if we have symbol data
+            if symbols_data and not self.degraded_mode['neo4j']:
+                for symbol in symbols_data:
+                    # Create nodes for classes and functions
+                    if symbol['type'] in ['class', 'function', 'interface', 'method']:
+                        cypher = """
+                        MERGE (s:Symbol {qualified_name: $qualified_name})
+                        SET s.name = $name,
+                            s.type = $type,
+                            s.file_path = $file_path,
+                            s.start_line = $start_line,
+                            s.end_line = $end_line,
+                            s.language = $language,
+                            s.docstring = $docstring,
+                            s.indexed_at = datetime(),
+                            s.project = $project
+                        WITH s
+                        MATCH (f:File {path: $file_path})
+                        MERGE (f)-[:CONTAINS_SYMBOL]->(s)
+                        """
+                        
+                        result = await self.container.neo4j.execute_write(cypher, {
+                            'qualified_name': symbol.get('qualified_name', symbol['name']),
+                            'name': symbol['name'],
+                            'type': symbol['type'],
+                            'file_path': str(relative_path),
+                            'start_line': symbol['start_line'],
+                            'end_line': symbol['end_line'],
+                            'language': symbol.get('language', 'unknown'),
+                            'docstring': symbol.get('docstring', ''),
+                            'project': self.project_name
+                        })
+                        
+                        # Create parent-child relationships for methods
+                        if symbol['type'] == 'method' and symbol.get('parent_class'):
+                            parent_cypher = """
+                            MATCH (parent:Symbol {qualified_name: $parent_name})
+                            MATCH (child:Symbol {qualified_name: $child_name})
+                            MERGE (parent)-[:HAS_METHOD]->(child)
+                            """
+                            await self.container.neo4j.execute_write(parent_cypher, {
+                                'parent_name': symbol['parent_class'],
+                                'child_name': symbol.get('qualified_name', symbol['name'])
+                            })
+                
+                logger.info(f"Created/updated {len(symbols_data)} symbol nodes in Neo4j")
             
         except Exception as e:
             error_category = self._categorize_error(e, "")
@@ -1227,25 +1353,34 @@ class IncrementalIndexer(FileSystemEventHandler):
         logger.info(f"Starting initial index of {self.project_path}")
         
         # Check if we've already indexed
+        logger.debug(f"Degraded mode status: {self.degraded_mode}")
         if not self.degraded_mode['qdrant']:
             try:
+                logger.debug("Checking if collection already has data...")
                 collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
                 info = await self.container.qdrant.get_collection_info(collection_name)
                 if info.get('points_count', 0) > 0:
                     logger.info("Collection already has data - skipping initial index")
                     return
-            except:
+            except Exception as e:
+                logger.debug(f"Error checking collection: {e}")
                 pass
         
         # Find all files to index
+        logger.debug("Starting file discovery...")
         files_to_index = []
         for ext in self.watch_patterns:
-            files_to_index.extend(self.project_path.rglob(f"*{ext}"))
+            logger.debug(f"Searching for files with extension: {ext}")
+            matching_files = list(self.project_path.rglob(f"*{ext}"))
+            logger.debug(f"Found {len(matching_files)} files with {ext}")
+            files_to_index.extend(matching_files)
+        
+        logger.debug(f"Total files found before filtering: {len(files_to_index)}")
         
         # Filter out ignored paths
         files_to_index = [f for f in files_to_index if self.should_index(str(f))]
         
-        logger.info(f"Found {len(files_to_index)} files to index")
+        logger.info(f"Found {len(files_to_index)} files to index after filtering")
         
         # Index in batches
         for i in range(0, len(files_to_index), self.batch_size):

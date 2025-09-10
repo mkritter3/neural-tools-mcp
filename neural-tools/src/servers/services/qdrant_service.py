@@ -182,7 +182,15 @@ class QdrantService:
             
             # Test client operations  
             collections_response = await self.client.get_collections()
-            # AsyncQdrantClient returns response with .result.collections structure
+            
+            # Handle different API response structures (v1.12 vs v1.15+)
+            if hasattr(collections_response, 'collections'):
+                collections = collections_response.collections
+            elif hasattr(collections_response, 'result') and hasattr(collections_response.result, 'collections'):
+                collections = collections_response.result.collections
+            else:
+                collections = []
+            
             self.initialized = True
             
             # Mark service as healthy
@@ -191,7 +199,7 @@ class QdrantService:
             return {
                 "success": True,
                 "message": "Qdrant service initialized successfully",
-                "collections_count": len(collections_response.result.collections),
+                "collections_count": len(collections),
                 "grpc_endpoint": f"{self.host}:{self.grpc_port}"
             }
             
@@ -208,8 +216,17 @@ class QdrantService:
             }
     
     @database_retry
-    async def ensure_collection(self, collection_name: str, vector_size: int = 1536) -> bool:
-        """Ensure collection exists with proper configuration"""
+    async def ensure_collection(self, collection_name: str, vector_size: int = 1536, distance=None) -> bool:
+        """Ensure collection exists with proper configuration
+        
+        Args:
+            collection_name: Name of the collection
+            vector_size: Dimension of vectors (default 1536, but typically 768 for Nomic)
+            distance: Distance metric (default Distance.COSINE)
+        """
+        if distance is None:
+            distance = Distance.COSINE
+            
         if not self.initialized or not self.client:
             raise VectorDatabaseException(
                 "Qdrant service not initialized",
@@ -219,8 +236,13 @@ class QdrantService:
         try:
             # Check if collection exists
             collections_response = await self.client.get_collections()
-            # AsyncQdrantClient returns response with .result.collections structure
-            existing_names = [col.name for col in collections_response.result.collections]
+            # Handle different API response structures (v1.12 vs v1.15+)
+            if hasattr(collections_response, 'collections'):
+                existing_names = [col.name for col in collections_response.collections]
+            elif hasattr(collections_response, 'result') and hasattr(collections_response.result, 'collections'):
+                existing_names = [col.name for col in collections_response.result.collections]
+            else:
+                existing_names = []
             
             if collection_name not in existing_names:
                 # Create collection with optimized settings (named vectors)
@@ -229,7 +251,7 @@ class QdrantService:
                     vectors_config={
                         "dense": VectorParams(
                             size=vector_size,
-                            distance=Distance.COSINE
+                            distance=distance  # Now using the passed distance parameter
                         )
                     },
                     # Production-grade settings
@@ -273,18 +295,36 @@ class QdrantService:
             if points:
                 # Get collection info to check expected dimensions
                 collection_info = await self.client.get_collection(collection_name)
-                expected_dim = collection_info.config.params.vectors.size
+                
+                # Handle named vectors configuration
+                if hasattr(collection_info.config.params.vectors, 'get'):
+                    # Named vectors configuration
+                    expected_dim = collection_info.config.params.vectors.get("dense").size
+                else:
+                    # Single vector configuration
+                    expected_dim = collection_info.config.params.vectors.size
                 
                 # Check first point's vector dimensions
                 first_point = points[0]
+                actual_dim = None
+                
                 if hasattr(first_point, 'vector') and first_point.vector:
-                    actual_dim = len(first_point.vector)
-                    if actual_dim != expected_dim:
+                    # Handle both dict (named vectors) and list formats
+                    if isinstance(first_point.vector, dict):
+                        # Named vector format: {"dense": [...]}
+                        if "dense" in first_point.vector:
+                            actual_dim = len(first_point.vector["dense"])
+                    elif isinstance(first_point.vector, list):
+                        # Bare list format (legacy)
+                        actual_dim = len(first_point.vector)
+                    
+                    if actual_dim and actual_dim != expected_dim:
                         error_msg = f"Embedding dimension mismatch for collection '{collection_name}': expected {expected_dim}, got {actual_dim}. Check EMBED_DIM environment variable."
                         logger.error(error_msg)
                         raise ValueError(error_msg)
                     
-                    logger.debug(f"Dimension validation passed: {actual_dim}D vectors for collection {collection_name}")
+                    if actual_dim:
+                        logger.debug(f"Dimension validation passed: {actual_dim}D vectors for collection {collection_name}")
             
             operation_info = await self.client.upsert(
                 collection_name=collection_name,
@@ -510,10 +550,17 @@ class QdrantService:
                 return {"healthy": False, "message": "Service not initialized"}
             
             collections_response = await self.client.get_collections()
-            # AsyncQdrantClient returns response with .result.collections structure
+            # Handle different API response structures (v1.12 vs v1.15+)
+            if hasattr(collections_response, 'collections'):
+                collections = collections_response.collections
+            elif hasattr(collections_response, 'result') and hasattr(collections_response.result, 'collections'):
+                collections = collections_response.result.collections
+            else:
+                collections = []
+            
             return {
                 "healthy": True,
-                "collections_count": len(collections_response.result.collections),
+                "collections_count": len(collections),
                 "endpoint": f"{self.host}:{self.grpc_port}"
             }
             
@@ -536,8 +583,13 @@ class QdrantService:
             
         try:
             collections_response = await self.client.get_collections()
-            # AsyncQdrantClient returns response with .result.collections structure
-            collections = [col.name for col in collections_response.result.collections]
+            # Handle different API response structures (v1.12 vs v1.15+)
+            if hasattr(collections_response, 'collections'):
+                collections = [col.name for col in collections_response.collections]
+            elif hasattr(collections_response, 'result') and hasattr(collections_response.result, 'collections'):
+                collections = [col.name for col in collections_response.result.collections]
+            else:
+                collections = []
             
             # Cache the collections list
             await self._store_in_cache(cache_key, collections, self.collection_cache_ttl)

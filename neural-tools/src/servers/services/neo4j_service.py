@@ -103,9 +103,12 @@ class AsyncNeo4jClient:
                         raise tx_error
                 
                 # Execute with managed transaction for retry capability
-                # Strip whitespace before checking query type
+                # Check if query contains write operations (anywhere in the query)
                 query_upper = cypher_query.strip().upper()
-                if query_upper.startswith(('CREATE', 'MERGE', 'SET', 'DELETE')):
+                write_keywords = ('CREATE', 'MERGE', 'SET', 'DELETE', 'REMOVE', 'DROP')
+                is_write_query = any(keyword in query_upper for keyword in write_keywords)
+                
+                if is_write_query:
                     # Write transaction
                     query_result = await session.execute_write(
                         execute_query_tx, cypher_query, parameters or {}
@@ -303,10 +306,13 @@ class Neo4jService:
         # Write operations that should not be cached
         write_keywords = ['create', 'merge', 'set', 'delete', 'remove', 'drop']
         
-        # Check if query starts with write operations
-        first_word = query_lower.split()[0] if query_lower.split() else ""
+        # Check if query contains any write keywords (anywhere in the query)
+        for keyword in write_keywords:
+            if keyword in query_lower:
+                return False
         
-        return first_word not in write_keywords
+        # It's a read query if it doesn't contain write operations
+        return True
     
     async def semantic_search(self, query_text: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Perform semantic search across graph entities with intelligent caching"""
