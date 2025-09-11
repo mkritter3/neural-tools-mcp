@@ -5,7 +5,7 @@ Handles data transformation during schema migrations
 """
 
 import logging
-from typing import Dict, List, Any, Callable, Optional
+from typing import Dict, List, Any, Callable, Optional, Tuple
 from dataclasses import dataclass
 import asyncio
 from qdrant_client.models import PointStruct
