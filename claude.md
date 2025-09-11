@@ -48,7 +48,7 @@
 
 # L9 Neural GraphRAG MCP Architecture - Complete Documentation
 
-**Last Updated: September 10, 2025**
+**Last Updated: September 11, 2025 - INDEXER WORKING! 🎉**
 **Architecture Version: L9 2025 Production Standard**
 **MCP Protocol: 2025-06-18**
 
@@ -362,6 +362,52 @@ session_context = await session_manager.get_session(session_id)
 **Root Cause**: Using Docker internal ports instead of exposed ports
 
 **Solution**: Always use exposed ports from docker-compose.yml
+
+### Issue 4: Indexer Not Writing to Qdrant ⭐ SOLVED
+
+**Symptom**: Indexer reports files processed but Qdrant shows 0 points
+
+**Root Causes & Solutions**:
+
+1. **Event Loop Errors in Watchdog**: 
+   - **Fix**: Use `asyncio.run_coroutine_threadsafe()` for cross-thread async calls
+   ```python
+   # Store loop reference in __init__
+   self._loop = asyncio.get_running_loop()
+   # Use in watchdog callbacks
+   asyncio.run_coroutine_threadsafe(self.indexer._queue_change(path, 'create'), self._loop)
+   ```
+
+2. **Qdrant Collection Schema Mismatch**:
+   - **Fix**: Use unnamed vectors instead of named vectors
+   ```python
+   # WRONG: Named vector
+   vectors_config={"dense": VectorParams(size=768, distance="Cosine")}
+   # CORRECT: Unnamed vector  
+   vectors_config=VectorParams(size=768, distance="Cosine")
+   ```
+
+3. **Neo4j Integer Overflow**:
+   - **Fix**: Use 15 hex chars for IDs instead of 16
+   ```python
+   # Neo4j max int: 9223372036854775807
+   chunk_id = int(chunk_id_hash[:15], 16)  # 15 hex chars fits in int64
+   ```
+
+4. **Qdrant Validation Errors**:
+   - **Fix**: Remove sparse_vector fields, convert dicts to PointStruct
+   ```python
+   from qdrant_client.models import PointStruct
+   point_structs = [PointStruct(**p) if isinstance(p, dict) else p for p in points]
+   ```
+
+5. **Docker Network Issues**:
+   - **Fix**: Ensure indexer runs on same network as other services
+   ```bash
+   docker run --network l9-graphrag-network ...
+   ```
+
+**Verification**: Successfully indexing data as of September 11, 2025!
 
 ## 🎯 Key Architectural Decisions
 
