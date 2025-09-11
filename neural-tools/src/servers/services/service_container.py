@@ -454,15 +454,41 @@ class ServiceContainer:
             logger.error(f"Failed to connect to REAL Qdrant: {e}")
             return False
     
-    def initialize(self) -> bool:
-        """Initialize all services for this project"""
+    def initialize(self, retry_on_failure: bool = True) -> bool:
+        """Initialize all services for this project
+        
+        Args:
+            retry_on_failure: If True, retry connection with exponential backoff
+        """
         if self.initialized:
             return True
             
         logger.info(f"Initializing ServiceContainer for project: {self.project_name}")
         
-        neo4j_ok = self.ensure_neo4j_client()
-        qdrant_ok = self.ensure_qdrant_client()
+        # Try with retry logic if enabled
+        if retry_on_failure:
+            import time
+            max_retries = 5
+            base_delay = 2  # seconds
+            
+            for attempt in range(max_retries):
+                neo4j_ok = self.ensure_neo4j_client()
+                qdrant_ok = self.ensure_qdrant_client()
+                
+                if neo4j_ok and qdrant_ok:
+                    logger.info(f"✅ Services connected on attempt {attempt + 1}/{max_retries}")
+                    break
+                    
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)  # 2, 4, 8, 16 seconds
+                    logger.warning(f"⏳ Services not ready (Neo4j: {neo4j_ok}, Qdrant: {qdrant_ok}), retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+            else:
+                logger.error(f"Failed to connect to services after {max_retries} attempts")
+        else:
+            # Single attempt without retry
+            neo4j_ok = self.ensure_neo4j_client()
+            qdrant_ok = self.ensure_qdrant_client()
         
         # Initialize REAL service wrappers - NO MOCKS!
         if neo4j_ok:
@@ -498,8 +524,12 @@ class ServiceContainer:
         return neo4j_ok and qdrant_ok
     
     async def initialize_all_services(self) -> bool:
-        """Async version of initialize for MCP server compatibility"""
-        base_init = self.initialize()
+        """Async version of initialize for MCP server compatibility
+        
+        This method includes retry logic with exponential backoff to handle
+        Docker container startup delays (ADR 0018)
+        """
+        base_init = self.initialize(retry_on_failure=True)
         
         # Initialize service wrappers asynchronously
         if self.neo4j and hasattr(self.neo4j, 'initialize'):
