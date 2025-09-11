@@ -1,0 +1,157 @@
+# Add Redux support to React schema
+version: 2
+name: add_redux_support
+description: "Add Redux store, actions, and reducers to React schema"
+timestamp: "2025-09-11T11:00:00Z"
+depends_on: [1]
+
+up:
+  # Add Redux-specific node types
+  - type: create_node_type
+    target: neo4j
+    node_type: Store
+    properties:
+      name: string
+      type: string  # redux, zustand, mobx
+      slices: json
+      middleware: list
+      file_path: string
+    indexes:
+      - name
+      - type
+  
+  - type: create_node_type
+    target: neo4j
+    node_type: Action
+    properties:
+      type: string
+      payload_schema: json
+      creator_function: string
+      file_path: string
+    indexes:
+      - type
+      - creator_function
+  
+  - type: create_node_type
+    target: neo4j
+    node_type: Reducer
+    properties:
+      name: string
+      slice: string
+      initial_state: json
+      file_path: string
+    indexes:
+      - name
+      - slice
+  
+  - type: create_node_type
+    target: neo4j
+    node_type: Selector
+    properties:
+      name: string
+      input: string
+      output: string
+      memoized: boolean
+      file_path: string
+    indexes:
+      - name
+  
+  # Add Redux relationships
+  - type: create_relationship_type
+    target: neo4j
+    relationship_type: DISPATCHES_ACTION
+    from_types: [Component]
+    to_types: [Action]
+    properties:
+      line_number: integer
+      event_trigger: string
+  
+  - type: create_relationship_type
+    target: neo4j
+    relationship_type: HANDLES_ACTION
+    from_types: [Reducer]
+    to_types: [Action]
+    properties:
+      case_statement: string
+  
+  - type: create_relationship_type
+    target: neo4j
+    relationship_type: USES_SELECTOR
+    from_types: [Component]
+    to_types: [Selector]
+    properties:
+      line_number: integer
+  
+  - type: create_relationship_type
+    target: neo4j
+    relationship_type: BELONGS_TO_STORE
+    from_types: [Reducer, Action, Selector]
+    to_types: [Store]
+  
+  # Add Redux collection to Qdrant
+  - type: create_collection
+    target: qdrant
+    collection: redux_state
+    vector_size: 768
+    distance: cosine
+    fields:
+      - store_name
+      - action_type
+      - reducer_logic
+      - selector_logic
+      - state_shape
+      - file_path
+  
+  # Add property to existing Component node type
+  - type: add_property
+    target: neo4j
+    node_type: Component
+    property_name: connected_to_redux
+    property_type: boolean
+    default_value: false
+
+down:
+  # Remove added property
+  - type: remove_property
+    target: neo4j
+    node_type: Component
+    property_name: connected_to_redux
+  
+  # Remove Redux collection
+  - type: delete_collection
+    target: qdrant
+    collection: redux_state
+  
+  # Remove Redux relationships
+  - type: delete_relationship_type
+    target: neo4j
+    relationship_type: BELONGS_TO_STORE
+  
+  - type: delete_relationship_type
+    target: neo4j
+    relationship_type: USES_SELECTOR
+  
+  - type: delete_relationship_type
+    target: neo4j
+    relationship_type: HANDLES_ACTION
+  
+  - type: delete_relationship_type
+    target: neo4j
+    relationship_type: DISPATCHES_ACTION
+  
+  # Remove Redux node types
+  - type: delete_node_type
+    target: neo4j
+    node_type: Selector
+  
+  - type: delete_node_type
+    target: neo4j
+    node_type: Reducer
+  
+  - type: delete_node_type
+    target: neo4j
+    node_type: Action
+  
+  - type: delete_node_type
+    target: neo4j
+    node_type: Store

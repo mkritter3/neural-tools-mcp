@@ -1,0 +1,133 @@
+# Initial React project schema migration
+version: 1
+name: initial_react_schema
+description: "Set up initial React project schema with component and hook types"
+timestamp: "2025-09-11T10:00:00Z"
+
+up:
+  # Create Neo4j node types
+  - type: create_node_type
+    target: neo4j
+    node_type: Component
+    properties:
+      name: string
+      type: string  # functional, class, hook
+      file_path: string
+      line_number: integer
+      props: json
+      state: json
+    indexes:
+      - name
+      - type
+      - file_path
+  
+  - type: create_node_type
+    target: neo4j
+    node_type: Hook
+    properties:
+      name: string
+      returns: string
+      dependencies: list
+      custom: boolean
+      file_path: string
+    indexes:
+      - name
+      - custom
+  
+  - type: create_node_type
+    target: neo4j
+    node_type: Context
+    properties:
+      name: string
+      provider: string
+      default_value: json
+      file_path: string
+    indexes:
+      - name
+      - provider
+  
+  # Create Neo4j relationship types
+  - type: create_relationship_type
+    target: neo4j
+    relationship_type: USES_HOOK
+    from_types: [Component, Hook]
+    to_types: [Hook]
+    properties:
+      line_number: integer
+  
+  - type: create_relationship_type
+    target: neo4j
+    relationship_type: CONSUMES_CONTEXT
+    from_types: [Component]
+    to_types: [Context]
+    properties:
+      usage_type: string
+  
+  - type: create_relationship_type
+    target: neo4j
+    relationship_type: RENDERS
+    from_types: [Component]
+    to_types: [Component]
+    properties:
+      conditional: boolean
+      in_loop: boolean
+  
+  # Create Qdrant collections
+  - type: create_collection
+    target: qdrant
+    collection: components
+    vector_size: 768
+    distance: cosine
+    fields:
+      - component_name
+      - component_type
+      - props_schema
+      - hooks_used
+      - render_logic
+      - file_path
+  
+  - type: create_collection
+    target: qdrant
+    collection: hooks
+    vector_size: 768
+    distance: cosine
+    fields:
+      - hook_name
+      - dependencies
+      - return_type
+      - usage_examples
+      - file_path
+
+down:
+  # Rollback operations in reverse order
+  - type: delete_collection
+    target: qdrant
+    collection: hooks
+  
+  - type: delete_collection
+    target: qdrant
+    collection: components
+  
+  - type: delete_relationship_type
+    target: neo4j
+    relationship_type: RENDERS
+  
+  - type: delete_relationship_type
+    target: neo4j
+    relationship_type: CONSUMES_CONTEXT
+  
+  - type: delete_relationship_type
+    target: neo4j
+    relationship_type: USES_HOOK
+  
+  - type: delete_node_type
+    target: neo4j
+    node_type: Context
+  
+  - type: delete_node_type
+    target: neo4j
+    node_type: Hook
+  
+  - type: delete_node_type
+    target: neo4j
+    node_type: Component

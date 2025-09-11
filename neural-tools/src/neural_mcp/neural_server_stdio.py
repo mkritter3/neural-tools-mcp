@@ -30,6 +30,9 @@ import mcp.types as types
 # Import schema management for ADR-0020
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'servers', 'services'))
 from schema_manager import SchemaManager, ProjectType
+# Import migration management for ADR-0021
+from migration_manager import MigrationManager, MigrationResult
+from data_migrator import DataMigrator
 
 # Configure logging to stderr (NEVER to stdout for STDIO transport)
 logging.basicConfig(
@@ -214,6 +217,7 @@ class MultiProjectServiceState:
                 'project_containers': {},
                 'project_retrievers': {},
                 'project_schemas': {},  # ADR-0020: Per-project schema managers
+                'project_migrations': {},  # ADR-0021: Per-project migration managers
                 'session_started': datetime.now(),
                 'last_activity': datetime.now()
             }
@@ -313,6 +317,32 @@ class MultiProjectServiceState:
             logger.info(f"📋 [Instance {self.instance_id}] Created SchemaManager for project: {project_name}")
             
         return project_schemas[project_name]
+    
+    async def get_project_migration_manager(self, project_name: str) -> MigrationManager:
+        """
+        Get or create MigrationManager for specific project.
+        ADR-0021: GraphRAG schema migration system.
+        """
+        instance_data = self._get_instance_data()
+        project_migrations = instance_data['project_migrations']
+        
+        if project_name not in project_migrations:
+            # Get project path from working directory or environment
+            project_path = os.environ.get('PROJECT_PATH', os.getcwd())
+            
+            # Create migration manager
+            migration_manager = MigrationManager(project_name, project_path)
+            
+            # Inject service connections
+            container = await self.get_project_container(project_name)
+            if container:
+                migration_manager.neo4j = container.neo4j
+                migration_manager.qdrant = container.qdrant
+            
+            project_migrations[project_name] = migration_manager
+            logger.info(f"📦 [Instance {self.instance_id}] Created MigrationManager for project: {project_name}")
+            
+        return project_migrations[project_name]
     
     async def cleanup_stale_instances(self):
         """
@@ -688,6 +718,75 @@ async def handle_list_tools() -> List[types.Tool]:
                 "additionalProperties": False
             }
         ),
+        # Migration management tools (ADR-0021)
+        types.Tool(
+            name="migration_generate",
+            description=(
+                "Generate a new migration from schema changes.\n"
+                "Usage: {\"name\": \"add_user_auth\", \"description\": \"Add authentication fields\"}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "description": "Migration name (alphanumeric + underscore)"},
+                    "description": {"type": "string", "description": "Migration description"},
+                    "dry_run": {"type": "boolean", "default": False, "description": "Preview without creating file"}
+                },
+                "required": ["name"],
+                "additionalProperties": False
+            }
+        ),
+        types.Tool(
+            name="migration_apply",
+            description=(
+                "Apply pending migrations.\n"
+                "Usage: {\"target_version\": 5, \"dry_run\": false}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target_version": {"type": "integer", "minimum": 0, "description": "Target version (omit for latest)"},
+                    "dry_run": {"type": "boolean", "default": False, "description": "Preview what would be applied"}
+                },
+                "additionalProperties": False
+            }
+        ),
+        types.Tool(
+            name="migration_rollback",
+            description=(
+                "Rollback to a previous migration version.\n"
+                "Usage: {\"target_version\": 3, \"force\": false}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target_version": {"type": "integer", "minimum": 0, "description": "Version to rollback to"},
+                    "force": {"type": "boolean", "default": False, "description": "Skip safety checks"}
+                },
+                "required": ["target_version"],
+                "additionalProperties": False
+            }
+        ),
+        types.Tool(
+            name="migration_status",
+            description="Get current migration status and pending migrations",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
+        ),
+        types.Tool(
+            name="schema_diff",
+            description=(
+                "Compare schema between database and schema.yaml.\n"
+                "Usage: {\"from_source\": \"database\", \"to_source\": \"schema.yaml\"}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "from_source": {"type": "string", "default": "database", "description": "Source for comparison"},
+                    "to_source": {"type": "string", "default": "schema.yaml", "description": "Target for comparison"}
+                },
+                "additionalProperties": False
+            }
+        ),
     ]
 
 
@@ -815,6 +914,17 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             return await schema_add_node_type_impl(arguments)
         elif name == "schema_add_relationship":
             return await schema_add_relationship_impl(arguments)
+        # Migration tools (ADR-0021)
+        elif name == "migration_generate":
+            return await migration_generate_impl(arguments)
+        elif name == "migration_apply":
+            return await migration_apply_impl(arguments)
+        elif name == "migration_rollback":
+            return await migration_rollback_impl(arguments)
+        elif name == "migration_status":
+            return await migration_status_impl(arguments)
+        elif name == "schema_diff":
+            return await schema_diff_impl(arguments)
         else:
             return [types.TextContent(type="text", text=json.dumps({
                 "error": f"Unknown tool: {name}",
@@ -1469,6 +1579,304 @@ async def schema_add_relationship_impl(arguments: dict) -> List[types.TextConten
         )]
     except Exception as e:
         logger.error(f"Add relationship failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+# Migration tool handlers (ADR-0021)
+
+async def migration_generate_impl(arguments: dict) -> List[types.TextContent]:
+    """Generate a new migration from schema changes"""
+    try:
+        project_name, container, _ = await get_project_context(arguments)
+        
+        # Get or create migration manager for project
+        from servers.services.migration_manager import MigrationManager
+        migration_manager = MigrationManager(
+            project_name=project_name,
+            neo4j_service=container.neo4j if container else None,
+            qdrant_service=container.qdrant if container else None
+        )
+        
+        name = arguments.get('name', '')
+        description = arguments.get('description', '')
+        
+        if not name:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error",
+                    "message": "Migration name is required"
+                }, indent=2)
+            )]
+        
+        # Generate migration from current schema differences
+        migration = await migration_manager.generate_migration(name, description)
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "generated",
+                "project": project_name,
+                "migration": {
+                    "version": migration.version,
+                    "name": migration.name,
+                    "description": migration.description,
+                    "file": migration.file_path,
+                    "operations": len(migration.up_operations)
+                },
+                "message": f"Generated migration {migration.version:04d}_{migration.name}.yaml"
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Migration generate failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def migration_apply_impl(arguments: dict) -> List[types.TextContent]:
+    """Apply pending migrations"""
+    try:
+        project_name, container, _ = await get_project_context(arguments)
+        
+        if not container:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error",
+                    "message": "Services not initialized. Cannot apply migrations."
+                }, indent=2)
+            )]
+        
+        # Get migration manager
+        from servers.services.migration_manager import MigrationManager
+        migration_manager = MigrationManager(
+            project_name=project_name,
+            neo4j_service=container.neo4j,
+            qdrant_service=container.qdrant
+        )
+        
+        target_version = arguments.get('target_version')
+        dry_run = arguments.get('dry_run', False)
+        
+        # Apply migrations
+        result = await migration_manager.migrate(target_version, dry_run)
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "success" if result.success else "failed",
+                "project": project_name,
+                "dry_run": dry_run,
+                "from_version": result.from_version,
+                "to_version": result.to_version,
+                "migrations_applied": result.migrations_applied,
+                "operations_executed": result.operations_executed,
+                "errors": result.errors,
+                "message": f"{'Would apply' if dry_run else 'Applied'} {len(result.migrations_applied)} migrations"
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Migration apply failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def migration_rollback_impl(arguments: dict) -> List[types.TextContent]:
+    """Rollback to a previous migration version"""
+    try:
+        project_name, container, _ = await get_project_context(arguments)
+        
+        if not container:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error",
+                    "message": "Services not initialized. Cannot rollback migrations."
+                }, indent=2)
+            )]
+        
+        target_version = arguments.get('target_version')
+        if target_version is None:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error",
+                    "message": "target_version is required for rollback"
+                }, indent=2)
+            )]
+        
+        # Get migration manager
+        from servers.services.migration_manager import MigrationManager
+        migration_manager = MigrationManager(
+            project_name=project_name,
+            neo4j_service=container.neo4j,
+            qdrant_service=container.qdrant
+        )
+        
+        # Rollback migrations
+        result = await migration_manager.rollback(target_version)
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "success" if result.success else "failed",
+                "project": project_name,
+                "from_version": result.from_version,
+                "to_version": result.to_version,
+                "migrations_rolled_back": result.migrations_applied,
+                "operations_executed": result.operations_executed,
+                "errors": result.errors,
+                "message": f"Rolled back to version {target_version}"
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Migration rollback failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def migration_status_impl(arguments: dict) -> List[types.TextContent]:
+    """Check migration status and history"""
+    try:
+        project_name, container, _ = await get_project_context(arguments)
+        
+        # Get migration manager
+        from servers.services.migration_manager import MigrationManager
+        migration_manager = MigrationManager(
+            project_name=project_name,
+            neo4j_service=container.neo4j if container else None,
+            qdrant_service=container.qdrant if container else None
+        )
+        
+        # Get migration state
+        state = await migration_manager.get_migration_state()
+        pending = await migration_manager.get_pending_migrations()
+        
+        # Get history
+        history = []
+        if container and container.neo4j:
+            history_records = await migration_manager.get_migration_history()
+            history = [
+                {
+                    "version": h["version"],
+                    "name": h["name"],
+                    "applied_at": h["applied_at"],
+                    "direction": h["direction"],
+                    "success": h["success"]
+                }
+                for h in history_records[:5]  # Last 5 migrations
+            ]
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "success",
+                "project": project_name,
+                "current_version": state.current_version,
+                "pending_migrations": len(pending),
+                "pending": [
+                    {
+                        "version": m.version,
+                        "name": m.name,
+                        "description": m.description
+                    }
+                    for m in pending
+                ],
+                "recent_history": history,
+                "last_migration": state.last_migration_at.isoformat() if state.last_migration_at else None
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Migration status failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def schema_diff_impl(arguments: dict) -> List[types.TextContent]:
+    """Show differences between current database and schema file"""
+    try:
+        project_name, container, _ = await get_project_context(arguments)
+        schema_manager = await state.get_project_schema(project_name)
+        
+        if not schema_manager.current_schema:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "no_schema",
+                    "message": "No schema to compare against. Use schema_init first."
+                }, indent=2)
+            )]
+        
+        if not container:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error", 
+                    "message": "Services not initialized. Cannot compare with database."
+                }, indent=2)
+            )]
+        
+        # Compare schema with actual database
+        differences = {
+            "neo4j": {
+                "missing_node_types": [],
+                "extra_node_types": [],
+                "missing_relationships": [],
+                "extra_relationships": []
+            },
+            "qdrant": {
+                "missing_collections": [],
+                "extra_collections": [],
+                "field_differences": {}
+            }
+        }
+        
+        # Check Neo4j differences
+        if container.neo4j:
+            # Get actual node labels from Neo4j
+            result = await container.neo4j.execute_query("CALL db.labels()")
+            actual_labels = set([r["label"] for r in result]) if result else set()
+            schema_labels = set(schema_manager.current_schema.node_types.keys())
+            
+            differences["neo4j"]["missing_node_types"] = list(schema_labels - actual_labels)
+            differences["neo4j"]["extra_node_types"] = list(actual_labels - schema_labels)
+            
+            # Get actual relationship types
+            result = await container.neo4j.execute_query("CALL db.relationshipTypes()")
+            actual_rels = set([r["relationshipType"] for r in result]) if result else set()
+            schema_rels = set(schema_manager.current_schema.relationship_types.keys())
+            
+            differences["neo4j"]["missing_relationships"] = list(schema_rels - actual_rels)
+            differences["neo4j"]["extra_relationships"] = list(actual_rels - schema_rels)
+        
+        # Check Qdrant differences
+        if container.qdrant:
+            # Get actual collections
+            collections = await container.qdrant.get_collections()
+            actual_collections = set([c.name for c in collections.collections])
+            schema_collections = set(schema_manager.current_schema.collections.keys())
+            
+            differences["qdrant"]["missing_collections"] = list(schema_collections - actual_collections)
+            differences["qdrant"]["extra_collections"] = list(actual_collections - schema_collections)
+        
+        # Determine if in sync
+        in_sync = (
+            not differences["neo4j"]["missing_node_types"] and
+            not differences["neo4j"]["extra_node_types"] and
+            not differences["neo4j"]["missing_relationships"] and
+            not differences["neo4j"]["extra_relationships"] and
+            not differences["qdrant"]["missing_collections"] and
+            not differences["qdrant"]["extra_collections"]
+        )
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "success",
+                "project": project_name,
+                "in_sync": in_sync,
+                "differences": differences,
+                "message": "Schema and database are in sync" if in_sync else "Differences found between schema and database"
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Schema diff failed: {e}")
         return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
 
 

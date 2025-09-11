@@ -1,0 +1,118 @@
+# Example of data transformation during migration
+version: 3
+name: data_transformation_example
+description: "Transform existing component data to add new categorization"
+timestamp: "2025-09-11T12:00:00Z"
+depends_on: [2]
+
+up:
+  # Add new property with calculated value
+  - type: add_property
+    target: neo4j
+    node_type: Component
+    property_name: complexity_score
+    property_type: integer
+    default_value: 0
+  
+  # Transform existing data
+  - type: transform_nodes
+    target: neo4j
+    node_type: Component
+    transformation:
+      type: python
+      code: |
+        # Calculate complexity based on existing properties
+        def transform(node):
+            complexity = 0
+            
+            # Add complexity based on props count
+            if 'props' in node and node['props']:
+                complexity += len(node['props'])
+            
+            # Add complexity based on state
+            if 'state' in node and node['state']:
+                complexity += len(node['state']) * 2
+            
+            # Add complexity based on type
+            if node.get('type') == 'class':
+                complexity += 5
+            elif node.get('type') == 'functional':
+                complexity += 2
+            
+            return {'complexity_score': complexity}
+  
+  # Add new index for complex components
+  - type: create_index
+    target: neo4j
+    node_type: Component
+    index_name: component_complexity_idx
+    properties: [complexity_score]
+  
+  # Transform vector data
+  - type: transform_vectors
+    target: qdrant
+    collection: components
+    field_mapping:
+      component_name: name  # Rename field
+      component_type: type
+    add_fields:
+      - name: indexed_at
+        value: "{{current_timestamp}}"
+      - name: version
+        value: "3"
+  
+  # Batch update relationships
+  - type: batch_update
+    target: neo4j
+    query: |
+      MATCH (c:Component)-[r:RENDERS]->(child:Component)
+      WHERE r.conditional IS NULL
+      SET r.conditional = false
+      RETURN count(r) as updated
+  
+  # Create materialized view for performance
+  - type: create_view
+    target: neo4j
+    name: ComplexComponents
+    query: |
+      MATCH (c:Component)
+      WHERE c.complexity_score > 10
+      RETURN c
+
+down:
+  # Remove materialized view
+  - type: delete_view
+    target: neo4j
+    name: ComplexComponents
+  
+  # Revert batch update
+  - type: batch_update
+    target: neo4j
+    query: |
+      MATCH (c:Component)-[r:RENDERS]->(child:Component)
+      WHERE r.conditional = false
+      REMOVE r.conditional
+      RETURN count(r) as updated
+  
+  # Revert vector transformation
+  - type: transform_vectors
+    target: qdrant
+    collection: components
+    field_mapping:
+      name: component_name  # Revert rename
+      type: component_type
+    remove_fields:
+      - indexed_at
+      - version
+  
+  # Remove index
+  - type: delete_index
+    target: neo4j
+    node_type: Component
+    index_name: component_complexity_idx
+  
+  # Remove added property
+  - type: remove_property
+    target: neo4j
+    node_type: Component
+    property_name: complexity_score
