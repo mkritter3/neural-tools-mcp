@@ -187,8 +187,11 @@ class MetadataTagger:
                     "format": "json",
                     "options": {
                         "temperature": 0.1,  # Low for consistency
-                        "top_p": 0.9,
-                        "max_tokens": 1000
+                        "top_p": 0.7,       # Narrow for factual accuracy
+                        "top_k": 10,        # Limited creativity
+                        "seed": 42,         # Reproducible outputs
+                        "num_predict": 1000,  # Max tokens
+                        "repeat_penalty": 1.0  # No penalty for JSON keys
                     }
                 }
             )
@@ -204,39 +207,72 @@ class MetadataTagger:
             return self._default_metadata()
     
     def _build_prompt(self, content: str, file_path: str) -> str:
-        """Build classification prompt"""
-        return f"""Analyze this code file and provide metadata in JSON format.
+        """Build classification prompt with precise instructions"""
+        
+        # Extract file extension and path hints
+        path_parts = Path(file_path).parts
+        extension = Path(file_path).suffix
+        
+        # Build context-aware prompt
+        return f"""You are a code analysis expert. Analyze this file and output ONLY valid JSON.
 
-File: {file_path}
-Content:
-```
-{content}
+CONTEXT:
+- File path: {file_path}
+- Extension: {extension}
+- Directory: {'/'.join(path_parts[:-1]) if len(path_parts) > 1 else 'root'}
+
+CODE:
+```{extension[1:] if extension else 'plaintext'}
+{content[:10000]}  # Limit for consistent analysis
 ```
 
-Provide a JSON response with these fields:
+CLASSIFICATION RULES:
+1. STATUS Detection:
+   - "archived": Contains "deprecated", in .archive/ or .deprecated/ folders
+   - "experimental": Contains "experimental", "poc", "prototype" markers
+   - "deprecated": Has @deprecated, TODO: remove, or deprecation comments
+   - "active": Default for all other files
+
+2. DOMAIN Classification:
+   - "ui": React/Vue/Angular components, .jsx/.tsx/.vue files
+   - "backend": API routes, controllers, services, .py/.go/.java server code
+   - "infrastructure": Docker, K8s, Terraform, CI/CD configs
+   - "test": Test files (*test*, *spec*, __tests__/ directories)
+   - "docs": Markdown, comments > 50% of file
+   - "config": JSON/YAML/TOML configs, .env files
+
+3. QUALITY Assessment:
+   - "exemplary": Well-documented, tested, follows patterns
+   - "production": Standard quality, working code
+   - "legacy": Old patterns, outdated deps, needs update
+   - "needs-refactoring": Code smells, high complexity, poor structure
+
+4. COMPLEXITY Scoring (1-10):
+   - 1-3: Simple, <50 lines, single responsibility
+   - 4-6: Moderate, multiple functions, some logic
+   - 7-9: Complex, multiple classes, heavy logic
+   - 10: Very complex, needs decomposition
+
+5. FRAMEWORK Detection:
+   Look for imports/requires: React, Vue, Angular, Express, FastAPI, Django, Spring, etc.
+
+OUTPUT exactly this JSON structure:
 {{
-  "status": "active|deprecated|archived|experimental",
-  "domain": "ui|backend|infrastructure|test|docs|config",
-  "quality": "production|legacy|needs-refactoring|exemplary",
-  "primary_language": "detected language",
-  "frameworks": ["framework1", "framework2"],
-  "complexity_score": 1-10,
-  "documentation_coverage": 0.0-1.0,
-  "purpose": "brief description",
-  "tags": ["tag1", "tag2", "tag3"],
-  "concerns": ["security|performance|maintainability|testing"],
-  "maintenance_status": "actively-maintained|stale|abandoned",
-  "confidence_score": 0.0-1.0
+  "status": "<value>",
+  "domain": "<value>",
+  "quality": "<value>",
+  "primary_language": "{extension[1:] if extension else 'unknown'}",
+  "frameworks": [],
+  "complexity_score": <number>,
+  "documentation_coverage": <0.0-1.0>,
+  "purpose": "<one sentence>",
+  "tags": ["<3-5 relevant tags>"],
+  "concerns": [],
+  "maintenance_status": "<value>",
+  "confidence_score": <0.0-1.0>
 }}
 
-Focus on:
-1. Is this active production code or archived/deprecated?
-2. What domain/layer does it belong to?
-3. Code quality and maintenance status
-4. Key technologies and frameworks used
-5. Any concerns or issues noticed
-
-Be concise and accurate."""
+IMPORTANT: Return ONLY the JSON object, no explanation."""
     
     def _parse_metadata(self, json_data: Dict[str, Any]) -> FileMetadata:
         """Parse JSON response into FileMetadata"""
@@ -402,6 +438,152 @@ async def graphrag_hybrid_search_impl(
     
     # Continue with RRF and re-ranking...
 ```
+
+## Precise Configuration for Metadata Tagging
+
+### Ollama Model Configuration
+
+Based on 2025 research, optimal Gemma configuration for metadata extraction:
+
+```python
+# Modelfile for precise tagging
+FROM gemma:4b
+
+# Factual extraction parameters
+PARAMETER temperature 0.1      # Very low for consistency (default: 0.8)
+PARAMETER top_p 0.7            # Narrow sampling for accuracy (default: 0.9)
+PARAMETER top_k 10             # Limited token choices (default: 40)
+PARAMETER seed 42              # Reproducible outputs
+PARAMETER num_predict 1000     # Sufficient for JSON response
+PARAMETER repeat_penalty 1.0   # No penalty (JSON has repeated keys)
+PARAMETER num_ctx 8192         # Context window for code analysis
+
+# System message for Gemma (embedded in user prompt)
+SYSTEM You are a code metadata extractor. Output only valid JSON.
+```
+
+### Prompt Engineering Best Practices (2025)
+
+1. **Structured Output with Response Schema**
+   - Gemma has native JSON support via `format: "json"`
+   - Use Pydantic models for schema validation
+   - Provide exact field specifications
+
+2. **Few-Shot Examples**
+   ```python
+   examples = [
+       {"input": "class OldAPI:", "output": {"status": "deprecated"}},
+       {"input": "// TODO: Remove", "output": {"status": "deprecated"}},
+       {"input": ".archive/", "output": {"status": "archived"}}
+   ]
+   ```
+
+3. **Chain-of-Thought for Complex Classification**
+   ```python
+   prompt = """
+   Step 1: Check file path for archive indicators
+   Step 2: Scan imports for frameworks
+   Step 3: Count comments vs code ratio
+   Step 4: Output JSON with findings
+   """
+   ```
+
+### Configuration Profiles
+
+```python
+class TaggingProfiles:
+    """Different configurations for different accuracy needs"""
+    
+    PRECISE = {
+        "temperature": 0.05,   # Ultra-low for maximum consistency
+        "top_p": 0.5,         # Very narrow sampling
+        "top_k": 5,           # Minimal variation
+        "seed": 42,           # Fixed seed
+        "num_predict": 1000
+    }
+    
+    BALANCED = {
+        "temperature": 0.2,   # Some variation allowed
+        "top_p": 0.8,         # Wider sampling
+        "top_k": 20,          # More options
+        "seed": None,         # Random seed
+        "num_predict": 1500
+    }
+    
+    EXPLORATORY = {
+        "temperature": 0.4,   # More creative
+        "top_p": 0.9,         # Broad sampling
+        "top_k": 40,          # Many options
+        "seed": None,         # Random seed
+        "num_predict": 2000
+    }
+```
+
+### Validation & Error Handling
+
+```python
+class MetadataValidator:
+    """Validate LLM outputs for consistency"""
+    
+    @staticmethod
+    def validate_json(response: str) -> Dict:
+        """Ensure valid JSON structure"""
+        try:
+            data = json.loads(response)
+            
+            # Validate required fields
+            required = ["status", "domain", "quality"]
+            for field in required:
+                if field not in data:
+                    raise ValueError(f"Missing required field: {field}")
+            
+            # Validate enum values
+            if data["status"] not in ["active", "deprecated", "archived", "experimental"]:
+                data["status"] = "active"  # Default fallback
+            
+            return data
+        except json.JSONDecodeError:
+            # Try to extract JSON from response
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+            raise
+    
+    @staticmethod
+    def confidence_check(metadata: FileMetadata) -> bool:
+        """Check if confidence is acceptable"""
+        return metadata.confidence_score >= 0.7
+```
+
+### Performance Optimization
+
+1. **Batch Processing**
+   ```python
+   async def batch_tag(files: List[Path], batch_size: int = 5):
+       """Process files in parallel batches"""
+       batches = [files[i:i+batch_size] for i in range(0, len(files), batch_size)]
+       for batch in batches:
+           await asyncio.gather(*[tag_file(f) for f in batch])
+   ```
+
+2. **Response Caching**
+   ```python
+   from functools import lru_cache
+   
+   @lru_cache(maxsize=1000)
+   def get_cached_metadata(file_hash: str) -> Optional[FileMetadata]:
+       """Cache recent tagging results"""
+       return cache.get(file_hash)
+   ```
+
+3. **Prompt Template Caching**
+   ```python
+   PROMPT_TEMPLATES = {
+       "python": load_template("python_analysis.txt"),
+       "javascript": load_template("js_analysis.txt"),
+       "typescript": load_template("ts_analysis.txt")
+   }
+   ```
 
 ## Benefits
 
