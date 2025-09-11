@@ -144,6 +144,39 @@ services:
     networks:
       - default
 
+  # Gemma 4B Metadata Tagging Service
+  gemma-tagger:
+    image: ollama/ollama:latest
+    container_name: neural-gemma-tagger
+    volumes:
+      - gemma_models:/root/.ollama
+    ports:
+      - "48001:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=5m
+      - OLLAMA_NUM_PARALLEL=4
+    networks:
+      - default
+    deploy:
+      resources:
+        limits:
+          memory: 6G  # Gemma 4B needs ~4.4GB + overhead
+        reservations:
+          memory: 5G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+    command: >
+      sh -c "ollama serve & 
+             sleep 10 && 
+             ollama pull gemma2:2b && 
+             wait"
+
   # Neural Indexer Sidecar Service
   l9-indexer:
     build:
@@ -278,6 +311,8 @@ volumes:
   indexer_state:
     driver: local
   indexer_logs:
+    driver: local
+  gemma_models:  # Ollama model storage
     driver: local
 
 networks:
