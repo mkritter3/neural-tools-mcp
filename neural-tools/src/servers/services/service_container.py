@@ -9,12 +9,22 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
+from enum import Enum
 
 import redis.asyncio as redis
 from arq import create_pool
 from arq.connections import RedisSettings
 
 logger = logging.getLogger(__name__)
+
+
+class ConnectionState(Enum):
+    """Connection state for progressive initialization"""
+    DISCONNECTED = "disconnected"  # No services connected
+    DEGRADED = "degraded"          # Only essential services (Neo4j + Qdrant)
+    PARTIAL = "partial"             # Essential + some optional services
+    FULL = "full"                   # All services connected
+
 
 class ServiceContainer:
     """Simplified service container for multi-project GraphRAG support"""
@@ -30,6 +40,10 @@ class ServiceContainer:
         self.neo4j_client = None  # Neo4j driver for graph operations
         self.qdrant_client = None  # Qdrant client for vector search
         self.initialized = False  # Track if container is fully initialized
+        
+        # Circuit breakers for resilient connections (ADR 0018 Phase 4)
+        from servers.services.connection_circuit_breaker import ServiceCircuitBreakerManager
+        self.circuit_breakers = ServiceCircuitBreakerManager()
         
         # Service instances expected by MCP server protocol
         # These provide the actual functionality for each service
@@ -391,8 +405,10 @@ class ServiceContainer:
         )
         
     def ensure_neo4j_client(self):
-        """Initialize REAL Neo4j client connection"""
-        try:
+        """Initialize REAL Neo4j client connection with circuit breaker"""
+        breaker = self.circuit_breakers.get_breaker("neo4j", failure_threshold=3, recovery_timeout=30)
+        
+        def _connect_neo4j():
             from neo4j import GraphDatabase
             
             # Connect to Neo4j container via exposed port
@@ -412,9 +428,22 @@ class ServiceContainer:
                 test_value = result.single()["test"]
                 if test_value == 1:
                     logger.info(f"✅ REAL Neo4j connection successful for {self.project_name}")
-                    # Connection successful - service wrapper will be created later
                     return True
-            
+            return False
+        
+        try:
+            # Use circuit breaker for connection attempt
+            from servers.services.connection_circuit_breaker import CircuitOpenError
+            try:
+                # Since this is sync code, we call the breaker synchronously
+                import asyncio
+                loop = asyncio.new_event_loop()
+                result = loop.run_until_complete(breaker.call(_connect_neo4j))
+                return result
+            except CircuitOpenError as e:
+                logger.warning(f"Neo4j circuit breaker open: {e}")
+                return False
+                
         except ImportError:
             logger.error("Neo4j driver not available - install with 'pip install neo4j'")
             return False
@@ -453,6 +482,209 @@ class ServiceContainer:
         except Exception as e:
             logger.error(f"Failed to connect to REAL Qdrant: {e}")
             return False
+    
+    async def _check_neo4j_health(self) -> bool:
+        """Check if Neo4j is healthy and responsive"""
+        try:
+            if not self.neo4j_client:
+                return False
+            with self.neo4j_client.session() as session:
+                result = session.run("RETURN 1 as health_check")
+                return result.single()["health_check"] == 1
+        except Exception as e:
+            logger.debug(f"Neo4j health check failed: {e}")
+            return False
+    
+    async def _check_qdrant_health(self) -> bool:
+        """Check if Qdrant is healthy and responsive"""
+        try:
+            if not self.qdrant_client:
+                return False
+            # Try to get collections as health check
+            collections = self.qdrant_client.get_collections()
+            return collections is not None
+        except Exception as e:
+            logger.debug(f"Qdrant health check failed: {e}")
+            return False
+    
+    async def _check_redis_cache_health(self) -> bool:
+        """Check if Redis cache is healthy"""
+        try:
+            if not self._redis_cache_client:
+                return False
+            return self._redis_cache_client.ping()
+        except Exception:
+            return False  # Redis cache is optional
+    
+    async def _check_redis_queue_health(self) -> bool:
+        """Check if Redis queue is healthy"""
+        try:
+            if not self._redis_queue_client:
+                return False
+            return self._redis_queue_client.ping()
+        except Exception:
+            return False  # Redis queue is optional
+    
+    async def _check_nomic_health(self) -> bool:
+        """Check if Nomic embedding service is healthy"""
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                host = os.getenv('EMBEDDING_SERVICE_HOST', 'localhost')
+                port = int(os.getenv('EMBEDDING_SERVICE_PORT', 48000))
+                response = await client.get(f"http://{host}:{port}/health", timeout=2.0)
+                return response.status_code == 200
+        except Exception:
+            return False  # Nomic is optional for basic functionality
+    
+    async def wait_for_services_healthy(self, timeout: int = 60) -> dict:
+        """Wait for all services to pass health checks
+        
+        Returns:
+            Dict with service health status and overall readiness
+        """
+        import time
+        import asyncio
+        start_time = time.time()
+        
+        health_status = {
+            'neo4j': False,
+            'qdrant': False,
+            'redis_cache': False,
+            'redis_queue': False,
+            'nomic': False
+        }
+        
+        while time.time() - start_time < timeout:
+            # Check all services in parallel
+            health_checks = await asyncio.gather(
+                self._check_neo4j_health(),
+                self._check_qdrant_health(),
+                self._check_redis_cache_health(),
+                self._check_redis_queue_health(),
+                self._check_nomic_health(),
+                return_exceptions=True
+            )
+            
+            health_status = {
+                'neo4j': health_checks[0] if not isinstance(health_checks[0], Exception) else False,
+                'qdrant': health_checks[1] if not isinstance(health_checks[1], Exception) else False,
+                'redis_cache': health_checks[2] if not isinstance(health_checks[2], Exception) else False,
+                'redis_queue': health_checks[3] if not isinstance(health_checks[3], Exception) else False,
+                'nomic': health_checks[4] if not isinstance(health_checks[4], Exception) else False
+            }
+            
+            # Check if essential services are ready
+            essential_ready = health_status['neo4j'] and health_status['qdrant']
+            
+            if essential_ready:
+                optional_ready = sum([health_status['redis_cache'], health_status['redis_queue'], health_status['nomic']])
+                logger.info(f"✅ Essential services healthy. Optional services: {optional_ready}/3")
+                health_status['all_ready'] = essential_ready
+                health_status['optional_count'] = optional_ready
+                return health_status
+            
+            # Log current status
+            unhealthy = [k for k, v in health_status.items() if not v]
+            logger.debug(f"Waiting for services: {', '.join(unhealthy)}")
+            await asyncio.sleep(2)
+        
+        logger.error(f"Services failed to become healthy within {timeout}s")
+        health_status['all_ready'] = False
+        return health_status
+    
+    async def progressive_initialization(self, essential_timeout: int = 30, optional_timeout: int = 10) -> ConnectionState:
+        """Initialize services progressively with different timeouts
+        
+        Args:
+            essential_timeout: Max time to wait for essential services (Neo4j, Qdrant)
+            optional_timeout: Max time to wait for optional services
+            
+        Returns:
+            ConnectionState indicating level of connectivity
+        """
+        import asyncio
+        
+        logger.info("Starting progressive service initialization...")
+        
+        # Phase 1: Connect essential services (Neo4j + Qdrant)
+        essential_start = time.time()
+        essential_connected = False
+        
+        while time.time() - essential_start < essential_timeout:
+            neo4j_ok = self.ensure_neo4j_client()
+            qdrant_ok = self.ensure_qdrant_client()
+            
+            if neo4j_ok and qdrant_ok:
+                essential_connected = True
+                logger.info("✅ Essential services connected (Neo4j + Qdrant)")
+                break
+                
+            await asyncio.sleep(2)
+            logger.debug(f"Waiting for essential services... Neo4j: {neo4j_ok}, Qdrant: {qdrant_ok}")
+        
+        if not essential_connected:
+            logger.error("Failed to connect essential services")
+            return ConnectionState.DISCONNECTED
+        
+        # Initialize essential service wrappers
+        from servers.services.neo4j_service import Neo4jService
+        from servers.services.qdrant_service import QdrantService
+        
+        self.neo4j = Neo4jService(self.project_name)
+        self.neo4j.set_service_container(self)
+        
+        self.qdrant = QdrantService(self.project_name)
+        self.qdrant.set_service_container(self)
+        
+        # Phase 2: Try to connect optional services with shorter timeout
+        optional_start = time.time()
+        optional_count = 0
+        
+        while time.time() - optional_start < optional_timeout:
+            # Try to connect optional services
+            health_checks = await asyncio.gather(
+                self._check_redis_cache_health(),
+                self._check_redis_queue_health(),
+                self._check_nomic_health(),
+                return_exceptions=True
+            )
+            
+            redis_cache_ok = health_checks[0] if not isinstance(health_checks[0], Exception) else False
+            redis_queue_ok = health_checks[1] if not isinstance(health_checks[1], Exception) else False
+            nomic_ok = health_checks[2] if not isinstance(health_checks[2], Exception) else False
+            
+            optional_count = sum([redis_cache_ok, redis_queue_ok, nomic_ok])
+            
+            if optional_count == 3:
+                logger.info("✅ All optional services connected")
+                break
+            elif optional_count > 0:
+                logger.info(f"⚡ {optional_count}/3 optional services connected")
+            
+            if time.time() - optional_start < optional_timeout - 2:
+                await asyncio.sleep(2)
+            else:
+                break
+        
+        # Initialize Nomic if available
+        if nomic_ok:
+            from servers.services.nomic_service import NomicService
+            self.nomic = NomicService(self.project_name)
+            logger.info("✅ Nomic embedding service initialized")
+        else:
+            self.nomic = None
+            logger.warning("⚠️ Nomic service unavailable - embeddings will be limited")
+        
+        # Determine final connection state
+        self.initialized = True
+        
+        if optional_count == 3:
+            return ConnectionState.FULL
+        elif optional_count > 0:
+            return ConnectionState.PARTIAL
+        else:
+            return ConnectionState.DEGRADED
     
     def initialize(self, retry_on_failure: bool = True) -> bool:
         """Initialize all services for this project
