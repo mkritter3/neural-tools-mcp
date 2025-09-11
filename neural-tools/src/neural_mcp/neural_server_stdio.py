@@ -33,7 +33,46 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     stream=sys.stderr  # Critical: Log to stderr, not stdout
 )
-logger = logging.getLogger(__name__)
+base_logger = logging.getLogger(__name__)
+
+
+class InstanceAwareLogger:
+    """
+    Logger wrapper that includes instance ID in all log messages.
+    Phase 3 of ADR-19: Enhanced logging for debugging.
+    """
+    def __init__(self, logger, get_instance_id_func=None):
+        self.logger = logger
+        self.get_instance_id = get_instance_id_func or (lambda: "unknown")
+    
+    def _format_msg(self, msg):
+        """Add instance ID to message if available"""
+        try:
+            instance_id = self.get_instance_id()
+            if instance_id and instance_id != "unknown":
+                return f"[Instance {instance_id}] {msg}"
+        except:
+            pass
+        return msg
+    
+    def info(self, msg, *args, **kwargs):
+        self.logger.info(self._format_msg(msg), *args, **kwargs)
+    
+    def warning(self, msg, *args, **kwargs):
+        self.logger.warning(self._format_msg(msg), *args, **kwargs)
+    
+    def error(self, msg, *args, **kwargs):
+        self.logger.error(self._format_msg(msg), *args, **kwargs)
+    
+    def debug(self, msg, *args, **kwargs):
+        self.logger.debug(self._format_msg(msg), *args, **kwargs)
+    
+    def critical(self, msg, *args, **kwargs):
+        self.logger.critical(self._format_msg(msg), *args, **kwargs)
+
+
+# Create instance-aware logger (will be initialized after state is created)
+logger = InstanceAwareLogger(base_logger)
 
 # Constants
 DEFAULT_PROJECT_NAME = os.environ.get('PROJECT_NAME', 'default')
@@ -47,6 +86,40 @@ LIMITS = {
 INSTANCE_TIMEOUT_HOURS = float(os.environ.get('INSTANCE_TIMEOUT_HOURS', '1'))  # Default 1 hour
 CLEANUP_INTERVAL_MINUTES = float(os.environ.get('CLEANUP_INTERVAL_MINUTES', '10'))  # Check every 10 mins
 ENABLE_AUTO_CLEANUP = os.environ.get('ENABLE_AUTO_CLEANUP', 'true').lower() == 'true'
+
+# Phase 3: Enhanced monitoring and debugging
+MCP_VERBOSE = os.environ.get('MCP_VERBOSE', 'false').lower() == 'true'
+INCLUDE_INSTANCE_METADATA = os.environ.get('INCLUDE_INSTANCE_METADATA', 'false').lower() == 'true'
+
+
+def add_instance_metadata(response_data: dict, instance_id: str = None, project_name: str = None) -> dict:
+    """
+    Add instance metadata to responses when in verbose mode.
+    Phase 3 of ADR-19: Enhanced debugging and monitoring.
+    """
+    if not MCP_VERBOSE and not INCLUDE_INSTANCE_METADATA:
+        return response_data
+    
+    if instance_id is None and 'state' in globals():
+        instance_id = state.instance_id
+    
+    metadata = {
+        'instance_id': instance_id,
+        'timestamp': datetime.now().isoformat(),
+        'verbose_mode': MCP_VERBOSE
+    }
+    
+    if project_name:
+        metadata['project'] = project_name
+    
+    # Add instance metrics summary if available
+    if 'state' in globals() and hasattr(state, 'get_instance_metrics'):
+        metrics = state.get_instance_metrics()
+        metadata['instance_count'] = metrics.get('total_instances', 1)
+        metadata['is_stale'] = metrics.get('stale_instances', 0) > 0
+    
+    response_data['_metadata'] = metadata
+    return response_data
 
 
 def get_instance_id() -> str:
@@ -291,6 +364,71 @@ class MultiProjectServiceState:
             except Exception as e:
                 logger.error(f"  ❌ Failed to close Redis queue: {e}")
     
+    async def export_instance_state(self) -> dict:
+        """
+        Export current instance state for migration or backup.
+        Phase 3 of ADR-19: Instance migration support.
+        """
+        export_data = {
+            'export_timestamp': datetime.now().isoformat(),
+            'instance_id': self.instance_id,
+            'instance_data': self.instance_containers.get(self.instance_id, {}),
+            'cleanup_stats': self.cleanup_stats,
+            'configuration': {
+                'timeout_hours': INSTANCE_TIMEOUT_HOURS,
+                'cleanup_interval': CLEANUP_INTERVAL_MINUTES,
+                'auto_cleanup': ENABLE_AUTO_CLEANUP,
+                'verbose_mode': MCP_VERBOSE
+            }
+        }
+        
+        # Include project information but not actual containers (too heavy)
+        instance_data = self.instance_containers.get(self.instance_id, {})
+        projects = {}
+        for project_name in instance_data.get('project_containers', {}).keys():
+            projects[project_name] = {
+                'name': project_name,
+                'has_neo4j': instance_data['project_containers'][project_name].neo4j is not None,
+                'has_qdrant': instance_data['project_containers'][project_name].qdrant is not None,
+                'has_nomic': instance_data['project_containers'][project_name].nomic is not None
+            }
+        export_data['projects'] = projects
+        
+        logger.info(f"Exported instance state with {len(projects)} projects")
+        return export_data
+    
+    async def import_instance_state(self, import_data: dict, merge: bool = False):
+        """
+        Import instance state from another instance.
+        Phase 3 of ADR-19: Instance migration support.
+        
+        Args:
+            import_data: Exported state from another instance
+            merge: If True, merge with existing state. If False, replace.
+        """
+        try:
+            imported_id = import_data.get('instance_id')
+            
+            if not merge:
+                # Clear existing data for non-current instances
+                for inst_id in list(self.instance_containers.keys()):
+                    if inst_id != self.instance_id:
+                        del self.instance_containers[inst_id]
+            
+            # Import the data (but not as current instance)
+            if imported_id and imported_id != self.instance_id:
+                self.instance_containers[imported_id] = import_data.get('instance_data', {})
+                logger.info(f"Imported instance state from {imported_id}")
+                
+                # Update cleanup stats if provided
+                if 'cleanup_stats' in import_data and not merge:
+                    self.cleanup_stats = import_data['cleanup_stats']
+            
+            return True
+        except Exception as e:
+            logger.error(f"Failed to import instance state: {e}")
+            return False
+    
     def get_instance_metrics(self):
         """Get metrics about current instances"""
         now = datetime.now()
@@ -329,6 +467,9 @@ class MultiProjectServiceState:
 
 state = MultiProjectServiceState()
 server = Server("l9-neural-enhanced")
+
+# Update logger to include instance ID now that state is available
+logger.get_instance_id = lambda: state.instance_id if state else "unknown"
 
 
 # Removed initialize_services() - services now initialized lazily on first use
@@ -610,14 +751,21 @@ async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextCo
                 "snippet": (content[:200] + "...") if len(content) > 200 else content
             })
 
-        return [types.TextContent(type="text", text=json.dumps({
+        response = {
             "status": "success",
             "query": query,
             "results": formatted,
             "total_found": len(formatted)
-        }, indent=2))]
+        }
+        
+        # Add instance metadata in verbose mode
+        response = add_instance_metadata(response, project_name=project_name)
+        
+        return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
     except Exception as e:
-        return [types.TextContent(type="text", text=json.dumps({"status": "error", "message": str(e)}))]
+        error_response = {"status": "error", "message": str(e)}
+        error_response = add_instance_metadata(error_response)
+        return [types.TextContent(type="text", text=json.dumps(error_response))]
 
 
 async def _fallback_neo4j_search(query: str, limit: int) -> List[types.TextContent]:
@@ -684,14 +832,20 @@ async def graphrag_hybrid_search_impl(query: str, limit: int, include_graph_cont
 
 
 async def neural_system_status_impl() -> List[types.TextContent]:
-    """Get comprehensive neural system status and health - REAL service connections only"""
+    """Get comprehensive neural system status and health with instance information"""
     try:
         project_name, container, retriever = await get_project_context({})
         
-        # Check REAL service connections
+        # Phase 3: Include comprehensive instance information
         status = {
             "project": project_name,
             "timestamp": datetime.now().isoformat(),
+            "instance": {
+                "id": state.instance_id,
+                "session_started": state.instance_containers[state.instance_id]['session_started'].isoformat(),
+                "uptime": str(datetime.now() - state.instance_containers[state.instance_id]['session_started']),
+                "projects_loaded": len(state.instance_containers[state.instance_id].get('project_containers', {}))
+            },
             "services": {
                 "neo4j": {
                     "connected": container.neo4j is not None,
@@ -743,9 +897,35 @@ async def neural_system_status_impl() -> List[types.TextContent]:
             except Exception as e:
                 status["services"]["qdrant"]["error"] = str(e)
         
-        return [types.TextContent(type="text", text=json.dumps({"status": "success", "system_status": status}, indent=2))]
+        # Add instance metrics summary
+        metrics = state.get_instance_metrics()
+        status["instance"]["isolation_metrics"] = {
+            "total_instances": metrics['total_instances'],
+            "active_instances": metrics['active_instances'],
+            "stale_instances": metrics['stale_instances']
+        }
+        
+        # Add configuration in verbose mode
+        if MCP_VERBOSE:
+            status["configuration"] = {
+                "verbose_mode": MCP_VERBOSE,
+                "instance_metadata": INCLUDE_INSTANCE_METADATA,
+                "timeout_hours": INSTANCE_TIMEOUT_HOURS,
+                "cleanup_interval_minutes": CLEANUP_INTERVAL_MINUTES,
+                "auto_cleanup": ENABLE_AUTO_CLEANUP
+            }
+        
+        response = {"status": "success", "system_status": status}
+        
+        # Add metadata if verbose
+        response = add_instance_metadata(response, project_name=project_name)
+        
+        return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
     except Exception as e:
-        return [types.TextContent(type="text", text=json.dumps({"status": "error", "message": str(e)}))]
+        error_response = {"status": "error", "message": str(e)}
+        if 'state' in globals():
+            error_response["instance_id"] = state.instance_id
+        return [types.TextContent(type="text", text=json.dumps(error_response))]
 
 
 async def project_understanding_impl(scope: str = "full") -> List[types.TextContent]:
