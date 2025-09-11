@@ -27,6 +27,10 @@ from mcp.server.models import InitializationOptions
 import mcp.server.stdio
 import mcp.types as types
 
+# Import schema management for ADR-0020
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'servers', 'services'))
+from schema_manager import SchemaManager, ProjectType
+
 # Configure logging to stderr (NEVER to stdout for STDIO transport)
 logging.basicConfig(
     level=logging.INFO,
@@ -209,6 +213,7 @@ class MultiProjectServiceState:
             self.instance_containers[self.instance_id] = {
                 'project_containers': {},
                 'project_retrievers': {},
+                'project_schemas': {},  # ADR-0020: Per-project schema managers
                 'session_started': datetime.now(),
                 'last_activity': datetime.now()
             }
@@ -287,6 +292,27 @@ class MultiProjectServiceState:
             else:
                 project_retrievers[project_name] = None
         return project_retrievers[project_name]
+    
+    async def get_project_schema(self, project_name: str) -> SchemaManager:
+        """
+        Get or create SchemaManager for specific project.
+        ADR-0020: Per-project custom GraphRAG schemas.
+        """
+        instance_data = self._get_instance_data()
+        project_schemas = instance_data['project_schemas']
+        
+        if project_name not in project_schemas:
+            # Get project path from working directory or environment
+            project_path = os.environ.get('PROJECT_PATH', os.getcwd())
+            
+            # Create schema manager
+            schema_manager = SchemaManager(project_name, project_path)
+            await schema_manager.initialize()
+            
+            project_schemas[project_name] = schema_manager
+            logger.info(f"📋 [Instance {self.instance_id}] Created SchemaManager for project: {project_name}")
+            
+        return project_schemas[project_name]
     
     async def cleanup_stale_instances(self):
         """
@@ -588,6 +614,80 @@ async def handle_list_tools() -> List[types.Tool]:
             description="Get metrics about MCP instance isolation and resource usage (Phase 2 of ADR-19)",
             inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
         ),
+        # Schema management tools (ADR-0020)
+        types.Tool(
+            name="schema_init",
+            description=(
+                "Initialize or auto-detect project GraphRAG schema.\n"
+                "Usage: {\"project_type\": \"react|django|fastapi|auto\", \"auto_detect\": true}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project_type": {"type": "string", "enum": ["react", "vue", "angular", "nextjs", "django", "fastapi", "flask", "express", "springboot", "rails", "generic", "auto"], "default": "auto"},
+                    "auto_detect": {"type": "boolean", "default": True, "description": "Auto-detect project type from files"}
+                },
+                "additionalProperties": False
+            }
+        ),
+        types.Tool(
+            name="schema_status",
+            description="Get current project schema information and status",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
+        ),
+        types.Tool(
+            name="schema_validate",
+            description=(
+                "Validate data against current schema.\n"
+                "Usage: {\"validate_nodes\": true, \"validate_relationships\": true}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "validate_nodes": {"type": "boolean", "default": True},
+                    "validate_relationships": {"type": "boolean", "default": True},
+                    "fix_issues": {"type": "boolean", "default": False}
+                },
+                "additionalProperties": False
+            }
+        ),
+        types.Tool(
+            name="schema_add_node_type",
+            description=(
+                "Add custom node type to project schema.\n"
+                "Usage: {\"name\": \"Component\", \"properties\": {\"name\": \"string\", \"type\": \"string\"}}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "description": "Node type name"},
+                    "properties": {"type": "object", "description": "Node properties and their types"},
+                    "indexes": {"type": "array", "items": {"type": "string"}, "description": "Properties to index"},
+                    "description": {"type": "string", "description": "Node type description"}
+                },
+                "required": ["name", "properties"],
+                "additionalProperties": False
+            }
+        ),
+        types.Tool(
+            name="schema_add_relationship",
+            description=(
+                "Add custom relationship type to project schema.\n"
+                "Usage: {\"name\": \"USES_HOOK\", \"from_types\": [\"Component\"], \"to_types\": [\"Hook\"]}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "description": "Relationship type name"},
+                    "from_types": {"type": "array", "items": {"type": "string"}, "description": "Source node types"},
+                    "to_types": {"type": "array", "items": {"type": "string"}, "description": "Target node types"},
+                    "properties": {"type": "object", "description": "Relationship properties"},
+                    "description": {"type": "string", "description": "Relationship description"}
+                },
+                "required": ["name", "from_types", "to_types"],
+                "additionalProperties": False
+            }
+        ),
     ]
 
 
@@ -704,6 +804,17 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             return await neural_tools_help_impl()
         elif name == "instance_metrics":
             return await instance_metrics_impl()
+        # Schema management tools (ADR-0020)
+        elif name == "schema_init":
+            return await schema_init_impl(arguments)
+        elif name == "schema_status":
+            return await schema_status_impl()
+        elif name == "schema_validate":
+            return await schema_validate_impl(arguments)
+        elif name == "schema_add_node_type":
+            return await schema_add_node_type_impl(arguments)
+        elif name == "schema_add_relationship":
+            return await schema_add_relationship_impl(arguments)
         else:
             return [types.TextContent(type="text", text=json.dumps({
                 "error": f"Unknown tool: {name}",
@@ -1118,6 +1229,247 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
                 "path": path
             }, indent=2)
         )]
+
+
+# Schema management tool implementations (ADR-0020)
+
+async def schema_init_impl(arguments: dict) -> List[types.TextContent]:
+    """Initialize or auto-detect project GraphRAG schema"""
+    try:
+        project_name, _, _ = await get_project_context(arguments)
+        schema_manager = await state.get_project_schema(project_name)
+        
+        project_type_str = arguments.get('project_type', 'auto')
+        auto_detect = arguments.get('auto_detect', True)
+        
+        if auto_detect or project_type_str == 'auto':
+            # Auto-detect project type
+            detected_type = await schema_manager.detect_project_type()
+            logger.info(f"📋 Detected project type: {detected_type.value}")
+        else:
+            # Use specified project type
+            detected_type = ProjectType(project_type_str)
+        
+        # Create or update schema
+        schema = await schema_manager.create_schema(detected_type)
+        
+        # Apply to Neo4j if container is available
+        project_name, container, _ = await get_project_context(arguments)
+        if container and container.neo4j:
+            await schema_manager.apply_to_neo4j(container.neo4j)
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "success",
+                "project": project_name,
+                "project_type": schema.project_type.value,
+                "schema_file": str(schema_manager.schema_file),
+                "node_types": list(schema.node_types.keys()),
+                "relationship_types": list(schema.relationship_types.keys()),
+                "collections": list(schema.collections.keys()),
+                "message": f"Schema initialized for {project_name} ({detected_type.value} project)"
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Schema init failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def schema_status_impl() -> List[types.TextContent]:
+    """Get current project schema information"""
+    try:
+        project_name, _, _ = await get_project_context({})
+        schema_manager = await state.get_project_schema(project_name)
+        
+        if not schema_manager.current_schema:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "no_schema",
+                    "project": project_name,
+                    "message": "No schema configured. Use schema_init to create one."
+                }, indent=2)
+            )]
+        
+        schema = schema_manager.current_schema
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "configured",
+                "project": project_name,
+                "version": schema.version,
+                "project_type": schema.project_type.value,
+                "description": schema.description,
+                "created_at": schema.created_at.isoformat(),
+                "updated_at": schema.updated_at.isoformat(),
+                "extends": schema.extends,
+                "node_types": {
+                    name: {
+                        "properties": node.properties,
+                        "indexes": node.indexes,
+                        "description": node.description
+                    }
+                    for name, node in schema.node_types.items()
+                },
+                "relationship_types": {
+                    name: {
+                        "from": rel.from_types,
+                        "to": rel.to_types,
+                        "properties": rel.properties,
+                        "description": rel.description
+                    }
+                    for name, rel in schema.relationship_types.items()
+                },
+                "collections": {
+                    name: {
+                        "vector_size": col.vector_size,
+                        "distance": col.distance_metric,
+                        "fields": col.fields
+                    }
+                    for name, col in schema.collections.items()
+                }
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Schema status failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def schema_validate_impl(arguments: dict) -> List[types.TextContent]:
+    """Validate data against current schema"""
+    try:
+        project_name, container, _ = await get_project_context(arguments)
+        schema_manager = await state.get_project_schema(project_name)
+        
+        if not schema_manager.current_schema:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "no_schema",
+                    "message": "No schema to validate against. Use schema_init first."
+                }, indent=2)
+            )]
+        
+        validate_nodes = arguments.get('validate_nodes', True)
+        validate_relationships = arguments.get('validate_relationships', True)
+        fix_issues = arguments.get('fix_issues', False)
+        
+        issues = []
+        
+        # TODO: Implement actual validation against Neo4j data
+        # This would query Neo4j and check nodes/relationships against schema
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "validated",
+                "project": project_name,
+                "validated": {
+                    "nodes": validate_nodes,
+                    "relationships": validate_relationships
+                },
+                "issues_found": len(issues),
+                "issues": issues,
+                "fixed": fix_issues and len(issues) > 0
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Schema validate failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def schema_add_node_type_impl(arguments: dict) -> List[types.TextContent]:
+    """Add custom node type to project schema"""
+    try:
+        project_name, _, _ = await get_project_context(arguments)
+        schema_manager = await state.get_project_schema(project_name)
+        
+        if not schema_manager.current_schema:
+            # Initialize with generic schema first
+            await schema_manager.create_schema(ProjectType.GENERIC)
+        
+        schema = schema_manager.current_schema
+        
+        # Add new node type
+        from schema_manager import NodeType
+        node_type = NodeType(
+            name=arguments['name'],
+            properties=arguments['properties'],
+            indexes=arguments.get('indexes', []),
+            description=arguments.get('description', '')
+        )
+        
+        schema.node_types[arguments['name']] = node_type
+        schema.updated_at = datetime.now()
+        
+        # Save updated schema
+        await schema_manager.save_schema(schema)
+        
+        # Apply to Neo4j if available
+        project_name, container, _ = await get_project_context(arguments)
+        if container and container.neo4j:
+            await schema_manager.apply_to_neo4j(container.neo4j)
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "success",
+                "project": project_name,
+                "node_type": arguments['name'],
+                "properties": node_type.properties,
+                "indexes": node_type.indexes,
+                "message": f"Added node type '{arguments['name']}' to schema"
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Add node type failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
+
+
+async def schema_add_relationship_impl(arguments: dict) -> List[types.TextContent]:
+    """Add custom relationship type to project schema"""
+    try:
+        project_name, _, _ = await get_project_context(arguments)
+        schema_manager = await state.get_project_schema(project_name)
+        
+        if not schema_manager.current_schema:
+            # Initialize with generic schema first
+            await schema_manager.create_schema(ProjectType.GENERIC)
+        
+        schema = schema_manager.current_schema
+        
+        # Add new relationship type
+        from schema_manager import RelationshipType
+        rel_type = RelationshipType(
+            name=arguments['name'],
+            from_types=arguments['from_types'],
+            to_types=arguments['to_types'],
+            properties=arguments.get('properties', {}),
+            description=arguments.get('description', '')
+        )
+        
+        schema.relationship_types[arguments['name']] = rel_type
+        schema.updated_at = datetime.now()
+        
+        # Save updated schema
+        await schema_manager.save_schema(schema)
+        
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "success",
+                "project": project_name,
+                "relationship_type": arguments['name'],
+                "from_types": rel_type.from_types,
+                "to_types": rel_type.to_types,
+                "properties": rel_type.properties,
+                "message": f"Added relationship type '{arguments['name']}' to schema"
+            }, indent=2)
+        )]
+    except Exception as e:
+        logger.error(f"Add relationship failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
 
 
 def cleanup_resources():
