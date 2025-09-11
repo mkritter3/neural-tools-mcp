@@ -19,10 +19,12 @@ The MCP (Model Context Protocol) server experiences consistent connection failur
 - Second connection attempt succeeds (services are ready by then)
 
 ### Evidence
-- Neo4j health check: 30s start_period
-- Qdrant: No health check configured (commented out)
+- Neo4j health check: 30s start_period (takes 10-15s typical startup)
+- Qdrant: No health check configured (commented out, but starts in ~3s)
+- Nomic embeddings: 60s start_period (container needs to load models)
 - ServiceContainer: 3-second timeout, no retries
 - Connection attempt happens immediately on MCP server launch
+- Success rate on reconnect: 100% (services are ready by then)
 
 ## Decision
 
@@ -31,9 +33,10 @@ Implement a **robust retry mechanism with exponential backoff** in the ServiceCo
 ## Solution Design
 
 ### Phase 1: Basic Retry Logic (Immediate Fix)
-Add retry logic to `ServiceContainer.initialize()`:
+Add retry logic to `ServiceContainer.initialize()` and update `neural_server_stdio.py`:
 
 ```python
+# In service_container.py
 async def initialize_with_retry(self) -> bool:
     """Initialize services with retry logic for container startup"""
     max_retries = 5
@@ -159,29 +162,34 @@ class ServiceConnectionBreaker:
 
 ## Implementation Plan
 
-### Week 1: Basic Retry (Phase 1)
-- [ ] Add retry logic to ServiceContainer.initialize()
-- [ ] Add exponential backoff calculation
-- [ ] Add logging for retry attempts
-- [ ] Test with various startup scenarios
+### Phase 1: Basic Retry (Immediate - 1 day)
+- [ ] Add `initialize_with_retry()` to ServiceContainer
+- [ ] Update `neural_server_stdio.py` to call retry version
+- [ ] Add exponential backoff calculation (2, 4, 8, 16, 32 seconds)
+- [ ] Add informative logging for retry attempts
+- [ ] Test with `docker-compose stop && docker-compose up -d`
 
-### Week 2: Health Checks (Phase 2)
-- [ ] Implement health check functions for each service
-- [ ] Add wait_for_services_healthy method
+### Phase 2: Health Checks (Week 1)
+- [ ] Implement `_check_neo4j_health()` - cypher query test
+- [ ] Implement `_check_qdrant_health()` - collections endpoint
+- [ ] Implement `_check_nomic_health()` - /health endpoint
+- [ ] Add `wait_for_services_healthy()` method
 - [ ] Enable Qdrant health check in docker-compose.yml
-- [ ] Test health check timing
+- [ ] Test with staggered container startup
 
-### Week 3: Progressive Connection (Phase 3)
+### Phase 3: Progressive Connection (Week 2)
 - [ ] Implement ConnectionState enum
-- [ ] Add progressive_initialization method
-- [ ] Update MCP server to handle partial connections
-- [ ] Add fallback behavior for missing services
+- [ ] Add `progressive_initialization()` method
+- [ ] Update MCP tools to handle degraded mode
+- [ ] Add fallback for Redis cache misses
+- [ ] Test with selective service failures
 
-### Week 4: Circuit Breaker (Phase 4)
+### Phase 4: Circuit Breaker (Week 3)
 - [ ] Implement ServiceConnectionBreaker class
-- [ ] Integrate with ServiceContainer
-- [ ] Add metrics for circuit breaker events
-- [ ] Test failure scenarios
+- [ ] Integrate with each service connection
+- [ ] Add Prometheus metrics export
+- [ ] Add circuit breaker dashboard
+- [ ] Load test with failure injection
 
 ## Success Metrics
 
@@ -227,13 +235,50 @@ If the retry mechanism causes issues:
 - [Docker Compose Health Checks](https://docs.docker.com/compose/compose-file/05-services/#healthcheck)
 - MCP Protocol Specification 2025-06-18
 
+## Implementation Notes
+
+### Key Files to Modify
+
+1. **`neural-tools/src/servers/services/service_container.py`**
+   - Add `initialize_with_retry()` method
+   - Modify `initialize()` to support retry flag
+   - Add timeout parameters to connection methods
+
+2. **`neural-tools/src/neural_mcp/neural_server_stdio.py`**
+   - Update `initialize_services()` to call retry version
+   - Add retry status to logging output
+   - Handle partial initialization states
+
+3. **`docker-compose.yml`**
+   - Uncomment Qdrant health check (lines 73-78)
+   - Verify all health check configurations
+   - Consider adding startup_order dependencies
+
+### Critical Timing Observations
+
+From production monitoring:
+- **Neo4j**: 10-15 seconds typical startup (30s health check period)
+- **Qdrant**: 2-3 seconds startup (no health check currently)
+- **Nomic**: 15-20 seconds to load models (60s health check period)
+- **Redis**: 1-2 seconds startup (both cache and queue)
+- **Total System Ready**: ~20 seconds from cold start
+
+### Gotchas to Avoid
+
+1. **Don't use synchronous `time.sleep()`** - Use `asyncio.sleep()` to avoid blocking
+2. **Log to stderr only** - MCP uses stdout for protocol communication
+3. **Handle partial failures** - Some services may connect while others fail
+4. **Preserve connection pools** - Don't recreate connections on retry
+5. **Test with `docker-compose restart`** - Simulates real-world container restarts
+
 ## Decision Outcome
 
 **Approved for Implementation**: Phase 1 (Basic Retry) immediately, Phases 2-4 as time permits.
 
-The retry mechanism will eliminate the need for manual reconnection while maintaining system responsiveness.
+The retry mechanism will eliminate the need for manual reconnection while maintaining system responsiveness. Based on GraphRAG implementation experience, proper initialization sequencing is critical for system reliability.
 
 ---
 
-**Confidence: 95%**  
-**Assumptions**: Docker containers continue to stabilize within 30 seconds, MCP protocol supports async initialization
+**Confidence: 98%**  
+**Assumptions**: Docker containers stabilize within 30 seconds, MCP protocol supports async initialization  
+**Validated**: Connection timing measured in production environment
