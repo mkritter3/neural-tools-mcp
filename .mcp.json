@@ -36,7 +36,21 @@
         "JWT_SECRET": "L9-2025-neural-mcp-secret-key-change-in-production",
         "MCP_DEV_API_KEY": "dev-L9-neural-mcp-development-key",
         "ENVIRONMENT": "development",
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        
+        "COMMENT_INSTANCE_ISOLATION": "=== ADR-19 Instance Isolation Settings ===",
+        "INSTANCE_ID": "${CLAUDE_INSTANCE_ID:-}",
+        "INSTANCE_TIMEOUT_HOURS": "1",
+        "CLEANUP_INTERVAL_MINUTES": "10",
+        "ENABLE_AUTO_CLEANUP": "true",
+        
+        "COMMENT_MONITORING": "=== Phase 3 Monitoring & Debugging ===",
+        "MCP_VERBOSE": "false",
+        "INCLUDE_INSTANCE_METADATA": "false",
+        
+        "COMMENT_EMBEDDINGS": "=== Embedding Service Configuration ===",
+        "EMBEDDING_SERVICE_HOST": "localhost",
+        "EMBEDDING_SERVICE_PORT": "48000"
       }
     }
   }
