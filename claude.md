@@ -552,6 +552,23 @@ python3 scripts/run_l9_validation.py
   - `schema_add_node_type` - Add custom node types
   - `schema_add_relationship` - Add custom relationships
 
+### ✅ ADR-21: GraphRAG Schema Migration System
+- **Version-controlled migrations** for both Neo4j and Qdrant databases
+- **YAML-based migration files** in `.graphrag/migrations/`
+- **Full rollback support** with snapshot creation before migrations
+- **Data transformation** capabilities during schema changes
+- **Migration tracking** in Neo4j with complete history
+- **MCP migration tools**:
+  - `migration_generate` - Auto-generate migrations from schema changes
+  - `migration_apply` - Apply pending migrations with dry-run support
+  - `migration_rollback` - Rollback to previous versions
+  - `migration_status` - Check migration state and history
+  - `schema_diff` - Compare database state to schema definition
+- **Core components**:
+  - `MigrationManager` - Orchestrates migrations with version tracking
+  - `DataMigrator` - Handles data transformations for both databases
+- **Example migrations** provided for React, Redux, and data transformations
+
 #### Example Project Schemas:
 
 **React Project:**

@@ -220,6 +220,45 @@ File Content → Parser Selection → AST Generation → Symbol Extraction
                                     }
 ```
 
+## Schema & Migration Architecture
+
+### Per-Project Custom Schemas (ADR-20)
+```yaml
+.graphrag/
+├── schema.yaml          # Main schema definition
+├── node_types.yaml      # Custom node types
+├── relationships.yaml   # Custom relationships  
+├── collections.yaml     # Vector collections
+└── extractors/          # Custom extraction rules
+```
+
+- **Auto-detection** of project types (React, Django, FastAPI, etc.)
+- **Dual-database schemas** for both Neo4j and Qdrant
+- **Project-specific** node types and relationships
+- **Schema validation** and enforcement
+
+### Schema Migration System (ADR-21)
+```yaml
+.graphrag/migrations/
+├── 0001_initial_schema.yaml    # Version 1
+├── 0002_add_features.yaml      # Version 2
+└── 0003_transform_data.yaml    # Version 3
+```
+
+**Migration Features:**
+- Version-controlled schema changes
+- Rollback support with snapshots
+- Data transformation during migrations
+- Dry-run mode for testing
+- Complete history tracking in Neo4j
+
+**Migration Tools:**
+- `migration_generate` - Auto-generate from schema changes
+- `migration_apply` - Apply pending migrations
+- `migration_rollback` - Rollback to previous version
+- `migration_status` - Check current state
+- `schema_diff` - Compare DB to schema
+
 ## Data Architecture
 
 ### Neo4j Graph Schema
