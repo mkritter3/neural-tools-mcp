@@ -16,6 +16,7 @@ import json
 import asyncio
 import logging
 import secrets
+import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
@@ -41,6 +42,39 @@ LIMITS = {
     "graphrag_limit_max": 25,
     "max_hops_max": 3,
 }
+
+
+def get_instance_id() -> str:
+    """
+    Get or generate a unique instance ID for this MCP server instance.
+    This enables isolation between different Claude instances.
+    
+    Returns a consistent ID for this MCP server process that persists
+    throughout its lifetime but differs between Claude instances.
+    """
+    # Priority 1: Environment variable (if Claude provides it in future)
+    instance_id = os.getenv('INSTANCE_ID')
+    if instance_id:
+        logger.info(f"🔐 Using provided instance ID: {instance_id}")
+        return instance_id
+    
+    # Priority 2: Process-based ID (fallback)
+    pid = os.getpid()
+    ppid = os.getppid()
+    
+    # Priority 3: Hash of stdin/stdout file descriptors (unique per connection)
+    try:
+        stdin_stat = os.fstat(sys.stdin.fileno())
+        stdout_stat = os.fstat(sys.stdout.fileno())
+        unique_string = f"{pid}:{ppid}:{stdin_stat.st_ino}:{stdin_stat.st_dev}:{stdout_stat.st_ino}"
+    except:
+        # Fallback if file descriptors not available
+        unique_string = f"{pid}:{ppid}:{datetime.now().isoformat()}"
+    
+    # Generate short, consistent hash
+    instance_hash = hashlib.md5(unique_string.encode()).hexdigest()[:8]
+    logger.info(f"🔐 Generated instance ID: {instance_hash} (pid:{pid}, ppid:{ppid})")
+    return instance_hash
 
 
 def _make_validation_error(
@@ -71,13 +105,35 @@ def _make_validation_error(
         payload["hint"] = hint
     return json.dumps(payload, indent=2)
 
-# Multi-project service instances - cached per project
+# Multi-project service instances - cached per project AND instance
 class MultiProjectServiceState:
-    """Holds persistent service state with per-project isolation"""
+    """Holds persistent service state with instance-level and per-project isolation"""
     def __init__(self):
-        self.project_containers = {}  # project_name -> ServiceContainer
-        self.project_retrievers = {}  # project_name -> HybridRetriever
+        # Instance-level isolation (Phase 1 of ADR-19)
+        self.instance_id = get_instance_id()
+        self.instance_containers = {}  # instance_id -> { project_containers, project_retrievers, ... }
         self.global_initialized = False
+        
+        # Initialize container for this instance
+        self._init_instance_container()
+        
+    def _init_instance_container(self):
+        """Initialize container for this instance"""
+        if self.instance_id not in self.instance_containers:
+            self.instance_containers[self.instance_id] = {
+                'project_containers': {},
+                'project_retrievers': {},
+                'session_started': datetime.now(),
+                'last_activity': datetime.now()
+            }
+            logger.info(f"🔐 Initialized instance container: {self.instance_id}")
+    
+    def _get_instance_data(self):
+        """Get data container for current instance"""
+        # Update last activity
+        if self.instance_id in self.instance_containers:
+            self.instance_containers[self.instance_id]['last_activity'] = datetime.now()
+        return self.instance_containers[self.instance_id]
         
     def detect_project_from_path(self, file_path: str) -> str:
         """Extract project name from workspace path"""
@@ -99,9 +155,12 @@ class MultiProjectServiceState:
         return DEFAULT_PROJECT_NAME
     
     async def get_project_container(self, project_name: str):
-        """Get or create ServiceContainer for specific project with lazy initialization"""
-        if project_name not in self.project_containers:
-            logger.info(f"🏗️ Creating service container for project: {project_name}")
+        """Get or create ServiceContainer for specific project with lazy initialization and instance isolation"""
+        instance_data = self._get_instance_data()
+        project_containers = instance_data['project_containers']
+        
+        if project_name not in project_containers:
+            logger.info(f"🏗️ [Instance {self.instance_id}] Creating service container for project: {project_name}")
             
             # Import services
             sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -109,12 +168,12 @@ class MultiProjectServiceState:
             
             container = ServiceContainer(project_name)
             # Don't initialize services yet - will happen on first use
-            self.project_containers[project_name] = container
+            project_containers[project_name] = container
         
         # Lazy initialization - only initialize when actually needed
-        container = self.project_containers[project_name]
+        container = project_containers[project_name]
         if not container.initialized:
-            logger.info(f"⚡ Lazy-initializing services for project: {project_name} (first tool use)")
+            logger.info(f"⚡ [Instance {self.instance_id}] Lazy-initializing services for project: {project_name} (first tool use)")
             await container.initialize_all_services()
             
             # Initialize L9 connection pools and session management
@@ -129,14 +188,19 @@ class MultiProjectServiceState:
         return container
     
     async def get_project_retriever(self, project_name: str):
-        if project_name not in self.project_retrievers:
+        """Get or create HybridRetriever for specific project with instance isolation"""
+        instance_data = self._get_instance_data()
+        project_retrievers = instance_data['project_retrievers']
+        
+        if project_name not in project_retrievers:
             container = await self.get_project_container(project_name)
             if container.neo4j and container.qdrant:
                 from servers.services.hybrid_retriever import HybridRetriever
-                self.project_retrievers[project_name] = HybridRetriever(container)
+                project_retrievers[project_name] = HybridRetriever(container)
+                logger.info(f"🔍 [Instance {self.instance_id}] Created HybridRetriever for project: {project_name}")
             else:
-                self.project_retrievers[project_name] = None
-        return self.project_retrievers[project_name]
+                project_retrievers[project_name] = None
+        return project_retrievers[project_name]
 
 
 state = MultiProjectServiceState()
@@ -260,6 +324,10 @@ async def handle_list_tools() -> List[types.Tool]:
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent]:
     # Services will be initialized lazily on first actual tool use
+    instance_id = state.instance_id
+    
+    # Log tool call with instance ID for debugging
+    logger.info(f"🔧 [Instance {instance_id}] Tool call: {name}")
 
     # L9 2025: Session-aware tool execution
     try:
@@ -365,10 +433,17 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
         elif name == "neural_tools_help":
             return await neural_tools_help_impl()
         else:
-            return [types.TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
+            return [types.TextContent(type="text", text=json.dumps({
+                "error": f"Unknown tool: {name}",
+                "_debug": {"instance_id": instance_id}
+            }))]
     except Exception as e:
-        logger.error(f"Tool call failed: {e}")
-        return [types.TextContent(type="text", text=json.dumps({"status": "error", "message": str(e)}))]
+        logger.error(f"[Instance {instance_id}] Tool call failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({
+            "status": "error",
+            "message": str(e),
+            "_debug": {"instance_id": instance_id}
+        }))]
 
 
 async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextContent]:
@@ -750,7 +825,8 @@ async def run():
     - Client initiates shutdown by closing stdin
     - No signal handling in server (client handles termination)
     """
-    logger.info("🚀 Starting L9 Neural MCP Server (STDIO Transport)")
+    logger.info(f"🚀 Starting L9 Neural MCP Server (STDIO Transport)")
+    logger.info(f"🔐 Instance ID: {state.instance_id}")
     
     # Create PID file for tracking (helps with orphan cleanup)
     pid = os.getpid()
