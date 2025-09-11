@@ -1,6 +1,6 @@
 # Truth‑First L9 Engineering Contract
 
-**Today is September 10, 2025**
+**Today is September 11, 2025**
 **ALWAYS CHECK WITH CONTEXT 7 IF SOMETHING IS A PROTOCOL BEFORE MARCH, 2025**
 **MCP PROTOCOL SHOULD ALWAYS BE 2025-06-18**
 **ALWAYS ASSESS HOW SOMETHING INTEGRATES INTO OUR CURRENT ARCHITECTURE, NEVER CREATE A PARALLEL OR NEW STACK**
@@ -48,7 +48,7 @@
 
 # L9 Neural GraphRAG MCP Architecture - Complete Documentation
 
-**Last Updated: September 11, 2025 - INDEXER WORKING & MCP FIXED! 🎉🚀**
+**Last Updated: September 11, 2025 - PER-PROJECT SCHEMAS IMPLEMENTED! 🎉🚀**
 **Architecture Version: L9 2025 Production Standard**
 **MCP Protocol: 2025-06-18**
 
@@ -530,6 +530,41 @@ python3 scripts/run_l9_validation.py
 - Performance validation
 - Pool optimization suggestions
 - Compliance verification
+
+### ✅ ADR-19: MCP Instance-Level Isolation
+- Process-based instance ID generation
+- Automatic cleanup of stale instances
+- Resource isolation per Claude window
+- Instance-aware logging and monitoring
+- State export/import for migration
+
+### ✅ ADR-20: Per-Project Custom GraphRAG Schemas
+- **Auto-detection of project types** from package.json, requirements.txt, etc.
+- **Custom schemas for both Neo4j AND Qdrant**:
+  - Neo4j: Custom node types and relationships per project type
+  - Qdrant: Custom vector collections with domain-specific fields
+- **Built-in templates** for React, Django, FastAPI, Vue, Angular, etc.
+- **Schema persistence** in `.graphrag/schema.yaml`
+- **Schema management tools** integrated into MCP:
+  - `schema_init` - Initialize or auto-detect project schema
+  - `schema_status` - Get current schema information
+  - `schema_validate` - Validate data against schema
+  - `schema_add_node_type` - Add custom node types
+  - `schema_add_relationship` - Add custom relationships
+
+#### Example Project Schemas:
+
+**React Project:**
+- Neo4j: Component, Hook, Context nodes with USES_HOOK, RENDERS relationships
+- Qdrant: components collection with props_schema, hooks_used fields
+
+**Django Project:**
+- Neo4j: Model, View, Serializer nodes with QUERIES, FOREIGN_KEY relationships  
+- Qdrant: models collection with table, fields metadata
+
+**FastAPI Project:**
+- Neo4j: Endpoint, Model, Dependency nodes with VALIDATES, DEPENDS_ON relationships
+- Qdrant: endpoints collection with path, method, response_model fields
 
 ## 🎓 Key Learnings
 
