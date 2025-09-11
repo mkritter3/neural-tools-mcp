@@ -4,8 +4,11 @@ Minimal ServiceContainer implementation for multi-project GraphRAG
 
 import os
 import logging
+import secrets
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
+from datetime import datetime
 
 import redis.asyncio as redis
 from arq import create_pool
@@ -37,6 +40,19 @@ class ServiceContainer:
         # Phase 3: Intelligent caching services
         self._cache_warmer = None
         self._cache_metrics = None
+        
+        # L9 2025: Connection pooling and session management
+        self.connection_pools = {}
+        self.session_manager = None
+        self._pool_initialized = False
+        
+        # L9 2025: Pool monitoring and metrics
+        self.pool_monitor = None
+        
+        # Phase 3: Production security and monitoring
+        self.auth_service = None
+        self.error_handler = None
+        self.health_monitor = None
     
     async def get_redis_cache_client(self):
         """Get async Redis client for caching"""
@@ -97,6 +113,173 @@ class ServiceContainer:
             self._cache_metrics = CacheMetricsService(self)
             await self._cache_metrics.initialize()
         return self._cache_metrics
+    
+    async def initialize_connection_pools(self):
+        """Initialize L9 2025 connection pools for MCP sessions"""
+        if self._pool_initialized:
+            return
+            
+        logger.info(f"🔄 Initializing L9 connection pools for project: {self.project_name}")
+        
+        # Get pool sizes from environment (L9 container-tuned defaults)
+        neo4j_pool_size = int(os.getenv('NEO4J_POOL_SIZE', '50'))
+        qdrant_pool_size = int(os.getenv('QDRANT_POOL_SIZE', '30'))
+        redis_cache_pool_size = int(os.getenv('REDIS_CACHE_POOL_SIZE', '25'))
+        redis_queue_pool_size = int(os.getenv('REDIS_QUEUE_POOL_SIZE', '15'))
+        
+        self.connection_pools = {
+            'neo4j': {'max_size': neo4j_pool_size, 'min_idle': max(5, neo4j_pool_size // 10), 'active': 0, 'connections': {}},
+            'qdrant': {'max_size': qdrant_pool_size, 'min_idle': max(3, qdrant_pool_size // 10), 'active': 0, 'connections': {}},
+            'redis_cache': {'max_size': redis_cache_pool_size, 'min_idle': max(2, redis_cache_pool_size // 10), 'active': 0, 'connections': {}},
+            'redis_queue': {'max_size': redis_queue_pool_size, 'min_idle': max(1, redis_queue_pool_size // 10), 'active': 0, 'connections': {}}
+        }
+        
+        # Initialize session manager
+        from servers.services.session_manager import SessionManager
+        self.session_manager = SessionManager()
+        
+        # Initialize pool monitor
+        from servers.services.pool_monitor import PoolMonitor
+        self.pool_monitor = PoolMonitor(self)
+        await self.pool_monitor.initialize()
+        
+        logger.info(f"✅ L9 connection pools initialized: Neo4j={neo4j_pool_size}, Qdrant={qdrant_pool_size}, Redis={redis_cache_pool_size}/{redis_queue_pool_size}")
+        self._pool_initialized = True
+    
+    async def initialize_security_services(self):
+        """Initialize Phase 3 security and monitoring services"""
+        logger.info("🔐 Initializing Phase 3 security and monitoring services...")
+        
+        # Initialize authentication service
+        try:
+            from servers.services.auth_service import AuthenticationService
+            redis_client = await self.get_redis_cache_client()
+            self.auth_service = AuthenticationService(redis_client)
+            logger.info("✅ Authentication service initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize auth service: {e}")
+            self.auth_service = None
+        
+        # Initialize error handler
+        try:
+            from servers.services.error_handler import ErrorHandler
+            redis_client = await self.get_redis_cache_client()
+            self.error_handler = ErrorHandler(redis_client)
+            logger.info("✅ Error handler initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize error handler: {e}")
+            self.error_handler = None
+        
+        # Initialize health monitor
+        try:
+            from servers.services.health_monitor import HealthMonitor
+            self.health_monitor = HealthMonitor(self)
+            await self.health_monitor.initialize()
+            await self.health_monitor.start_monitoring()
+            logger.info("✅ Health monitor initialized and started")
+        except Exception as e:
+            logger.error(f"Failed to initialize health monitor: {e}")
+            self.health_monitor = None
+        
+        logger.info("🎉 Phase 3 security and monitoring services initialized")
+    
+    async def get_pooled_connection(self, service: str, session_id: str):
+        """Get connection from pool for specific session"""
+        start_time = time.time()
+        success = False
+        
+        try:
+            if not self._pool_initialized:
+                await self.initialize_connection_pools()
+                
+            pool = self.connection_pools.get(service)
+            if not pool:
+                raise ValueError(f"Unknown service: {service}")
+                
+            # Check if session already has a connection
+            if session_id in pool['connections']:
+                success = True
+                return pool['connections'][session_id]
+                
+            # Check pool capacity
+            if pool['active'] >= pool['max_size']:
+                raise Exception(f"Connection pool exhausted for {service} (active: {pool['active']}, max: {pool['max_size']})")
+                
+            # Create new connection based on service type
+            if service == 'neo4j':
+                connection = await self._create_neo4j_connection()
+            elif service == 'qdrant':
+                connection = await self._create_qdrant_connection()
+            elif service == 'redis_cache':
+                connection = await self._create_redis_cache_connection()
+            elif service == 'redis_queue':
+                connection = await self._create_redis_queue_connection()
+            else:
+                raise ValueError(f"Unknown service: {service}")
+                
+            # Store in pool
+            pool['connections'][session_id] = connection
+            pool['active'] += 1
+            
+            logger.debug(f"🔗 Created {service} connection for session {session_id[:8]}... (pool: {pool['active']}/{pool['max_size']})")
+            success = True
+            return connection
+            
+        finally:
+            # Record metrics
+            duration = time.time() - start_time
+            if self.pool_monitor:
+                self.pool_monitor.record_connection_event(service, success, duration)
+    
+    async def return_pooled_connection(self, service: str, session_id: str):
+        """Return connection to pool (session cleanup)"""
+        pool = self.connection_pools.get(service)
+        if pool and session_id in pool['connections']:
+            # Close connection
+            connection = pool['connections'].pop(session_id)
+            try:
+                if hasattr(connection, 'close'):
+                    await connection.close()
+                elif hasattr(connection, 'aclose'):
+                    await connection.aclose()
+            except Exception as e:
+                logger.warning(f"Error closing {service} connection: {e}")
+                
+            pool['active'] -= 1
+            logger.debug(f"♻️ Returned {service} connection for session {session_id[:8]}... (pool: {pool['active']}/{pool['max_size']})")
+    
+    async def _create_neo4j_connection(self):
+        """Create new Neo4j connection"""
+        from neo4j import GraphDatabase
+        NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:47687")
+        NEO4J_USER = os.getenv("NEO4J_USERNAME", "neo4j")  
+        NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "graphrag-password")
+        return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    
+    async def _create_qdrant_connection(self):
+        """Create new Qdrant connection"""
+        from qdrant_client import QdrantClient
+        QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+        QDRANT_PORT = int(os.getenv("QDRANT_PORT", "46333"))
+        return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=5.0)
+    
+    async def _create_redis_cache_connection(self):
+        """Create new Redis cache connection"""
+        return redis.Redis(
+            host=os.getenv('REDIS_CACHE_HOST', 'localhost'),
+            port=int(os.getenv('REDIS_CACHE_PORT', 46379)),
+            password=os.getenv('REDIS_CACHE_PASSWORD', 'cache-secret-key'),
+            decode_responses=True
+        )
+    
+    async def _create_redis_queue_connection(self):
+        """Create new Redis queue connection"""
+        return redis.Redis(
+            host=os.getenv('REDIS_QUEUE_HOST', 'localhost'),
+            port=int(os.getenv('REDIS_QUEUE_PORT', 46380)),
+            password=os.getenv('REDIS_QUEUE_PASSWORD', 'queue-secret-key'),
+            decode_responses=True
+        )
         
     def ensure_neo4j_client(self):
         """Initialize REAL Neo4j client connection"""
@@ -134,15 +317,11 @@ class ServiceContainer:
         try:
             # Lightweight connectivity check to provide early feedback; wrapper handles real init
             from qdrant_client import QdrantClient
-            # Resolve host/port via central config if available
-            try:
-                from servers.config import get_runtime_config
-                cfg = get_runtime_config()
-                QDRANT_HOST = cfg.database.qdrant_host
-                QDRANT_PORT = int(cfg.database.qdrant_port)
-            except Exception:
-                QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-                QDRANT_PORT = int(os.getenv("QDRANT_PORT", "46333"))
+            # L9 2025: Force use of environment variables for MCP connectivity
+            QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+            QDRANT_PORT = int(os.getenv("QDRANT_PORT", "46333"))
+            
+            logger.info(f"L9 MCP: Using Qdrant at {QDRANT_HOST}:{QDRANT_PORT} (MCP container ports)")
 
             logger.info(f"Connecting to Qdrant for connectivity check at {QDRANT_HOST}:{QDRANT_PORT}")
             tmp_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=3.0)

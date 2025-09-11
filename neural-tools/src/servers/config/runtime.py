@@ -61,8 +61,8 @@ class RuntimeConfig:
         
         neo4j_uri = os.environ.get('NEO4J_URI')
         if not neo4j_uri:
-            neo4j_host = os.environ.get('NEO4J_HOST', 'default-neo4j-graph')
-            neo4j_port = int(os.environ.get('NEO4J_PORT', 7687))
+            neo4j_host = os.environ.get('NEO4J_HOST', 'localhost')
+            neo4j_port = int(os.environ.get('NEO4J_PORT', 47687))
             neo4j_uri = f"bolt://{neo4j_host}:{neo4j_port}"
             logger.warning(f"NEO4J_URI not found, constructed from defaults: {neo4j_uri}")
         else:
@@ -75,7 +75,7 @@ class RuntimeConfig:
         
         qdrant_port = int(
             os.environ.get('QDRANT_PORT', 
-                os.environ.get('QDRANT_HTTP_PORT', '6333')
+                os.environ.get('QDRANT_HTTP_PORT', '46333')
             )
         )
         logger.info(f"Using Qdrant port: {qdrant_port}")
@@ -99,7 +99,7 @@ class RuntimeConfig:
         embedding_config = EmbeddingConfig(
             embed_dimension=embed_dimension,
             embed_model=os.environ.get('EMBED_MODEL', 'nomic-embed-text-v1.5'),
-            nomic_api_url=os.environ.get('NOMIC_API_URL', 'http://localhost:8080'),
+            nomic_api_url=os.environ.get('NOMIC_API_URL', 'http://localhost:48000'),
             max_batch_size=int(os.environ.get('EMBED_BATCH_SIZE', '100'))
         )
         

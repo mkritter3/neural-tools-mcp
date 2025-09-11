@@ -30,8 +30,8 @@ class NomicEmbedClient:
     """
     
     def __init__(self):
-        host = os.environ.get('EMBEDDING_SERVICE_HOST', '172.18.0.5')
-        port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 8000))
+        host = os.environ.get('EMBEDDING_SERVICE_HOST', 'localhost')
+        port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 48000))
         self.base_url = f"http://{host}:{port}"
         
         # Store configuration for creating clients per request

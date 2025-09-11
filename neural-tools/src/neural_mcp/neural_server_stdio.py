@@ -15,6 +15,7 @@ import sys
 import json
 import asyncio
 import logging
+import secrets
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
@@ -127,9 +128,20 @@ server = Server("l9-neural-enhanced")
 
 
 async def initialize_services():
-    # Trigger initialization for default project
-    await state.get_project_container(DEFAULT_PROJECT_NAME)
+    # Trigger initialization for default project with L9 2025 connection pooling
+    container = await state.get_project_container(DEFAULT_PROJECT_NAME)
+    
+    # Initialize L9 connection pools and session management
+    await container.initialize_connection_pools()
+    if container.session_manager:
+        await container.session_manager.initialize()
+    
+    # Initialize Phase 3 security and monitoring
+    if hasattr(container, 'initialize_security_services'):
+        await container.initialize_security_services()
+    
     state.global_initialized = True
+    logger.info("🚀 L9 MCP Server fully initialized with Phase 3 security and monitoring")
     return True
 
 
@@ -249,7 +261,33 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
     if not state.global_initialized:
         await initialize_services()
 
+    # L9 2025: Session-aware tool execution
     try:
+        # Generate or extract session ID (simplified for now)
+        session_id = arguments.get('session_id') or secrets.token_urlsafe(16)
+        
+        # Get project container with connection pooling
+        project_name, container, retriever = await get_project_context(arguments)
+        
+        # Get or create session
+        if container.session_manager:
+            session = await container.session_manager.get_or_create_session(session_id)
+            
+            # Check rate limits
+            if not await session.check_rate_limit():
+                return [types.TextContent(type="text", text=json.dumps({
+                    "status": "error",
+                    "code": "rate_limit_exceeded",
+                    "message": f"Rate limit exceeded. Current limit: {session.resource_limits['queries_per_minute']} queries/minute.",
+                    "session_id": session_id[:8] + "..."
+                }, indent=2))]
+                
+            # Clean up expired sessions periodically
+            await container.session_manager.cleanup_expired_sessions()
+        else:
+            session = None
+        
+        # Execute tools with session context
         if name == "neural_system_status":
             return await neural_system_status_impl()
         elif name == "semantic_code_search":
