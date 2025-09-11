@@ -418,6 +418,7 @@ class ServiceContainer:
             NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "graphrag-password")
             
             logger.info(f"Connecting to REAL Neo4j at {NEO4J_URI} for project {self.project_name}")
+            logger.info(f"   User: {NEO4J_USER}, Password: {'***' + NEO4J_PASSWORD[-4:] if len(NEO4J_PASSWORD) > 4 else '***'}")
             
             # Create driver with connection pooling
             self.neo4j_client = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
@@ -714,6 +715,8 @@ class ServiceContainer:
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # 2, 4, 8, 16 seconds
                     logger.warning(f"⏳ Services not ready (Neo4j: {neo4j_ok}, Qdrant: {qdrant_ok}), retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                    # IMPORTANT: Using synchronous sleep here because this is called from sync context
+                    # The async version is in initialize_with_retry() method
                     time.sleep(delay)
             else:
                 logger.error(f"Failed to connect to services after {max_retries} attempts")
@@ -761,7 +764,9 @@ class ServiceContainer:
         This method includes retry logic with exponential backoff to handle
         Docker container startup delays (ADR 0018)
         """
-        base_init = self.initialize(retry_on_failure=True)
+        # Use async progressive initialization to avoid blocking the event loop
+        connection_state = await self.initialize_with_progressive_connection()
+        base_init = connection_state != ConnectionState.DISCONNECTED
         
         # Initialize service wrappers asynchronously
         if self.neo4j and hasattr(self.neo4j, 'initialize'):

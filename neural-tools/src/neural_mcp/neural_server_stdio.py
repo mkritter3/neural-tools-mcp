@@ -709,16 +709,77 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
         )]
 
 
+def cleanup_resources():
+    """Clean up resources on server shutdown (called when stdin closes)"""
+    logger.info("🔄 Cleaning up resources (stdin closed)")
+    
+    # Remove PID file if it exists
+    pid = os.getpid()
+    pid_file = Path(f"/tmp/mcp_pids/mcp_{pid}.pid")
+    if pid_file.exists():
+        try:
+            pid_file.unlink()
+            logger.info(f"✅ Removed PID file: {pid_file}")
+        except Exception as e:
+            logger.error(f"Failed to remove PID file: {e}")
+    
+    # Close any active connections
+    if 'state' in globals() and state:
+        for project_state in state.project_states.values():
+            if project_state.container:
+                try:
+                    # Close Neo4j connections
+                    if hasattr(project_state.container, 'neo4j_driver'):
+                        project_state.container.neo4j_driver.close()
+                    # Close Qdrant connections
+                    if hasattr(project_state.container, 'qdrant_client'):
+                        project_state.container.qdrant_client.close()
+                except Exception as e:
+                    logger.error(f"Error closing connections: {e}")
+    
+    logger.info("👋 MCP server shutdown complete")
+
+
 async def run():
+    """
+    Main entry point for MCP server following 2025-06-18 specification.
+    
+    Per spec:
+    - Server reads from stdin, writes to stdout
+    - Logs go to stderr only
+    - Client initiates shutdown by closing stdin
+    - No signal handling in server (client handles termination)
+    """
     logger.info("🚀 Starting L9 Neural MCP Server (STDIO Transport)")
-    await initialize_services()
-    async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="l9-neural-enhanced",
-                server_version="2.0.0-stdio",
-                capabilities=server.get_capabilities(notification_options=NotificationOptions(), experimental_capabilities={}),
-            ),
-        )
+    
+    # Create PID file for tracking (helps with orphan cleanup)
+    pid = os.getpid()
+    pid_dir = Path("/tmp/mcp_pids")
+    pid_dir.mkdir(exist_ok=True)
+    pid_file = pid_dir / f"mcp_{pid}.pid"
+    pid_file.write_text(str(pid))
+    logger.info(f"📝 PID file created: {pid_file}")
+    
+    try:
+        await initialize_services()
+        
+        # MCP STDIO server handles the transport layer
+        # It will detect when stdin closes (client disconnect)
+        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                InitializationOptions(
+                    server_name="l9-neural-enhanced",
+                    server_version="2.0.0-stdio",
+                    capabilities=server.get_capabilities(notification_options=NotificationOptions(), experimental_capabilities={}),
+                ),
+            )
+    except (EOFError, BrokenPipeError):
+        # Normal shutdown - stdin closed by client
+        logger.info("📥 Client disconnected (stdin closed)")
+    except Exception as e:
+        logger.error(f"❌ Server error: {e}")
+        raise
+    finally:
+        cleanup_resources()
