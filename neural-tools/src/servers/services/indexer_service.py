@@ -39,14 +39,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info(f"Logging level set to: {log_level}")
 
-# Import tree-sitter extractor if structure extraction is enabled
-STRUCTURE_EXTRACTION_ENABLED = os.getenv("STRUCTURE_EXTRACTION_ENABLED", "false").lower() == "true"
+# Import code parser for structure extraction (ADR 0017)
+STRUCTURE_EXTRACTION_ENABLED = os.getenv("STRUCTURE_EXTRACTION_ENABLED", "true").lower() == "true"
 if STRUCTURE_EXTRACTION_ENABLED:
     try:
-        from tree_sitter_extractor import TreeSitterExtractor
-        logger.info("Tree-sitter extraction enabled")
+        from code_parser import CodeParser
+        logger.info("Code structure extraction enabled (ADR 0017: GraphRAG)")
     except ImportError as e:
-        logger.warning(f"Tree-sitter extraction not available: {e}")
+        logger.warning(f"Code parser not available: {e}")
         STRUCTURE_EXTRACTION_ENABLED = False
 
 class DebouncedEventHandler(FileSystemEventHandler):
@@ -165,12 +165,12 @@ class IncrementalIndexer(FileSystemEventHandler):
             # No event loop running during init - will be set later
             self._loop = None
         
-        # Initialize tree-sitter extractor if enabled
-        self.tree_sitter_extractor = None
+        # Initialize code parser for structure extraction (ADR 0017)
+        self.code_parser = None
         if STRUCTURE_EXTRACTION_ENABLED:
             try:
-                self.tree_sitter_extractor = TreeSitterExtractor()
-                logger.info("Tree-sitter extractor initialized successfully")
+                self.code_parser = CodeParser()
+                logger.info("Code parser initialized for GraphRAG structure extraction")
             except Exception as e:
                 logger.warning(f"Failed to initialize tree-sitter extractor: {e}")
                 self.tree_sitter_extractor = None
@@ -1040,12 +1040,66 @@ class IncrementalIndexer(FileSystemEventHandler):
                 logger.debug(f"File content unchanged in Neo4j: {file_path}")
                 # Still need to ensure chunks exist if Qdrant was updated
             
-            # Parse imports/dependencies (simplified - could use tree-sitter for accuracy)
-            if file_type in ['.py', '.js', '.ts']:
-                imports = self._extract_imports(content, file_type)
+            # Extract structured code information using CodeParser (ADR 0017)
+            if self.code_parser and file_type in self.code_parser.supported_extensions:
+                structure = self.code_parser.extract_structure(content, file_type)
                 
+                # Create Function nodes
+                for func in structure.get('functions', []):
+                    await self.container.neo4j.execute_cypher("""
+                        MERGE (f:Function {name: $name, file_path: $file_path})
+                        SET f.signature = $signature,
+                            f.start_line = $start_line,
+                            f.end_line = $end_line,
+                            f.project = $project
+                        WITH f
+                        MATCH (file:File {path: $file_path})
+                        MERGE (f)-[:DEFINED_IN]->(file)
+                    """, {
+                        'name': func['name'],
+                        'file_path': str(relative_path),
+                        'signature': func.get('signature', ''),
+                        'start_line': func.get('start_line', 0),
+                        'end_line': func.get('end_line', 0),
+                        'project': self.project_name
+                    })
+                
+                # Create Class nodes
+                for cls in structure.get('classes', []):
+                    await self.container.neo4j.execute_cypher("""
+                        MERGE (c:Class {name: $name, file_path: $file_path})
+                        SET c.start_line = $start_line,
+                            c.end_line = $end_line,
+                            c.project = $project
+                        WITH c
+                        MATCH (file:File {path: $file_path})
+                        MERGE (c)-[:DEFINED_IN]->(file)
+                    """, {
+                        'name': cls['name'],
+                        'file_path': str(relative_path),
+                        'start_line': cls.get('start_line', 0),
+                        'end_line': cls.get('end_line', 0),
+                        'project': self.project_name
+                    })
+                
+                # Create CALLS relationships
+                for call in structure.get('calls', []):
+                    # Only create if both functions exist
+                    await self.container.neo4j.execute_cypher("""
+                        MATCH (caller:Function {file_path: $file_path})
+                        WHERE caller.start_line <= $call_line AND caller.end_line >= $call_line
+                        MATCH (callee:Function {name: $callee_name})
+                        MERGE (caller)-[:CALLS]->(callee)
+                    """, {
+                        'file_path': str(relative_path),
+                        'call_line': call.get('line', 0),
+                        'callee_name': call.get('name', '')
+                    })
+                
+                # Process imports with better extraction
+                imports = structure.get('imports', [])
                 for imp in imports:
-                    # Create import relationship
+                    # Create import relationships
                     cypher = """
                     MATCH (f:File {path: $from_path})
                     MERGE (m:Module {name: $module})

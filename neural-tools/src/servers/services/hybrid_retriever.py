@@ -106,9 +106,18 @@ class HybridRetriever:
             if include_graph_context and chunk_ids and self.container.neo4j:
                 graph_context = await self._fetch_graph_context(chunk_ids, max_hops)
                 
-                # Merge graph context with results
+                # Merge graph context with results and boost scores (ADR 0017)
                 for result, context in zip(results, graph_context):
                     result['graph_context'] = context
+                    # Boost score based on graph importance
+                    result['original_score'] = result['score']
+                    result['score'] = self._adjust_score_by_graph_importance(
+                        result['score'], 
+                        context
+                    )
+            
+            # Re-sort by adjusted scores
+            results.sort(key=lambda x: x['score'], reverse=True)
             
             return results
             
@@ -135,26 +144,48 @@ class HybridRetriever:
         
         for chunk_id in chunk_ids:
             try:
-                # Query for chunk relationships
+                # Enhanced query for ADR 0017: GraphRAG True Hybrid Search
                 cypher = """
                 MATCH (c:CodeChunk {id: $chunk_id})
                 OPTIONAL MATCH (c)-[:PART_OF]->(f:File)
-                OPTIONAL MATCH (f)-[:IMPORTS]->(m:Module)
-                OPTIONAL MATCH (f)<-[:IMPORTS]-(importer:File)
+                
+                // Get functions in this file/chunk
+                OPTIONAL MATCH (func:Function)-[:DEFINED_IN]->(f)
+                WHERE func.start_line >= c.start_line AND func.end_line <= c.end_line
+                
+                // Get classes in this file/chunk  
+                OPTIONAL MATCH (cls:Class)-[:DEFINED_IN]->(f)
+                WHERE cls.start_line >= c.start_line AND cls.end_line <= c.end_line
+                
+                // Get functions this chunk's functions call
+                OPTIONAL MATCH (func)-[:CALLS]->(called:Function)
+                
+                // Get functions that call this chunk's functions
+                OPTIONAL MATCH (caller:Function)-[:CALLS]->(func)
+                
+                // Get file-level imports
+                OPTIONAL MATCH (f)-[:IMPORTS]->(imported:File)
+                OPTIONAL MATCH (importer:File)-[:IMPORTS]->(f)
+                
+                // Get related chunks in same file
                 OPTIONAL MATCH (related:CodeChunk)-[:PART_OF]->(f)
-                WHERE related.id <> c.id AND related.type IN ['function', 'class']
+                WHERE related.id <> c.id
+                
                 RETURN 
                     f.path AS file_path,
                     f.type AS file_type,
-                    f.content_hash AS file_hash,
-                    collect(DISTINCT m.name) AS imports,
+                    collect(DISTINCT func.name) AS functions,
+                    collect(DISTINCT func.signature) AS function_signatures,
+                    collect(DISTINCT cls.name) AS classes,
+                    collect(DISTINCT called.name) AS calls,
+                    collect(DISTINCT caller.name) AS called_by,
+                    collect(DISTINCT imported.path) AS imports,
                     collect(DISTINCT importer.path) AS imported_by,
                     collect(DISTINCT {
                         id: related.id,
-                        type: related.type,
                         start_line: related.start_line,
                         end_line: related.end_line
-                    }) AS related_chunks
+                    })[0..5] AS related_chunks
                 LIMIT 1
                 """
                 
@@ -164,14 +195,22 @@ class HybridRetriever:
                 
                 if result:
                     context = result[0]
-                    # Clean up empty collections
-                    context['imports'] = [i for i in context.get('imports', []) if i]
-                    context['imported_by'] = [i for i in context.get('imported_by', []) if i]
-                    context['related_chunks'] = [
-                        c for c in context.get('related_chunks', []) 
-                        if c and c.get('id')
-                    ]
-                    contexts.append(context)
+                    # Clean up empty collections and build enhanced context (ADR 0017)
+                    enhanced_context = {
+                        'file_path': context.get('file_path'),
+                        'functions': [f for f in context.get('functions', []) if f],
+                        'function_signatures': [s for s in context.get('function_signatures', []) if s],
+                        'classes': [c for c in context.get('classes', []) if c],
+                        'calls': [c for c in context.get('calls', []) if c],
+                        'called_by': [c for c in context.get('called_by', []) if c],
+                        'imports': [i for i in context.get('imports', []) if i],
+                        'imported_by': [i for i in context.get('imported_by', []) if i],
+                        'related_chunks': [
+                            c for c in context.get('related_chunks', []) 
+                            if c and c.get('id')
+                        ]
+                    }
+                    contexts.append(enhanced_context)
                 else:
                     contexts.append({})
                     
@@ -180,6 +219,55 @@ class HybridRetriever:
                 contexts.append({})
         
         return contexts
+    
+    def _adjust_score_by_graph_importance(self, base_score: float, context: Dict) -> float:
+        """
+        Boost score based on graph relationships (ADR 0017)
+        
+        Args:
+            base_score: Original similarity score from vector search
+            context: Graph context with relationships
+            
+        Returns:
+            Adjusted score incorporating graph importance
+        """
+        boost = 0.0
+        
+        # Boost if file is heavily imported (high coupling)
+        imported_by_count = len(context.get('imported_by', []))
+        if imported_by_count > 10:
+            boost += 0.15
+        elif imported_by_count > 5:
+            boost += 0.08
+        elif imported_by_count > 2:
+            boost += 0.04
+        
+        # Boost if contains many functions (functional complexity)
+        function_count = len(context.get('functions', []))
+        if function_count > 5:
+            boost += 0.08
+        elif function_count > 2:
+            boost += 0.04
+        
+        # Boost if highly connected (many function calls)
+        calls_count = len(context.get('calls', [])) + len(context.get('called_by', []))
+        if calls_count > 15:
+            boost += 0.12
+        elif calls_count > 8:
+            boost += 0.06
+        elif calls_count > 3:
+            boost += 0.03
+        
+        # Boost if contains classes (OOP importance)
+        class_count = len(context.get('classes', []))
+        if class_count > 0:
+            boost += 0.05 * min(class_count, 3)  # Cap at 0.15
+        
+        # Apply boost with diminishing returns
+        adjusted_score = base_score * (1 + boost)
+        
+        # Cap at 1.0 but preserve relative ordering
+        return min(adjusted_score, 0.99)
     
     async def find_related_by_graph(
         self,
