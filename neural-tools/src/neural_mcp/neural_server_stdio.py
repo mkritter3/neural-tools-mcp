@@ -99,18 +99,34 @@ class MultiProjectServiceState:
         return DEFAULT_PROJECT_NAME
     
     async def get_project_container(self, project_name: str):
-        """Get or create ServiceContainer for specific project"""
+        """Get or create ServiceContainer for specific project with lazy initialization"""
         if project_name not in self.project_containers:
-            logger.info(f"🏗️ Initializing services for project: {project_name}")
+            logger.info(f"🏗️ Creating service container for project: {project_name}")
             
             # Import services
             sys.path.insert(0, str(Path(__file__).parent.parent))
             from servers.services.service_container import ServiceContainer
             
             container = ServiceContainer(project_name)
-            await container.initialize_all_services()
+            # Don't initialize services yet - will happen on first use
             self.project_containers[project_name] = container
-        return self.project_containers[project_name]
+        
+        # Lazy initialization - only initialize when actually needed
+        container = self.project_containers[project_name]
+        if not container.initialized:
+            logger.info(f"⚡ Lazy-initializing services for project: {project_name} (first tool use)")
+            await container.initialize_all_services()
+            
+            # Initialize L9 connection pools and session management
+            await container.initialize_connection_pools()
+            if container.session_manager:
+                await container.session_manager.initialize()
+            
+            # Initialize Phase 3 security and monitoring if available
+            if hasattr(container, 'initialize_security_services'):
+                await container.initialize_security_services()
+        
+        return container
     
     async def get_project_retriever(self, project_name: str):
         if project_name not in self.project_retrievers:
@@ -127,22 +143,8 @@ state = MultiProjectServiceState()
 server = Server("l9-neural-enhanced")
 
 
-async def initialize_services():
-    # Trigger initialization for default project with L9 2025 connection pooling
-    container = await state.get_project_container(DEFAULT_PROJECT_NAME)
-    
-    # Initialize L9 connection pools and session management
-    await container.initialize_connection_pools()
-    if container.session_manager:
-        await container.session_manager.initialize()
-    
-    # Initialize Phase 3 security and monitoring
-    if hasattr(container, 'initialize_security_services'):
-        await container.initialize_security_services()
-    
-    state.global_initialized = True
-    logger.info("🚀 L9 MCP Server fully initialized with Phase 3 security and monitoring")
-    return True
+# Removed initialize_services() - services now initialized lazily on first use
+# This prevents blocking the MCP handshake with 30+ second service initialization
 
 
 async def get_project_context(arguments: Dict[str, Any]):
@@ -761,7 +763,9 @@ async def run():
     logger.info(f"📝 PID file created: {pid_file}")
     
     try:
-        await initialize_services()
+        # CRITICAL FIX: Don't initialize services here - wait until after handshake
+        # Services will be initialized lazily on first tool use
+        logger.info("⏳ Delaying service initialization until after MCP handshake")
         
         # MCP STDIO server handles the transport layer
         # It will detect when stdin closes (client disconnect)
