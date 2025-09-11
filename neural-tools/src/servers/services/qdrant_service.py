@@ -245,15 +245,13 @@ class QdrantService:
                 existing_names = []
             
             if collection_name not in existing_names:
-                # Create collection with optimized settings (named vectors)
+                # Create collection with optimized settings (unnamed default vector)
                 await self.client.create_collection(
                     collection_name=collection_name,
-                    vectors_config={
-                        "dense": VectorParams(
-                            size=vector_size,
-                            distance=distance  # Now using the passed distance parameter
-                        )
-                    },
+                    vectors_config=VectorParams(
+                        size=vector_size,
+                        distance=distance  # Now using the passed distance parameter
+                    ),
                     # Production-grade settings
                     optimizers_config={
                         "default_segment_number": 8,
@@ -297,12 +295,13 @@ class QdrantService:
                 collection_info = await self.client.get_collection(collection_name)
                 
                 # Handle named vectors configuration
-                if hasattr(collection_info.config.params.vectors, 'get'):
-                    # Named vectors configuration
-                    expected_dim = collection_info.config.params.vectors.get("dense").size
-                else:
-                    # Single vector configuration
+                # Get expected dimension from collection config
+                if hasattr(collection_info.config.params.vectors, 'size'):
+                    # Single unnamed vector configuration
                     expected_dim = collection_info.config.params.vectors.size
+                else:
+                    # Named vectors configuration (not currently used)
+                    expected_dim = 768  # Default for Nomic embeddings
                 
                 # Check first point's vector dimensions
                 first_point = points[0]
@@ -311,7 +310,7 @@ class QdrantService:
                 if hasattr(first_point, 'vector') and first_point.vector:
                     # Handle both dict (named vectors) and list formats
                     if isinstance(first_point.vector, dict):
-                        # Named vector format: {"dense": [...]}
+                        # Named vector format (not currently used)
                         if "dense" in first_point.vector:
                             actual_dim = len(first_point.vector["dense"])
                     elif isinstance(first_point.vector, list):
@@ -326,9 +325,21 @@ class QdrantService:
                     if actual_dim:
                         logger.debug(f"Dimension validation passed: {actual_dim}D vectors for collection {collection_name}")
             
+            # Convert dicts to PointStruct objects if needed
+            from qdrant_client.models import PointStruct
+            
+            point_structs = []
+            for p in points:
+                if isinstance(p, dict):
+                    # Debug: Log what we're sending
+                    logger.debug(f"Creating PointStruct from dict: id={p.get('id')}, vector_type={type(p.get('vector'))}, vector_len={len(p.get('vector')) if p.get('vector') else 0}")
+                    point_structs.append(PointStruct(**p))
+                else:
+                    point_structs.append(p)
+            
             operation_info = await self.client.upsert(
                 collection_name=collection_name,
-                points=points,
+                points=point_structs,
                 wait=True
             )
             
@@ -380,7 +391,7 @@ class QdrantService:
         try:
             search_results = await self.client.search(
                 collection_name=collection_name,
-                query_vector=("dense", query_vector),
+                query_vector=query_vector,
                 limit=limit,
                 score_threshold=score_threshold,
                 query_filter=filter_conditions,

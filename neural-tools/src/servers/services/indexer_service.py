@@ -61,6 +61,12 @@ class DebouncedEventHandler(FileSystemEventHandler):
         self._lock = Lock()
         self._events_queue = {}  # path -> event_type
         self._timer = None
+        
+        # Store event loop reference for cross-thread task submission
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
     
     def dispatch(self, event):
         """Override dispatch to implement debouncing"""
@@ -112,12 +118,25 @@ class DebouncedEventHandler(FileSystemEventHandler):
         for path, event_type in events_to_process.items():
             try:
                 # Map watchdog events to our indexer actions
-                if event_type == 'deleted':
-                    asyncio.create_task(self.indexer._queue_change(path, 'delete'))
-                elif event_type == 'created':
-                    asyncio.create_task(self.indexer._queue_change(path, 'create'))
-                elif event_type == 'modified':
-                    asyncio.create_task(self.indexer._queue_change(path, 'update'))
+                # Use run_coroutine_threadsafe since Timer runs in a separate thread
+                if self._loop and self._loop.is_running():
+                    if event_type == 'deleted':
+                        asyncio.run_coroutine_threadsafe(
+                            self.indexer._queue_change(path, 'delete'), 
+                            self._loop
+                        )
+                    elif event_type == 'created':
+                        asyncio.run_coroutine_threadsafe(
+                            self.indexer._queue_change(path, 'create'), 
+                            self._loop
+                        )
+                    elif event_type == 'modified':
+                        asyncio.run_coroutine_threadsafe(
+                            self.indexer._queue_change(path, 'update'), 
+                            self._loop
+                        )
+                else:
+                    logger.error(f"Event loop not available for {event_type} on {path}")
                 
             except Exception as e:
                 logger.error(f"Error queuing {event_type} for {path}: {e}")
@@ -138,6 +157,13 @@ class IncrementalIndexer(FileSystemEventHandler):
         # Service container for accessing Neo4j, Qdrant, Nomic
         self.container = container
         self.services_initialized = False
+        
+        # Store event loop for cross-thread task submission (Python 2025 asyncio standard)
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop running during init - will be set later
+            self._loop = None
         
         # Initialize tree-sitter extractor if enabled
         self.tree_sitter_extractor = None
@@ -820,8 +846,10 @@ class IncrementalIndexer(FileSystemEventHandler):
                 # Generate deterministic shared ID using SHA256
                 chunk_id_str = f"{file_path}:{chunk['start_line']}:{chunk['end_line']}"
                 chunk_id_hash = hashlib.sha256(chunk_id_str.encode()).hexdigest()
-                # Convert to numeric ID for Qdrant (use first 16 hex chars as int)
-                chunk_id = int(chunk_id_hash[:16], 16)
+                # Convert to numeric ID for Qdrant (use first 15 hex chars to stay within Neo4j int64 range)
+                # Neo4j max int: 9223372036854775807 (19 digits)
+                # 15 hex chars = max 1152921504606846975 (19 digits, always safe)
+                chunk_id = int(chunk_id_hash[:15], 16)
                 
                 # Create sparse vector from keywords
                 sparse_indices, sparse_values = self._extract_keywords(chunk['text'])
@@ -869,15 +897,13 @@ class IncrementalIndexer(FileSystemEventHandler):
                     payload['has_symbols'] = False
                     payload['symbol_count'] = 0
                 
+                # Create PointStruct-compatible dict (no sparse_vector field)
                 point = {
                     'id': chunk_id,
-                    'vector': {"dense": embedding},  # CRITICAL: Named vector format for consistency
-                    'sparse_vector': {
-                        'indices': sparse_indices,
-                        'values': sparse_values
-                    },
+                    'vector': embedding,  # Use unnamed default vector
                     'payload': payload
                 }
+                # Note: sparse vectors would need separate handling if needed
                 points.append(point)
                 neo4j_chunk_ids.append({
                     'id': chunk_id_hash,
@@ -1323,17 +1349,38 @@ class IncrementalIndexer(FileSystemEventHandler):
     def on_created(self, event):
         """Handle file creation"""
         if not event.is_directory and self.should_index(event.src_path):
-            asyncio.create_task(self._queue_change(event.src_path, 'create'))
+            # Use run_coroutine_threadsafe for cross-thread task submission (Python 2025 standard)
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._queue_change(event.src_path, 'create'), 
+                    self._loop
+                )
+            else:
+                logger.error(f"Event loop not available for file creation: {event.src_path}")
     
     def on_modified(self, event):
         """Handle file modification"""
         if not event.is_directory and self.should_index(event.src_path):
-            asyncio.create_task(self._queue_change(event.src_path, 'update'))
+            # Use run_coroutine_threadsafe for cross-thread task submission (Python 2025 standard)
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._queue_change(event.src_path, 'update'), 
+                    self._loop
+                )
+            else:
+                logger.error(f"Event loop not available for file modification: {event.src_path}")
     
     def on_deleted(self, event):
         """Handle file deletion"""
         if not event.is_directory:
-            asyncio.create_task(self._queue_change(event.src_path, 'delete'))
+            # Use run_coroutine_threadsafe for cross-thread task submission (Python 2025 standard)
+            if self._loop and self._loop.is_running():
+                asyncio.run_coroutine_threadsafe(
+                    self._queue_change(event.src_path, 'delete'), 
+                    self._loop
+                )
+            else:
+                logger.error(f"Event loop not available for file deletion: {event.src_path}")
     
     async def _queue_change(self, file_path: str, event_type: str):
         """Add file change to processing queue"""
@@ -1359,11 +1406,15 @@ class IncrementalIndexer(FileSystemEventHandler):
                 logger.debug("Checking if collection already has data...")
                 collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
                 info = await self.container.qdrant.get_collection_info(collection_name)
-                if info.get('points_count', 0) > 0:
-                    logger.info("Collection already has data - skipping initial index")
+                # Only skip if collection exists AND has points
+                if info.get('exists', False) and info.get('points_count', 0) > 0:
+                    logger.info(f"Collection already has data ({info.get('points_count')} points) - skipping initial index")
                     return
+                else:
+                    logger.debug(f"Collection status: exists={info.get('exists')}, points={info.get('points_count', 0)}")
             except Exception as e:
-                logger.debug(f"Error checking collection: {e}")
+                logger.debug(f"Error checking collection (will proceed with indexing): {e}")
+                # If we can't check, proceed with indexing
                 pass
         
         # Find all files to index

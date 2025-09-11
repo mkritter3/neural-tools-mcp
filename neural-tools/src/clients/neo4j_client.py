@@ -42,9 +42,9 @@ class Neo4jGraphRAGClient:
             password: Neo4j password (default: neural-l9-2025)
             project_name: Project isolation namespace
         """
-        self.uri = uri or os.getenv('NEO4J_URI', 'bolt://neo4j-graph:7687')
+        self.uri = uri or os.getenv('NEO4J_URI', 'bolt://localhost:47687')
         self.username = username or os.getenv('NEO4J_USERNAME', 'neo4j')
-        self.password = password or os.getenv('NEO4J_PASSWORD', 'neural-l9-2025')
+        self.password = password or os.getenv('NEO4J_PASSWORD', 'graphrag-password')
         self.project_name = project_name or os.getenv('PROJECT_NAME', 'default')
         
         self.driver: Optional[Driver] = None
