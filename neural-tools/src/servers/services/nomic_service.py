@@ -30,30 +30,37 @@ class NomicEmbedClient:
     """
     
     def __init__(self):
-        host = os.environ.get('EMBEDDING_SERVICE_HOST', 'localhost')
-        port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 48000))
+        # CRITICAL: Use localhost + exposed port for host-to-container communication
+        # NOT Docker internal IPs (172.x.x.x) which broke MCP connectivity
+        host = os.environ.get('EMBEDDING_SERVICE_HOST', 'localhost')  # Must be localhost from host
+        port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 48000))   # Exposed port 48000, not 8000
         self.base_url = f"http://{host}:{port}"
         
         # Store configuration for creating clients per request
-        # Context7 pattern: avoid storing AsyncClient in __init__
+        # Context7 pattern: Create fresh AsyncClient per request to avoid
+        # asyncio event loop binding issues in MCP server environments
         self.timeout = httpx.Timeout(
-            connect=10.0,  # Connection timeout
-            read=60.0,     # Read timeout
-            write=30.0,    # Write timeout
-            pool=5.0       # Pool timeout
+            connect=10.0,  # Connection timeout - fail fast if service down
+            read=60.0,     # Read timeout - embeddings can be slow for large texts
+            write=30.0,    # Write timeout - sending batch texts
+            pool=5.0       # Pool timeout - connection pool acquisition
         )
-        self.transport_kwargs = {"retries": 1}
-        self.limits = httpx.Limits(max_connections=20, max_keepalive_connections=5)
+        self.transport_kwargs = {"retries": 1}  # Single retry at transport level
+        self.limits = httpx.Limits(
+            max_connections=20,           # Total connections to Nomic service
+            max_keepalive_connections=5   # Keep-alive for connection reuse
+        )
         
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings using Nomic Embed v2-MoE with Context7 async client pattern
         
         Creates fresh httpx.AsyncClient per request to avoid event loop binding issues.
         """
-        max_retries = 3
-        retry_delay = 1.0
+        max_retries = 3      # Total attempts including first try
+        retry_delay = 1.0    # Base delay, increases with each retry
         
-        # Context7 recommended pattern: fresh AsyncClient per request
+        # Context7 recommended pattern: Create fresh AsyncClient per request
+        # This prevents asyncio event loop issues when called from MCP server
         async with httpx.AsyncClient(
             transport=httpx.AsyncHTTPTransport(**self.transport_kwargs),
             timeout=self.timeout,
@@ -61,13 +68,18 @@ class NomicEmbedClient:
         ) as client:
             for attempt in range(max_retries):
                 try:
+                    # Call Nomic embedding service endpoint
                     response = await client.post(
                         f"{self.base_url}/embed",
-                        json={"inputs": texts, "normalize": True}
+                        json={
+                            "inputs": texts,      # List of texts to embed
+                            "normalize": True     # L2 normalize embeddings
+                        }
                     )
-                    response.raise_for_status()
+                    response.raise_for_status()  # Raise on 4xx/5xx
                     data = response.json()
                     
+                    # Extract embeddings from response
                     return data.get('embeddings', [])
                     
                 except httpx.HTTPStatusError as e:
@@ -155,12 +167,18 @@ class NomicService:
     
     def _generate_cache_key(self, text: str, model: str = "nomic-v2") -> str:
         """Generate cache key with model versioning"""
+        # Create deterministic cache key based on content
         content_hash = hashlib.sha256(text.encode()).hexdigest()
+        
+        # L9 cache key format: namespace:env:app:type:model:version:hash
         return f"l9:prod:neural_tools:embeddings:{model}:1.0:{content_hash}"
     
     def _generate_job_id(self, text: str, model: str = "nomic-v2") -> str:
         """Generate deterministic job ID for deduplication"""
+        # Combine model and text for unique job identification
         content = f"{model}:{text}"
+        
+        # Create short deterministic ID for ARQ job deduplication
         return f"embed_{hashlib.sha256(content.encode()).hexdigest()[:16]}"
     
     async def get_embedding(self, text: str, model: str = "nomic-v2") -> List[float]:
@@ -177,7 +195,7 @@ class NomicService:
         if not self.initialized or not self.client:
             raise RuntimeError("Nomic service not initialized")
         
-        # Check cache first if service container available
+        # Step 1: Check Redis cache for existing embedding
         if self.service_container:
             try:
                 redis_cache = await self.service_container.get_redis_cache_client()
@@ -185,26 +203,29 @@ class NomicService:
                 cached = await redis_cache.get(cache_key)
                 
                 if cached:
-                    # Cache hit - refresh TTL and return
-                    await redis_cache.expire(cache_key, 86400)  # 24 hour TTL
+                    # Cache hit - refresh TTL to prevent expiration of hot data
+                    await redis_cache.expire(cache_key, 86400)  # Reset to 24 hour TTL
                     return json.loads(cached)
                     
             except Exception as e:
                 logger.warning(f"Cache check failed: {e}")
         
-        # Try direct embedding call
+        # Step 2: Try direct embedding call to Nomic service
         try:
             embeddings = await self.client.get_embeddings([text])
             if embeddings and len(embeddings) > 0:
                 embedding = embeddings[0]
                 
-                # Cache the result if service container available
+                # Step 3: Cache the result for future requests
                 if self.service_container:
                     try:
                         redis_cache = await self.service_container.get_redis_cache_client()
                         cache_key = self._generate_cache_key(text, model)
+                        
+                        # Store with 24-hour TTL
                         await redis_cache.setex(cache_key, 86400, json.dumps(embedding))
                     except Exception as e:
+                        # Cache failure is non-critical - log and continue
                         logger.warning(f"Cache store failed: {e}")
                 
                 return embedding

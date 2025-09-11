@@ -513,18 +513,27 @@ async def neural_system_status_impl() -> List[types.TextContent]:
         # Test actual connections
         if container.neo4j:
             try:
-                with container.neo4j.session() as session:
-                    result = session.run("MATCH (n) RETURN count(n) as node_count")
-                    node_count = result.single()["node_count"]
-                    status["services"]["neo4j"]["node_count"] = node_count
+                # Neo4j service wrapper - use async query
+                if hasattr(container.neo4j, 'client') and container.neo4j.client:
+                    result = await container.neo4j.client.execute_query(
+                        "MATCH (n) RETURN count(n) as node_count"
+                    )
+                    if result["status"] == "success" and result["result"]:
+                        node_count = result["result"][0]["node_count"]
+                        status["services"]["neo4j"]["node_count"] = node_count
+                    else:
+                        status["services"]["neo4j"]["node_count"] = 0
+                else:
+                    status["services"]["neo4j"]["node_count"] = "N/A - client not initialized"
             except Exception as e:
                 status["services"]["neo4j"]["error"] = str(e)
                 
         if container.qdrant:
             try:
-                collections = container.qdrant.get_collections()
-                status["services"]["qdrant"]["collections"] = [c.name for c in collections.collections]
-                status["services"]["qdrant"]["collection_count"] = len(collections.collections)
+                # get_collections returns a list of strings directly
+                collections = await container.qdrant.get_collections()
+                status["services"]["qdrant"]["collections"] = collections
+                status["services"]["qdrant"]["collection_count"] = len(collections)
             except Exception as e:
                 status["services"]["qdrant"]["error"] = str(e)
         

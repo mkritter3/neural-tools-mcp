@@ -16,57 +16,71 @@ class SessionContext:
     """Context for individual MCP session"""
     
     def __init__(self, session_id: str, client_info: Dict[str, Any], rate_limiter=None, quota_manager=None):
+        # Unique identifier for this MCP session
         self.session_id = session_id
+        
+        # Client information (source, API key, etc.)
         self.client_info = client_info
+        
+        # Session timing for expiration and activity tracking
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
+        
+        # In-memory rate limiting fallback
         self.query_count = 0
-        self.rate_limit_reset = time.time() + 60  # Reset every minute
+        self.rate_limit_reset = time.time() + 60  # Reset counter every minute
+        
+        # Per-session resource limits (can be customized per client)
         self.resource_limits = self._get_default_limits()
         
-        # L9 2025: Redis-backed rate limiting and quotas
-        self.rate_limiter = rate_limiter
-        self.quota_manager = quota_manager
+        # L9 2025: Redis-backed distributed rate limiting and quotas
+        # These enable rate limiting across multiple MCP server instances
+        self.rate_limiter = rate_limiter  # Handles API rate limits
+        self.quota_manager = quota_manager  # Handles connection quotas
         
     def _get_default_limits(self) -> Dict[str, Any]:
         """Get default resource limits for session"""
+        # These limits prevent single sessions from exhausting resources
         return {
-            "queries_per_minute": 60,
-            "concurrent_connections": 3,
-            "max_result_size": 10_000,
-            "session_timeout": 3600,  # 1 hour
-            "max_query_duration": 30,  # 30 seconds
-            "neo4j_max_connections": 3,
-            "qdrant_max_connections": 2,
-            "redis_max_connections": 2
+            "queries_per_minute": 60,        # API rate limit
+            "concurrent_connections": 3,     # Max concurrent DB connections
+            "max_result_size": 10_000,      # Max results per query
+            "session_timeout": 3600,         # 1 hour idle timeout
+            "max_query_duration": 30,        # 30 second query timeout
+            "neo4j_max_connections": 3,      # Per-session Neo4j limit
+            "qdrant_max_connections": 2,     # Per-session Qdrant limit
+            "redis_max_connections": 2       # Per-session Redis limit
         }
     
     async def check_rate_limit(self) -> bool:
         """Check if session is within rate limits (Redis-backed)"""
         if self.rate_limiter:
             # Use Redis-backed distributed rate limiting
+            # This works across multiple MCP server instances
             allowed, info = await self.rate_limiter.check_rate_limit(
                 self.session_id,
                 limit=self.resource_limits["queries_per_minute"],
-                window_seconds=60
+                window_seconds=60  # Sliding window algorithm
             )
             if allowed:
+                # Update activity timestamp for session expiration tracking
                 self.last_activity = datetime.now()
             return allowed
         else:
-            # Fallback to in-memory rate limiting
+            # Fallback to in-memory rate limiting (single instance only)
             current_time = time.time()
             
-            # Reset counter if minute has passed
+            # Reset counter if minute window has passed
             if current_time > self.rate_limit_reset:
                 self.query_count = 0
                 self.rate_limit_reset = current_time + 60
                 
-            # Check limit
+            # Check if limit exceeded
             if self.query_count >= self.resource_limits["queries_per_minute"]:
                 logger.warning(f"Rate limit exceeded for session {self.session_id[:8]}...")
                 return False
                 
+            # Increment counter and update activity
             self.query_count += 1
             self.last_activity = datetime.now()
             return True
@@ -74,20 +88,27 @@ class SessionContext:
     async def check_connection_quota(self, service: str) -> bool:
         """Check if session can open another connection to service"""
         if self.quota_manager:
+            # Get per-service connection limit for this session
             max_connections = self.resource_limits.get(f"{service}_max_connections", 3)
+            
+            # Check with Redis-backed quota manager
             allowed, current_count = await self.quota_manager.check_connection_quota(
                 self.session_id, service, max_connections
             )
             return allowed
-        return True  # Fallback: allow if quota manager unavailable
+        
+        # Fallback: allow if quota manager unavailable (local dev)
+        return True
     
     async def release_connection_quota(self, service: str):
         """Release connection quota for service"""
+        # Decrement connection count when connection is returned to pool
         if self.quota_manager:
             await self.quota_manager.release_connection(self.session_id, service)
     
     def is_expired(self) -> bool:
         """Check if session has expired"""
+        # Sessions expire after idle timeout to free resources
         timeout = timedelta(seconds=self.resource_limits["session_timeout"])
         return datetime.now() - self.last_activity > timeout
 
@@ -96,7 +117,10 @@ class SessionManager:
     """L9 2025 Session Manager for MCP Server"""
     
     def __init__(self):
+        # In-memory session storage (for single instance)
         self.sessions: Dict[str, SessionContext] = {}
+        
+        # Redis client for distributed session management
         self.redis_client: Optional[redis.Redis] = None
         self._cleanup_interval = 300  # 5 minutes
         self._last_cleanup = time.time()
