@@ -19,7 +19,7 @@ import secrets
 import hashlib
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Official MCP SDK for 2025-06-18 protocol (no namespace collision with neural_mcp)
 from mcp.server import Server, NotificationOptions
@@ -42,6 +42,11 @@ LIMITS = {
     "graphrag_limit_max": 25,
     "max_hops_max": 3,
 }
+
+# Phase 2: Configurable instance management
+INSTANCE_TIMEOUT_HOURS = float(os.environ.get('INSTANCE_TIMEOUT_HOURS', '1'))  # Default 1 hour
+CLEANUP_INTERVAL_MINUTES = float(os.environ.get('CLEANUP_INTERVAL_MINUTES', '10'))  # Check every 10 mins
+ENABLE_AUTO_CLEANUP = os.environ.get('ENABLE_AUTO_CLEANUP', 'true').lower() == 'true'
 
 
 def get_instance_id() -> str:
@@ -113,6 +118,14 @@ class MultiProjectServiceState:
         self.instance_id = get_instance_id()
         self.instance_containers = {}  # instance_id -> { project_containers, project_retrievers, ... }
         self.global_initialized = False
+        
+        # Phase 2: Cleanup tracking
+        self.cleanup_task = None
+        self.cleanup_stats = {
+            'total_cleanups': 0,
+            'instances_cleaned': 0,
+            'last_cleanup': None
+        }
         
         # Initialize container for this instance
         self._init_instance_container()
@@ -201,6 +214,117 @@ class MultiProjectServiceState:
             else:
                 project_retrievers[project_name] = None
         return project_retrievers[project_name]
+    
+    async def cleanup_stale_instances(self):
+        """
+        Clean up instances that have been inactive for longer than the timeout.
+        Phase 2 of ADR-19: Resource cleanup for stale instances.
+        """
+        now = datetime.now()
+        stale_threshold = timedelta(hours=INSTANCE_TIMEOUT_HOURS)
+        cleaned_count = 0
+        
+        logger.info(f"🧹 [Instance {self.instance_id}] Starting cleanup check (threshold: {INSTANCE_TIMEOUT_HOURS}h)")
+        
+        for instance_id, instance_data in list(self.instance_containers.items()):
+            # Don't clean up our own instance
+            if instance_id == self.instance_id:
+                continue
+                
+            last_activity = instance_data.get('last_activity', instance_data.get('session_started'))
+            if now - last_activity > stale_threshold:
+                logger.info(f"🧹 Cleaning stale instance: {instance_id} (inactive for {now - last_activity})")
+                
+                # Close all containers in this instance
+                for project_name, container in instance_data.get('project_containers', {}).items():
+                    try:
+                        await self._close_container_connections(container, project_name)
+                    except Exception as e:
+                        logger.error(f"Error closing container for {project_name}: {e}")
+                
+                # Remove the instance
+                del self.instance_containers[instance_id]
+                cleaned_count += 1
+        
+        # Update stats
+        self.cleanup_stats['total_cleanups'] += 1
+        self.cleanup_stats['instances_cleaned'] += cleaned_count
+        self.cleanup_stats['last_cleanup'] = now
+        
+        if cleaned_count > 0:
+            logger.info(f"✅ Cleaned {cleaned_count} stale instances")
+        
+        return cleaned_count
+    
+    async def _close_container_connections(self, container, project_name: str):
+        """Close all connections for a container"""
+        logger.info(f"📦 Closing connections for project: {project_name}")
+        
+        # Close Neo4j driver
+        if hasattr(container, 'neo4j_driver') and container.neo4j_driver:
+            try:
+                container.neo4j_driver.close()
+                logger.info(f"  ✅ Closed Neo4j connection")
+            except Exception as e:
+                logger.error(f"  ❌ Failed to close Neo4j: {e}")
+        
+        # Close Qdrant client  
+        if hasattr(container, 'qdrant_client') and container.qdrant_client:
+            try:
+                container.qdrant_client.close()
+                logger.info(f"  ✅ Closed Qdrant connection")
+            except Exception as e:
+                logger.error(f"  ❌ Failed to close Qdrant: {e}")
+        
+        # Close Redis connections if they exist
+        if hasattr(container, 'redis_cache') and container.redis_cache:
+            try:
+                await container.redis_cache.close()
+                logger.info(f"  ✅ Closed Redis cache connection")
+            except Exception as e:
+                logger.error(f"  ❌ Failed to close Redis cache: {e}")
+        
+        if hasattr(container, 'redis_queue') and container.redis_queue:
+            try:
+                await container.redis_queue.close()
+                logger.info(f"  ✅ Closed Redis queue connection")
+            except Exception as e:
+                logger.error(f"  ❌ Failed to close Redis queue: {e}")
+    
+    def get_instance_metrics(self):
+        """Get metrics about current instances"""
+        now = datetime.now()
+        metrics = {
+            'current_instance_id': self.instance_id,
+            'total_instances': len(self.instance_containers),
+            'active_instances': 0,
+            'stale_instances': 0,
+            'cleanup_stats': self.cleanup_stats,
+            'instances': []
+        }
+        
+        stale_threshold = timedelta(hours=INSTANCE_TIMEOUT_HOURS)
+        
+        for instance_id, instance_data in self.instance_containers.items():
+            last_activity = instance_data.get('last_activity', instance_data.get('session_started'))
+            is_stale = (now - last_activity) > stale_threshold and instance_id != self.instance_id
+            
+            if is_stale:
+                metrics['stale_instances'] += 1
+            else:
+                metrics['active_instances'] += 1
+            
+            metrics['instances'].append({
+                'id': instance_id,
+                'is_current': instance_id == self.instance_id,
+                'is_stale': is_stale,
+                'session_started': instance_data.get('session_started').isoformat() if instance_data.get('session_started') else None,
+                'last_activity': last_activity.isoformat() if last_activity else None,
+                'idle_time': str(now - last_activity) if last_activity else None,
+                'project_count': len(instance_data.get('project_containers', {}))
+            })
+        
+        return metrics
 
 
 state = MultiProjectServiceState()
@@ -318,6 +442,11 @@ async def handle_list_tools() -> List[types.Tool]:
             ),
             inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
         ),
+        types.Tool(
+            name="instance_metrics",
+            description="Get metrics about MCP instance isolation and resource usage (Phase 2 of ADR-19)",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
+        ),
     ]
 
 
@@ -432,6 +561,8 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             return await reindex_path_impl(p)
         elif name == "neural_tools_help":
             return await neural_tools_help_impl()
+        elif name == "instance_metrics":
+            return await instance_metrics_impl()
         else:
             return [types.TextContent(type="text", text=json.dumps({
                 "error": f"Unknown tool: {name}",
@@ -631,6 +762,31 @@ async def project_understanding_impl(scope: str = "full") -> List[types.TextCont
         return [types.TextContent(type="text", text=json.dumps({"status": "error", "message": str(e)}))]
 
 
+async def instance_metrics_impl() -> List[types.TextContent]:
+    """Return metrics about instance isolation and resource usage"""
+    try:
+        metrics = state.get_instance_metrics()
+        
+        # Add cleanup configuration
+        metrics['cleanup_config'] = {
+            'enabled': ENABLE_AUTO_CLEANUP,
+            'timeout_hours': INSTANCE_TIMEOUT_HOURS,
+            'cleanup_interval_minutes': CLEANUP_INTERVAL_MINUTES
+        }
+        
+        # Format the response
+        return [types.TextContent(type="text", text=json.dumps({
+            "status": "success",
+            "metrics": metrics
+        }, indent=2, default=str))]
+    except Exception as e:
+        logger.error(f"Failed to get instance metrics: {e}")
+        return [types.TextContent(type="text", text=json.dumps({
+            "status": "error",
+            "message": str(e)
+        }))]
+
+
 async def neural_tools_help_impl() -> List[types.TextContent]:
     """Return usage guidance, examples, and constraints for all tools."""
     try:
@@ -815,6 +971,24 @@ def cleanup_resources():
     logger.info("👋 MCP server shutdown complete")
 
 
+async def periodic_cleanup_task():
+    """Background task to periodically clean up stale instances"""
+    while True:
+        try:
+            await asyncio.sleep(CLEANUP_INTERVAL_MINUTES * 60)  # Convert minutes to seconds
+            if ENABLE_AUTO_CLEANUP:
+                cleaned = await state.cleanup_stale_instances()
+                if cleaned > 0:
+                    logger.info(f"🧹 Periodic cleanup: removed {cleaned} stale instances")
+        except asyncio.CancelledError:
+            logger.info("🛑 Cleanup task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in cleanup task: {e}")
+            # Continue running even if cleanup fails
+            await asyncio.sleep(60)  # Wait a minute before retrying
+
+
 async def run():
     """
     Main entry point for MCP server following 2025-06-18 specification.
@@ -827,6 +1001,7 @@ async def run():
     """
     logger.info(f"🚀 Starting L9 Neural MCP Server (STDIO Transport)")
     logger.info(f"🔐 Instance ID: {state.instance_id}")
+    logger.info(f"🔧 Cleanup config: Timeout={INSTANCE_TIMEOUT_HOURS}h, Interval={CLEANUP_INTERVAL_MINUTES}m, Enabled={ENABLE_AUTO_CLEANUP}")
     
     # Create PID file for tracking (helps with orphan cleanup)
     pid = os.getpid()
@@ -835,6 +1010,12 @@ async def run():
     pid_file = pid_dir / f"mcp_{pid}.pid"
     pid_file.write_text(str(pid))
     logger.info(f"📝 PID file created: {pid_file}")
+    
+    # Start periodic cleanup task if enabled
+    cleanup_task = None
+    if ENABLE_AUTO_CLEANUP:
+        cleanup_task = asyncio.create_task(periodic_cleanup_task())
+        logger.info(f"🧹 Started periodic cleanup task (every {CLEANUP_INTERVAL_MINUTES} minutes)")
     
     try:
         # CRITICAL FIX: Don't initialize services here - wait until after handshake
@@ -860,4 +1041,12 @@ async def run():
         logger.error(f"❌ Server error: {e}")
         raise
     finally:
+        # Cancel cleanup task if running
+        if cleanup_task and not cleanup_task.done():
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
+        
         cleanup_resources()
