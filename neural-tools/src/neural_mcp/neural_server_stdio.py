@@ -157,8 +157,7 @@ async def get_project_context(arguments: Dict[str, Any]):
 
 @server.list_tools()
 async def handle_list_tools() -> List[types.Tool]:
-    if not state.global_initialized:
-        await initialize_services()
+    # Tools are statically defined - no initialization needed for listing
     return [
         types.Tool(
             name="neural_system_status",
@@ -260,8 +259,7 @@ async def handle_list_tools() -> List[types.Tool]:
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent]:
-    if not state.global_initialized:
-        await initialize_services()
+    # Services will be initialized lazily on first actual tool use
 
     # L9 2025: Session-aware tool execution
     try:
