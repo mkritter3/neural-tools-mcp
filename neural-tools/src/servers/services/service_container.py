@@ -764,9 +764,8 @@ class ServiceContainer:
         This method includes retry logic with exponential backoff to handle
         Docker container startup delays (ADR 0018)
         """
-        # Use async progressive initialization to avoid blocking the event loop
-        connection_state = await self.initialize_with_progressive_connection()
-        base_init = connection_state != ConnectionState.DISCONNECTED
+        # Use the existing initialize method with retry logic
+        base_init = self.initialize(retry_on_failure=True)
         
         # Initialize service wrappers asynchronously
         if self.neo4j and hasattr(self.neo4j, 'initialize'):
