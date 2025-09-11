@@ -1,0 +1,53 @@
+# GraphRAG Exclusion Patterns
+# Format: glob patterns (one per line)
+# Special directives:
+#   !deprioritize:pattern,weight - Deprioritize matching files (weight 0-1)
+#   regex:pattern - Use regex instead of glob
+
+# Archived and deprecated code
+.archive/**
+.deprecated/**
+**/.archive/**
+**/.deprecated/**
+**/archived/**
+**/deprecated/**
+
+# Backup files (deprioritize but don't exclude)
+!deprioritize:**/*_backup.*,0.5
+!deprioritize:**/*.bak,0.5
+!deprioritize:**/*.old,0.5
+!deprioritize:**/backup/**,0.3
+
+# Temporary directories
+**/tmp/**
+**/temp/**
+**/__pycache__/**
+**/.cache/**
+
+# Build artifacts
+**/dist/**
+**/build/**
+**/target/**
+**/.next/**
+
+# Version control
+**/.git/**
+**/.svn/**
+
+# Dependencies
+**/node_modules/**
+**/vendor/**
+**/.venv/**
+**/venv/**
+
+# IDE files
+**/.idea/**
+**/.vscode/**
+**/*.swp
+**/.DS_Store
+
+# Old test fixtures (deprioritize)
+!deprioritize:**/fixtures_old/**,0.7
+!deprioritize:**/test_data_old/**,0.7
+
+# Custom patterns (add your own below)

@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import hashlib
-import aioredis
+import redis.asyncio as aioredis
 from dataclasses import dataclass, asdict
 
 from ..services.service_container import ServiceContainer
@@ -182,11 +182,10 @@ class AsyncPreprocessingPipeline:
         """Initialize Redis connection for queues"""
         try:
             # Use Redis queue instance (port 46380)
-            self.redis_queue = await aioredis.create_redis_pool(
-                'redis://localhost:46380',
-                password='queue-secret-key',
-                minsize=5,
-                maxsize=10
+            self.redis_queue = await aioredis.from_url(
+                'redis://:queue-secret-key@localhost:46380',
+                encoding='utf-8',
+                decode_responses=True
             )
             logger.info("Redis queue connection established")
         except Exception as e:
