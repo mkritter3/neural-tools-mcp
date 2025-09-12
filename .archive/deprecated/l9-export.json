@@ -1,8 +1,0 @@
-{
-  "version": "1.0.0",
-  "exported_at": "2025-08-28T10:03:55.345240",
-  "project_name": "unknown",
-  "memories": [],
-  "total_exported": 0,
-  "export_error": "1 validation error for SparseVectorParams\non_disk\n  Extra inputs are not permitted [type=extra_forbidden, input_value=False, input_type=bool]\n    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden"
-}
