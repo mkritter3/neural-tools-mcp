@@ -39,6 +39,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info(f"Logging level set to: {log_level}")
 
+# Import metadata extraction components (ADR-0031)
+METADATA_EXTRACTION_ENABLED = False
+PRISM_SCORING_ENABLED = False
+
+try:
+    from pattern_extractor import PatternExtractor
+    from git_extractor import GitMetadataExtractor
+    from canon_manager import CanonManager
+    METADATA_EXTRACTION_ENABLED = True
+    logger.info("Metadata extraction enabled (ADR-0031)")
+except ImportError as e:
+    logger.warning(f"Metadata extraction components not available: {e}")
+
+# Import PRISM scorer if available
+try:
+    # Try to import from infrastructure directory
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent / "infrastructure"))
+    from prism_scorer import PrismScorer
+    PRISM_SCORING_ENABLED = True
+    logger.info("PRISM scoring enabled (ADR-0031)")
+except ImportError as e:
+    logger.warning(f"PRISM scorer not available: {e}")
+
 # Import code parser for structure extraction (ADR 0017)
 STRUCTURE_EXTRACTION_ENABLED = os.getenv("STRUCTURE_EXTRACTION_ENABLED", "true").lower() == "true"
 if STRUCTURE_EXTRACTION_ENABLED:
@@ -176,6 +199,28 @@ class IncrementalIndexer(FileSystemEventHandler):
             except Exception as e:
                 logger.warning(f"Failed to initialize tree-sitter extractor: {e}")
                 self.code_parser = None
+        
+        # Initialize metadata extractors (ADR-0031)
+        self.pattern_extractor = None
+        self.git_extractor = None
+        self.canon_manager = None
+        self.prism_scorer = None
+        
+        if METADATA_EXTRACTION_ENABLED:
+            try:
+                self.pattern_extractor = PatternExtractor()
+                self.git_extractor = GitMetadataExtractor(str(self.project_path))
+                self.canon_manager = CanonManager(self.project_name, str(self.project_path))
+                logger.info("Metadata extraction components initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize metadata extractors: {e}")
+        
+        if PRISM_SCORING_ENABLED:
+            try:
+                self.prism_scorer = PrismScorer(str(self.project_path))
+                logger.info("PRISM scorer initialized for intelligent file importance")
+            except Exception as e:
+                logger.warning(f"Failed to initialize PRISM scorer: {e}")
         
         # Observer for file system watching (will be set externally)
         self.observer = None
@@ -799,6 +844,70 @@ class IncrementalIndexer(FileSystemEventHandler):
             return len(content.split('\n'))
         return content[:char_position].count('\n') + 1
     
+    async def _extract_metadata(self, file_path: str, content: str) -> dict:
+        """Extract all metadata during indexing (ADR-0031)"""
+        metadata = {}
+        
+        # 1. PRISM Scores
+        if self.prism_scorer:
+            try:
+                prism_components = self.prism_scorer.get_score_components(file_path)
+                metadata.update({
+                    'complexity_score': prism_components.get('complexity', 0.0),
+                    'dependencies_score': prism_components.get('dependencies', 0.0),
+                    'recency_score': prism_components.get('recency', 0.0),
+                    'contextual_score': prism_components.get('contextual', 0.0),
+                    'prism_total': prism_components.get('total', 0.0)
+                })
+            except Exception as e:
+                logger.debug(f"PRISM scoring failed for {file_path}: {e}")
+        
+        # 2. Git Metadata
+        if self.git_extractor:
+            try:
+                git_metadata = await self.git_extractor.extract(file_path)
+                metadata.update({
+                    'last_modified': git_metadata.get('last_modified'),
+                    'change_frequency': git_metadata.get('change_frequency', 0),
+                    'author_count': git_metadata.get('author_count', 1),
+                    'last_commit': git_metadata.get('last_commit', 'unknown')
+                })
+            except Exception as e:
+                logger.debug(f"Git metadata extraction failed for {file_path}: {e}")
+        
+        # 3. Pattern-based Extraction
+        if self.pattern_extractor:
+            try:
+                patterns = self.pattern_extractor.extract(content)
+                metadata.update({
+                    'todo_count': patterns.get('todo_count', 0),
+                    'fixme_count': patterns.get('fixme_count', 0),
+                    'deprecated_markers': patterns.get('deprecated_count', 0),
+                    'test_markers': patterns.get('test_count', 0),
+                    'security_patterns': patterns.get('security_count', 0),
+                    'canon_markers': patterns.get('canon_markers', 0),
+                    'experimental_markers': patterns.get('experimental_markers', 0),
+                    'is_async': patterns.get('is_async', False),
+                    'has_type_hints': patterns.get('has_type_hints', False)
+                })
+            except Exception as e:
+                logger.debug(f"Pattern extraction failed for {file_path}: {e}")
+        
+        # 4. Canon Configuration
+        if self.canon_manager:
+            try:
+                canon_data = await self.canon_manager.get_file_metadata(file_path)
+                metadata.update({
+                    'canon_level': canon_data.get('level', 'none'),
+                    'canon_weight': canon_data.get('weight', 0.5),
+                    'canon_reason': canon_data.get('reason', ''),
+                    'is_canonical': canon_data.get('weight', 0.5) >= 0.7
+                })
+            except Exception as e:
+                logger.debug(f"Canon metadata extraction failed for {file_path}: {e}")
+        
+        return metadata
+
     async def _index_semantic(self, file_path: str, relative_path: Path, chunks: List[Dict]):
         """Index with full semantic embeddings and GraphRAG cross-references"""
         try:
@@ -829,6 +938,11 @@ class IncrementalIndexer(FileSystemEventHandler):
                     logger.debug("Tree-sitter extractor not available")
                 elif not file_path.endswith(('.py', '.js', '.jsx', '.ts', '.tsx')):
                     logger.debug(f"Skipping symbol extraction for non-supported file: {file_path}")
+            
+            # Extract metadata for the file (ADR-0031)
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            metadata = await self._extract_metadata(file_path, content)
             
             # Prepare texts for embedding
             texts = [f"File: {relative_path}\n{chunk['text'][:500]}" for chunk in chunks]
@@ -882,10 +996,17 @@ class IncrementalIndexer(FileSystemEventHandler):
                     'file_type': relative_path.suffix,
                     'indexed_at': datetime.now().isoformat(),
                     'project': self.project_name,
+                    # Add all extracted metadata (ADR-0031)
+                    **metadata,
                     # GraphRAG: Store Neo4j node ID reference
                     'neo4j_chunk_id': chunk_id_hash,
                     'chunk_hash': chunk_id_hash
                 }
+                
+                # Add chunk-specific metadata (ADR-0031)
+                if self.pattern_extractor:
+                    chunk_patterns = self.pattern_extractor.extract_for_chunk(chunk['text'])
+                    payload.update(chunk_patterns)
                 
                 # Add symbol information if available
                 if chunk_symbols:
@@ -1016,26 +1137,81 @@ class IncrementalIndexer(FileSystemEventHandler):
             # Generate file content hash for deduplication
             file_hash = hashlib.sha256(content.encode()).hexdigest()
             
-            # Create or update file node with content hash
+            # Extract metadata for the file (ADR-0031)
+            metadata = await self._extract_metadata(file_path, content)
+            
+            # Create or update file node with content hash and metadata
             # ADR-0029: Use composite key (project, path) for multi-project isolation
+            # ADR-0031: Include canonical metadata and objective scores
             cypher = """
             MERGE (f:File {path: $path, project: $project})
             SET f.name = $name,
                 f.type = $type,
                 f.size = $size,
                 f.content_hash = $content_hash,
-                f.indexed_at = datetime()
+                f.indexed_at = datetime(),
+                // Canonical metadata
+                f.canon_level = $canon_level,
+                f.canon_weight = $canon_weight,
+                f.canon_reason = $canon_reason,
+                f.is_canonical = $is_canonical,
+                // PRISM scores
+                f.complexity_score = $complexity_score,
+                f.dependencies_score = $dependencies_score,
+                f.recency_score = $recency_score,
+                f.contextual_score = $contextual_score,
+                f.prism_total = $prism_total,
+                // Git metadata
+                f.last_modified = $last_modified,
+                f.change_frequency = $change_frequency,
+                f.author_count = $author_count,
+                f.last_commit = $last_commit,
+                // Pattern metadata
+                f.todo_count = $todo_count,
+                f.fixme_count = $fixme_count,
+                f.deprecated_markers = $deprecated_markers,
+                f.test_markers = $test_markers,
+                f.security_patterns = $security_patterns,
+                f.canon_markers = $canon_markers,
+                f.experimental_markers = $experimental_markers,
+                f.is_async = $is_async,
+                f.has_type_hints = $has_type_hints
             RETURN f.content_hash AS existing_hash
             """
             
-            result = await self.container.neo4j.execute_cypher(cypher, {
+            params = {
                 'path': str(relative_path),
                 'name': relative_path.name,
                 'type': file_type,
                 'size': len(content),
                 'content_hash': file_hash,
-                'project': self.project_name
-            })
+                'project': self.project_name,
+                # Include all metadata fields with defaults
+                'canon_level': metadata.get('canon_level', 'none'),
+                'canon_weight': metadata.get('canon_weight', 0.5),
+                'canon_reason': metadata.get('canon_reason', ''),
+                'is_canonical': metadata.get('is_canonical', False),
+                'complexity_score': metadata.get('complexity_score', 0.0),
+                'dependencies_score': metadata.get('dependencies_score', 0.0),
+                'recency_score': metadata.get('recency_score', 0.0),
+                'contextual_score': metadata.get('contextual_score', 0.0),
+                'prism_total': metadata.get('prism_total', 0.0),
+                'last_modified': metadata.get('last_modified', datetime.now().isoformat()),
+                'change_frequency': metadata.get('change_frequency', 0),
+                'author_count': metadata.get('author_count', 1),
+                'last_commit': metadata.get('last_commit', 'unknown'),
+                'todo_count': metadata.get('todo_count', 0),
+                'fixme_count': metadata.get('fixme_count', 0),
+                'deprecated_markers': metadata.get('deprecated_markers', 0),
+                'test_markers': metadata.get('test_markers', 0),
+                'security_patterns': metadata.get('security_patterns', 0),
+                'canon_markers': metadata.get('canon_markers', 0),
+                'experimental_markers': metadata.get('experimental_markers', 0),
+                'is_async': metadata.get('is_async', False),
+                'has_type_hints': metadata.get('has_type_hints', False)
+            }
+            
+            result = await self.container.neo4j.execute_cypher(cypher, params)
             
             # Check if query was successful and content unchanged (for deduplication)
             if result.get('status') == 'success' and result.get('result') and len(result['result']) > 0 and result['result'][0].get('existing_hash') == file_hash:

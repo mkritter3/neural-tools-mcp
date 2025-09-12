@@ -33,6 +33,8 @@ from schema_manager import SchemaManager, ProjectType
 # Import migration management for ADR-0021
 from migration_manager import MigrationManager, MigrationResult
 from data_migrator import DataMigrator
+# Import canon management for ADR-0031
+from canon_manager import CanonManager
 
 # Configure logging to stderr (NEVER to stdout for STDIO transport)
 logging.basicConfig(
@@ -809,6 +811,16 @@ async def handle_list_tools() -> List[types.Tool]:
                 "additionalProperties": False
             }
         ),
+        # Canonical knowledge management (ADR-0031)
+        types.Tool(
+            name="canon_understanding",
+            description=(
+                "Get comprehensive canonical knowledge understanding for the project.\n"
+                "Returns detailed breakdown of canonical sources, their distribution,\n"
+                "and recommendations for improving canonical coverage."
+            ),
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
+        ),
     ]
 
 
@@ -947,6 +959,8 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             return await migration_status_impl(arguments)
         elif name == "schema_diff":
             return await schema_diff_impl(arguments)
+        elif name == "canon_understanding":
+            return await canon_understanding_impl(arguments)
         else:
             return [types.TextContent(type="text", text=json.dumps({
                 "error": f"Unknown tool: {name}",
@@ -959,6 +973,236 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             "message": str(e),
             "_debug": {"instance_id": instance_id}
         }))]
+
+
+async def canon_understanding_impl(arguments: dict) -> List[types.TextContent]:
+    """
+    Get comprehensive canonical knowledge understanding for the project
+    Returns detailed breakdown of canonical sources, their distribution,
+    and recommendations for improving canonical coverage.
+    """
+    try:
+        project_name, container, _ = await get_project_context({})
+        project_path = container.project_path
+        canon_manager = CanonManager(project_name, project_path)
+        
+        # Load canon configuration
+        canon_config_exists = (Path(project_path) / ".canon.yaml").exists()
+        
+        # Query Neo4j for canon statistics
+        stats_query = """
+        MATCH (f:File {project: $project})
+        RETURN 
+            f.canon_level as level,
+            f.canon_weight as weight,
+            COUNT(f) as count,
+            AVG(f.complexity_score) as avg_complexity,
+            AVG(f.recency_score) as avg_recency,
+            SUM(f.todo_count) as total_todos,
+            SUM(f.fixme_count) as total_fixmes
+        ORDER BY weight DESC
+        """
+        
+        results = await container.neo4j.execute_cypher(
+            stats_query, {'project': project_name}
+        )
+        
+        # Build distribution analysis
+        level_distribution = {}
+        total_files = 0
+        canonical_files = 0
+        
+        for row in results.get('result', []):
+            level = row.get('level') or 'none'
+            level_distribution[level] = {
+                'count': row.get('count', 0),
+                'average_weight': row.get('weight') or 0.5,
+                'average_complexity': row.get('avg_complexity') or 0,
+                'average_recency': row.get('avg_recency') or 0,
+                'total_todos': row.get('total_todos') or 0,
+                'total_fixmes': row.get('total_fixmes') or 0
+            }
+            total_files += row.get('count', 0)
+            if row.get('weight') and row['weight'] >= 0.7:
+                canonical_files += row.get('count', 0)
+        
+        # Get top canonical files
+        top_canon_query = """
+        MATCH (f:File {project: $project})
+        WHERE f.canon_weight >= 0.7
+        RETURN f.path, f.canon_level, f.canon_weight, f.canon_reason
+        ORDER BY f.canon_weight DESC
+        LIMIT 10
+        """
+        
+        top_files = await container.neo4j.execute_cypher(
+            top_canon_query, {'project': project_name}
+        )
+        
+        # Get files that should be canonical (high complexity + high dependencies)
+        suggested_canon_query = """
+        MATCH (f:File {project: $project})
+        WHERE (f.canon_weight IS NULL OR f.canon_weight < 0.7)
+        AND f.complexity_score > 0.7
+        AND f.dependencies_score > 0.6
+        RETURN f.path, f.complexity_score, f.dependencies_score
+        ORDER BY (f.complexity_score + f.dependencies_score) DESC
+        LIMIT 10
+        """
+        
+        suggestions = await container.neo4j.execute_cypher(
+            suggested_canon_query, {'project': project_name}
+        )
+        
+        # Build comprehensive response
+        response = {
+            'project': project_name,
+            'canon_config_exists': canon_config_exists,
+            'statistics': {
+                'total_files': total_files,
+                'canonical_files': canonical_files,
+                'canonical_percentage': (canonical_files / total_files * 100) if total_files > 0 else 0,
+                'has_primary_sources': 'primary' in level_distribution,
+                'has_deprecated': 'deprecated' in level_distribution
+            },
+            'distribution': level_distribution,
+            'top_canonical_sources': [
+                {
+                    'path': f.get('path'),
+                    'level': f.get('canon_level'),
+                    'weight': f.get('canon_weight'),
+                    'reason': f.get('canon_reason') or 'No reason specified'
+                }
+                for f in top_files.get('result', [])[:10]
+            ],
+            'suggested_for_canon': [
+                {
+                    'path': f.get('path'),
+                    'complexity': f.get('complexity_score'),
+                    'dependencies': f.get('dependencies_score'),
+                    'recommendation': 'Mark as primary or secondary canonical source'
+                }
+                for f in suggestions.get('result', [])
+            ],
+            'recommendations': _generate_canon_recommendations(
+                canon_config_exists,
+                level_distribution,
+                canonical_files,
+                total_files
+            )
+        }
+        
+        # Add example configuration if none exists
+        if not canon_config_exists:
+            response['example_config'] = _generate_example_canon_config(project_path)
+        
+        return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
+        
+    except Exception as e:
+        logger.error(f"canon_understanding failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({
+            "status": "error",
+            "message": str(e)
+        }))]
+
+
+def _generate_canon_recommendations(config_exists, distribution, canonical_files, total_files):
+    """Generate actionable recommendations for improving canonical coverage"""
+    recommendations = []
+    
+    if not config_exists:
+        recommendations.append({
+            'priority': 'HIGH',
+            'action': 'Create .canon.yaml configuration',
+            'reason': 'No canonical configuration found',
+            'impact': 'Enables explicit source-of-truth designation'
+        })
+    
+    canon_percentage = (canonical_files / total_files * 100) if total_files > 0 else 0
+    
+    if canon_percentage < 10:
+        recommendations.append({
+            'priority': 'HIGH',
+            'action': 'Identify and mark primary sources',
+            'reason': f'Only {canon_percentage:.1f}% of files are canonical',
+            'impact': 'Improves search relevance and AI recommendations'
+        })
+    
+    if 'primary' not in distribution:
+        recommendations.append({
+            'priority': 'MEDIUM',
+            'action': 'Designate primary canonical sources',
+            'reason': 'No primary sources defined',
+            'impact': 'Establishes clear sources of truth'
+        })
+    
+    if 'deprecated' in distribution and distribution['deprecated']['count'] > total_files * 0.2:
+        recommendations.append({
+            'priority': 'MEDIUM',
+            'action': 'Review and clean up deprecated code',
+            'reason': f"{distribution['deprecated']['count']} deprecated files found",
+            'impact': 'Reduces confusion and improves maintainability'
+        })
+    
+    return recommendations
+
+
+def _generate_example_canon_config(project_path):
+    """Generate example .canon.yaml based on project structure"""
+    # Analyze project to suggest config
+    has_docs = (Path(project_path) / "docs").exists()
+    has_api = (Path(project_path) / "api").exists()
+    has_src = (Path(project_path) / "src").exists()
+    
+    config = """# .canon.yaml - Canonical Knowledge Configuration
+version: "1.0"
+
+primary:
+"""
+    
+    if has_docs:
+        config += """  - path: "docs/api-specification.md"
+    weight: 1.0
+    description: "Official API specification"
+    
+  - pattern: "docs/architecture/*.md"
+    weight: 0.95
+    description: "Architecture decision records"
+"""
+    
+    if has_api:
+        config += """  - pattern: "api/schema/*.yaml"
+    weight: 0.9
+    description: "API schema definitions"
+"""
+    
+    if has_src:
+        config += """
+secondary:
+  - pattern: "src/core/**/*.py"
+    weight: 0.7
+    description: "Core business logic"
+    
+  - pattern: "src/models/**/*.py"
+    weight: 0.7
+    description: "Data models"
+
+reference:
+  - pattern: "examples/**/*"
+    weight: 0.4
+    description: "Usage examples"
+    
+  - pattern: "tests/**/*"
+    weight: 0.3
+    description: "Test cases"
+
+deprecated:
+  - pattern: "legacy/**/*"
+    weight: 0.1
+    description: "Legacy code - do not use"
+"""
+    
+    return config
 
 
 async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextContent]:

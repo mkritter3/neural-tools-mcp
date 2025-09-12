@@ -1,0 +1,112 @@
+# .canon.yaml - Canonical Knowledge Configuration for L9 Neural GraphRAG
+# ADR-0031: Canonical Knowledge Management System
+version: "1.0"
+updated: "2025-09-12"
+
+# Primary sources of truth (highest authority)
+primary:
+  - path: "CLAUDE.md"
+    weight: 1.0
+    description: "L9 Truth-First Engineering Contract - Prime directive"
+    
+  - pattern: "docs/adr/*.md"
+    weight: 0.95
+    description: "Architecture Decision Records - Design rationale"
+    
+  - path: ".mcp.json"
+    weight: 0.9
+    description: "MCP server configuration - Source of truth for connections"
+
+# Secondary sources (high trust but not absolute)
+secondary:
+  - pattern: "neural-tools/src/servers/services/*.py"
+    weight: 0.75
+    description: "Core service implementations"
+    
+  - pattern: "neural-tools/src/neural_mcp/*.py"
+    weight: 0.7
+    description: "MCP server implementation"
+    
+  - pattern: "neural-tools/src/infrastructure/*.py"
+    weight: 0.7
+    description: "Infrastructure components (PRISM, RRF)"
+    
+  - path: "docker-compose.yml"
+    weight: 0.65
+    description: "Container orchestration configuration"
+
+# Reference material (useful but lower priority)
+reference:
+  - pattern: "scripts/*.py"
+    weight: 0.4
+    description: "Utility scripts and tools"
+    
+  - pattern: "tests/**/*.py"
+    weight: 0.35
+    description: "Test cases showing usage patterns"
+    
+  - pattern: "examples/*.py"
+    weight: 0.3
+    description: "Usage examples"
+
+# Deprecated or low-trust sources
+deprecated:
+  - pattern: "**/deprecated_*.py"
+    weight: 0.1
+    description: "Deprecated modules - do not use"
+    
+  - pattern: "**/legacy/**/*"
+    weight: 0.05
+    description: "Legacy code - for reference only"
+
+# Experimental/volatile code
+experimental:
+  - pattern: "experiments/**/*"
+    weight: 0.2
+    volatile: true
+    description: "Experimental features - may change"
+    
+  - pattern: "**/poc_*.py"
+    weight: 0.15
+    volatile: true
+    description: "Proof of concept implementations"
+
+# Authority metadata for inline markers
+inline_markers:
+  - marker: "@canon"
+    weight_boost: 0.3
+    description: "Inline canon marker in comments"
+    
+  - marker: "@authority"
+    weight_boost: 0.25
+    description: "Authority marker for important code"
+    
+  - marker: "@source-of-truth"
+    weight_boost: 0.35
+    description: "Explicit source of truth marker"
+    
+  - marker: "@deprecated"
+    weight_penalty: 0.8
+    description: "Inline deprecation marker"
+    
+  - marker: "@experimental"
+    weight_penalty: 0.5
+    description: "Inline experimental marker"
+    
+  - marker: "@legacy"
+    weight_penalty: 0.7
+    description: "Legacy code marker"
+
+# Special patterns for this project
+special:
+  - pattern: "neural-tools/src/servers/services/indexer_service.py"
+    weight: 0.85
+    description: "Core indexer with all optimizations - critical component"
+    
+  - pattern: "neural-tools/src/servers/services/service_container.py"
+    weight: 0.8
+    description: "Service orchestration - connection management"
+    
+  - path: "neural-tools/src/infrastructure/prism_scorer.py"
+    weight: 0.8
+    description: "PRISM scoring algorithm - intelligent file importance"
