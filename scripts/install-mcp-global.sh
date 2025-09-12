@@ -1,80 +1,94 @@
 #!/bin/bash
 
-# Install mcp-add as a global command
-# This script installs the mcp-add command globally
+# Install Neural-Tools MCP globally in Claude Desktop
+# This makes it available to ALL projects automatically
 
 set -e
 
-# Colors for output
+# Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Check if running with sufficient permissions
-if [ "$EUID" -ne 0 ] && [ ! -w "/usr/local/bin" ]; then 
-    echo -e "${YELLOW}⚠️  This script needs permission to write to /usr/local/bin${NC}"
-    echo "Please run with: sudo $0"
+echo -e "${BLUE}🌐 Installing Neural-Tools MCP globally...${NC}"
+
+# Check if Docker containers are running
+echo -e "${BLUE}Checking required services...${NC}"
+
+MISSING_SERVICES=()
+
+# Check each required service
+if ! docker ps | grep -q "claude-l9-template-neo4j"; then
+    MISSING_SERVICES+=("Neo4j")
+fi
+
+if ! docker ps | grep -q "claude-l9-template-qdrant"; then
+    MISSING_SERVICES+=("Qdrant")
+fi
+
+if ! docker ps | grep -q "neural-flow-nomic"; then
+    MISSING_SERVICES+=("Nomic Embeddings")
+fi
+
+if [ ${#MISSING_SERVICES[@]} -gt 0 ]; then
+    echo -e "${YELLOW}⚠️  Missing required services: ${MISSING_SERVICES[*]}${NC}"
+    echo ""
+    echo "Please start Docker services first:"
+    echo "  cd /Users/mkr/local-coding/claude-l9-template"
+    echo "  docker-compose up -d"
     exit 1
 fi
 
-# Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-MCP_SCRIPT="$SCRIPT_DIR/mcp-add.sh"
+echo -e "${GREEN}✅ All required services running${NC}"
 
-if [ ! -f "$MCP_SCRIPT" ]; then
-    echo -e "${RED}Error: mcp-add.sh not found at $MCP_SCRIPT${NC}"
-    exit 1
-fi
+# Update global Claude configuration
+echo -e "${BLUE}Updating global Claude configuration...${NC}"
 
-echo -e "${BLUE}🚀 Installing mcp-add globally...${NC}"
+python3 - <<'EOF'
+import json
+import os
 
-# Create a wrapper script that knows where the MCP base is
-cat > /tmp/mcp-add << 'EOF'
-#!/bin/bash
+config_file = os.path.expanduser("~/Library/Application Support/Claude/claude_desktop_config.json")
+mcp_base_path = "/Users/mkr/local-coding/claude-l9-template"
 
-# Global mcp-add wrapper
-# This script calls the actual mcp-add.sh with the correct MCP_BASE_PATH
+# Read existing config
+with open(config_file, 'r') as f:
+    config = json.load(f)
 
-# MCP installation path (update this if you move the L9 template)
-export MCP_BASE_PATH="/Users/mkr/local-coding/claude-l9-template"
+# Update neural-tools (already exists but we'll improve it)
+config['mcpServers']['neural-tools'] = {
+    "command": "python3",
+    "args": [f"{mcp_base_path}/neural-tools/run_mcp_server.py"],
+    "env": {
+        "PYTHONPATH": f"{mcp_base_path}/neural-tools/src",
+        "AUTO_DETECT_PROJECT": "true",
+        "NEO4J_URI": "bolt://localhost:47687",
+        "NEO4J_USERNAME": "neo4j",
+        "NEO4J_PASSWORD": "graphrag-password",
+        "QDRANT_HOST": "localhost",
+        "QDRANT_PORT": "46333",
+        "EMBEDDING_SERVICE_HOST": "localhost",
+        "EMBEDDING_SERVICE_PORT": "48000",
+        "EMBED_DIM": "768",
+        "PYTHONUNBUFFERED": "1"
+    }
+}
 
-# Check if MCP_BASE_PATH exists
-if [ ! -d "$MCP_BASE_PATH" ]; then
-    echo "Error: MCP base path not found at $MCP_BASE_PATH"
-    echo "Please update the MCP_BASE_PATH in /usr/local/bin/mcp-add"
-    exit 1
-fi
+# Write updated config
+with open(config_file, 'w') as f:
+    json.dump(config, f, indent=2)
 
-# Call the actual script
-exec "$MCP_BASE_PATH/scripts/mcp-add.sh" "$@"
+print("✅ Updated global configuration")
 EOF
 
-# Install the wrapper
-if [ -w "/usr/local/bin" ]; then
-    mv /tmp/mcp-add /usr/local/bin/mcp-add
-    chmod +x /usr/local/bin/mcp-add
-    echo -e "${GREEN}✅ mcp-add installed to /usr/local/bin/mcp-add${NC}"
-else
-    sudo mv /tmp/mcp-add /usr/local/bin/mcp-add
-    sudo chmod +x /usr/local/bin/mcp-add
-    echo -e "${GREEN}✅ mcp-add installed to /usr/local/bin/mcp-add${NC}"
-fi
-
-# Test the installation
-if command -v mcp-add &> /dev/null; then
-    echo -e "${GREEN}✅ mcp-add is now available globally!${NC}"
-    echo ""
-    echo -e "${BLUE}Usage:${NC}"
-    echo "  mcp-add              # Auto-detect project in current directory"
-    echo "  mcp-add /path/to/project  # Add to specific project"
-    echo "  mcp-add . my-app     # Current directory with custom name"
-    echo ""
-    echo -e "${YELLOW}Try it out:${NC}"
-    echo "  cd /path/to/your/project"
-    echo "  mcp-add"
-else
-    echo -e "${RED}Warning: mcp-add not found in PATH${NC}"
-    echo "You may need to add /usr/local/bin to your PATH"
-fi
+echo ""
+echo -e "${GREEN}🎉 Neural-Tools MCP configured globally!${NC}"
+echo ""
+echo -e "${BLUE}Available in ALL projects with:${NC}"
+echo "  • Pattern-based metadata extraction"
+echo "  • Semantic code search"
+echo "  • GraphRAG hybrid search"
+echo ""
+echo -e "${GREEN}✅ Ready to use!${NC}"
