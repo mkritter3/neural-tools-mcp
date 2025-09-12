@@ -580,9 +580,17 @@ async def get_project_context(arguments: Dict[str, Any]):
         # Update context manager's current project
         try:
             await PROJECT_CONTEXT.switch_project(project_name)
-        except ValueError:
-            # Project not found, try to set by name pattern
-            pass
+            logger.debug(f"🔄 Switched to explicitly requested project: {project_name}")
+        except ValueError as e:
+            # Project not found, fall back to auto-detection
+            logger.warning(f"⚠️ Could not switch to project '{project_name}': {e}. Falling back to auto-detection.")
+            context = await PROJECT_CONTEXT.get_current_project()
+            project_name = context['project']
+        except Exception as e:
+            # Any other error, fall back to auto-detection
+            logger.error(f"❌ Error switching to project '{project_name}': {e}. Falling back to auto-detection.")
+            context = await PROJECT_CONTEXT.get_current_project()
+            project_name = context['project']
     else:
         # Use dynamic detection
         context = await PROJECT_CONTEXT.get_current_project()
