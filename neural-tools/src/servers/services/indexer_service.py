@@ -1049,13 +1049,12 @@ class IncrementalIndexer(FileSystemEventHandler):
                 # Create Function nodes
                 for func in structure.get('functions', []):
                     await self.container.neo4j.execute_cypher("""
-                        MERGE (f:Function {name: $name, file_path: $file_path})
+                        MERGE (f:Function {name: $name, file_path: $file_path, project: $project})
                         SET f.signature = $signature,
                             f.start_line = $start_line,
-                            f.end_line = $end_line,
-                            f.project = $project
+                            f.end_line = $end_line
                         WITH f
-                        MATCH (file:File {path: $file_path})
+                        MATCH (file:File {path: $file_path, project: $project})
                         MERGE (f)-[:DEFINED_IN]->(file)
                     """, {
                         'name': func['name'],
@@ -1069,12 +1068,11 @@ class IncrementalIndexer(FileSystemEventHandler):
                 # Create Class nodes
                 for cls in structure.get('classes', []):
                     await self.container.neo4j.execute_cypher("""
-                        MERGE (c:Class {name: $name, file_path: $file_path})
+                        MERGE (c:Class {name: $name, file_path: $file_path, project: $project})
                         SET c.start_line = $start_line,
-                            c.end_line = $end_line,
-                            c.project = $project
+                            c.end_line = $end_line
                         WITH c
-                        MATCH (file:File {path: $file_path})
+                        MATCH (file:File {path: $file_path, project: $project})
                         MERGE (c)-[:DEFINED_IN]->(file)
                     """, {
                         'name': cls['name'],
@@ -1088,14 +1086,15 @@ class IncrementalIndexer(FileSystemEventHandler):
                 for call in structure.get('calls', []):
                     # Only create if both functions exist
                     await self.container.neo4j.execute_cypher("""
-                        MATCH (caller:Function {file_path: $file_path})
+                        MATCH (caller:Function {file_path: $file_path, project: $project})
                         WHERE caller.start_line <= $call_line AND caller.end_line >= $call_line
-                        MATCH (callee:Function {name: $callee_name})
+                        MATCH (callee:Function {name: $callee_name, project: $project})
                         MERGE (caller)-[:CALLS]->(callee)
                     """, {
                         'file_path': str(relative_path),
                         'call_line': call.get('line', 0),
-                        'callee_name': call.get('name', '')
+                        'callee_name': call.get('name', ''),
+                        'project': self.project_name
                     })
                 
                 # Process imports with better extraction
@@ -1103,13 +1102,14 @@ class IncrementalIndexer(FileSystemEventHandler):
                 for imp in imports:
                     # Create import relationships
                     cypher = """
-                    MATCH (f:File {path: $from_path})
-                    MERGE (m:Module {name: $module})
+                    MATCH (f:File {path: $from_path, project: $project})
+                    MERGE (m:Module {name: $module, project: $project})
                     MERGE (f)-[:IMPORTS]->(m)
                     """
                     result = await self.container.neo4j.execute_cypher(cypher, {
                         'from_path': str(relative_path),
-                        'module': imp
+                        'module': imp,
+                        'project': self.project_name
                     })
                     if result.get('status') != 'success':
                         logger.warning(f"Failed to create import relationship: {result.get('message')}")
@@ -1162,7 +1162,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
                 
                 cypher = """
-                MERGE (c:CodeChunk {id: $chunk_id})
+                MERGE (c:CodeChunk {id: $chunk_id, project: $project})
                 SET c.qdrant_id = $qdrant_id,
                     c.file_path = $file_path,
                     c.start_line = $start_line,
@@ -1170,10 +1170,9 @@ class IncrementalIndexer(FileSystemEventHandler):
                     c.type = $chunk_type,
                     c.content = $content,
                     c.collection_name = $collection_name,
-                    c.indexed_at = datetime(),
-                    c.project = $project
+                    c.indexed_at = datetime()
                 WITH c
-                MATCH (f:File {path: $file_path})
+                MATCH (f:File {path: $file_path, project: $project})
                 MERGE (c)-[:PART_OF]->(f)
                 """
                 
