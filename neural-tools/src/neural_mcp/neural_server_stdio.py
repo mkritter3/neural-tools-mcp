@@ -309,6 +309,10 @@ class MultiProjectServiceState:
         
         return container
     
+    async def get_service_container(self, project_name: str):
+        """Alias for get_project_container for backward compatibility"""
+        return await self.get_project_container(project_name)
+    
     async def get_project_retriever(self, project_name: str):
         """Get or create HybridRetriever for specific project with instance isolation"""
         instance_data = self._get_instance_data()
