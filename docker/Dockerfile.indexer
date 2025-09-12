@@ -52,5 +52,5 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=60s \
     CMD curl -f http://localhost:8080/health || exit 1
 
 # Entry point with graceful shutdown handling
+# No CMD - the entrypoint auto-detects project from mount (ADR-0028)
 ENTRYPOINT ["python", "./entrypoint.py"]
-CMD ["/workspace", "--project-name", "default", "--initial-index"]

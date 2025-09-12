@@ -266,28 +266,29 @@ class IndexerRunner:
             raise
             
     async def run(self):
-        """Main entry point"""
+        """Main entry point for the indexer container."""
         logger.info("Starting Neural Indexer Sidecar Container")
         
-        # Parse command line arguments
-        args = sys.argv[1:]
-        project_path = args[0] if args else "/workspace"
+        workspace_path = Path("/workspace")
         
-        # Parse additional arguments
-        # Check environment variables first, then command line
-        project_name = os.getenv('PROJECT_NAME', "default")
-        initial_index = os.getenv('INITIAL_INDEX', 'false').lower() == 'true'
+        # Find the single project directory mounted inside /workspace
+        project_dirs = [d for d in workspace_path.iterdir() if d.is_dir() and not d.name.startswith('.')]
         
-        i = 1
-        while i < len(args):
-            if args[i] == "--project-name" and i + 1 < len(args):
-                project_name = args[i + 1]
-                i += 2
-            elif args[i] == "--initial-index":
-                initial_index = True
-                i += 1
-            else:
-                i += 1
+        if not project_dirs:
+            logger.error("FATAL: No project directory found inside /workspace.")
+            logger.error("Mount your project directory as a volume, e.g., -v /path/to/my-project:/workspace/my-project")
+            sys.exit(1)
+        
+        if len(project_dirs) > 1:
+            logger.warning(f"Multiple directories found in /workspace: {[d.name for d in project_dirs]}.")
+            logger.warning(f"Using the first one found: {project_dirs[0].name}")
+        
+        project_path = project_dirs[0]
+        project_name = project_path.name
+        
+        logger.info(f"Auto-detected PROJECT_NAME='{project_name}' from mounted directory '{project_path}'")
+        
+        initial_index = os.getenv('INITIAL_INDEX', 'true').lower() == 'true'
         
         logger.info(f"Configuration: path={project_path}, project={project_name}, initial_index={initial_index}")
         
@@ -301,8 +302,8 @@ class IndexerRunner:
         app.state.indexer_runner = self
         
         try:
-            # Run indexer service
-            await self.run_indexer(project_path, project_name, initial_index)
+            # Run indexer service with the detected project
+            await self.run_indexer(str(project_path), project_name, initial_index)
             
             # Wait for shutdown signal
             await self.shutdown_event.wait()
