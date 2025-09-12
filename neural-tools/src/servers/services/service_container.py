@@ -438,9 +438,16 @@ class ServiceContainer:
             try:
                 # Since this is sync code, we call the breaker synchronously
                 import asyncio
-                loop = asyncio.new_event_loop()
-                result = loop.run_until_complete(breaker.call(_connect_neo4j))
-                return result
+                try:
+                    loop = asyncio.get_running_loop()
+                    # We're in an async context, can't use run_until_complete
+                    # Just try direct connection for now
+                    return _connect_neo4j()
+                except RuntimeError:
+                    # No running loop, create one
+                    loop = asyncio.new_event_loop()
+                    result = loop.run_until_complete(breaker.call(_connect_neo4j))
+                    return result
             except CircuitOpenError as e:
                 logger.warning(f"Neo4j circuit breaker open: {e}")
                 return False
@@ -473,8 +480,8 @@ class ServiceContainer:
             _ = tmp_client.get_collections()
             logger.info("✅ Qdrant connectivity check succeeded")
             
-            # Don't store client here - service wrapper will be created later
-            self.qdrant_client = None
+            # Store the client for direct use
+            self.qdrant_client = tmp_client
             return True
             
         except ImportError:

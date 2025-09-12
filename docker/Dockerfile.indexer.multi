@@ -1,0 +1,63 @@
+# Multi-Project Neural Indexer Container
+# Based on existing indexer with multi-project support
+
+FROM python:3.11-slim as runtime
+
+# Install system dependencies
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -g 1000 indexer && useradd -u 1000 -g indexer indexer
+
+WORKDIR /app
+
+# Copy and install requirements
+COPY neural-tools/config/requirements-indexer-lean.txt ./requirements.txt
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir fastapi uvicorn[standard] prometheus-client
+
+# Copy source code
+COPY neural-tools/src/ ./src/
+
+# Copy both entrypoints
+COPY docker/scripts/indexer-entrypoint.py ./entrypoint.py
+COPY neural-tools/entrypoint_multi.py ./entrypoint_multi.py
+
+# Ensure multi_project_indexer.py is in place
+COPY neural-tools/src/servers/services/multi_project_indexer.py ./src/servers/services/
+
+# Create directories with proper ownership
+RUN mkdir -p /app/state /app/logs /app/tmp /app/config /workspaces && \
+    chown -R indexer:indexer /app && \
+    chmod +x ./entrypoint.py ./entrypoint_multi.py
+
+USER indexer:indexer
+
+# Expose health/metrics port
+EXPOSE 8080
+
+# Set environment variables
+ENV PYTHONPATH=/app:/app/src
+ENV PYTHONUNBUFFERED=1
+ENV TOKENIZERS_PARALLELISM=false
+
+# Default to multi-project mode
+ENV INDEXER_MODE=multi-project
+ENV BASE_WORKSPACE=/workspaces
+ENV AUTO_DISCOVER=true
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Default entrypoint for multi-project mode
+ENTRYPOINT ["python3", "/app/entrypoint_multi.py"]
+CMD ["/workspaces"]

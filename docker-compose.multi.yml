@@ -1,0 +1,24 @@
+version: '3.8'
+
+# Override configuration for multi-project indexer
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.multi.yml up -d
+
+services:
+  l9-indexer:
+    environment:
+      # Enable multi-project mode
+      - INDEXER_MODE=multi-project
+      - BASE_WORKSPACE=/workspaces
+      - AUTO_DISCOVER=true
+      - PROJECT_PATTERNS=.git,package.json,pyproject.toml,Cargo.toml
+      
+      # Remove single-project settings
+      - PROJECT_NAME=
+      - PROJECT_PATH=
+      
+    volumes:
+      # Mount parent directory containing multiple projects
+      - ${MULTI_PROJECT_DIR:-../}:/workspaces:ro
+      
+    # Override entrypoint to use multi-project script
+    entrypoint: ["python3", "/app/entrypoint_multi.py", "/workspaces"]

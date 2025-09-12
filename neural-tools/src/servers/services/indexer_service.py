@@ -167,13 +167,15 @@ class IncrementalIndexer(FileSystemEventHandler):
         
         # Initialize code parser for structure extraction (ADR 0017)
         self.code_parser = None
+        self.tree_sitter_extractor = None  # Always initialize this attribute
+        
         if STRUCTURE_EXTRACTION_ENABLED:
             try:
                 self.code_parser = CodeParser()
                 logger.info("Code parser initialized for GraphRAG structure extraction")
             except Exception as e:
                 logger.warning(f"Failed to initialize tree-sitter extractor: {e}")
-                self.tree_sitter_extractor = None
+                self.code_parser = None
         
         # Observer for file system watching (will be set externally)
         self.observer = None
