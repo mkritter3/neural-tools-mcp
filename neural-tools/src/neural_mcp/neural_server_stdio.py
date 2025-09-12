@@ -1820,7 +1820,7 @@ async def indexer_status_impl() -> List[types.TextContent]:
 
 
 async def reindex_path_impl(path: str) -> List[types.TextContent]:
-    """Trigger reindexing of a specific path via indexer sidecar HTTP API"""
+    """Trigger reindexing of a specific path via project-specific indexer container"""
     import httpx
     
     if not path:
@@ -1830,10 +1830,40 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
         )]
     
     try:
+        # Get current project context
+        project_context = await PROJECT_CONTEXT.get_current_project()
+        project_name = project_context['project']
+        project_path = project_context['path']
+        
+        # Get or create service container for this project
+        container = await state.get_service_container(project_name)
+        
+        # Ensure project-specific indexer is running
+        logger.info(f"Ensuring indexer is running for project: {project_name}")
+        container_id = await container.ensure_indexer_running(project_path)
+        
+        # Get the port for this project's indexer
+        if hasattr(container, 'indexer_orchestrator') and container.indexer_orchestrator:
+            indexer_port = container.indexer_orchestrator.get_indexer_port(project_name)
+        else:
+            # Fallback to default port if orchestrator not available
+            indexer_port = 48080
+            
+        if not indexer_port:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error",
+                    "error": f"Could not determine port for {project_name} indexer",
+                    "project": project_name
+                }, indent=2)
+            )]
+        
+        # Connect to project-specific indexer
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Send reindex request to sidecar
+            # Send reindex request to project-specific indexer
             response = await client.post(
-                "http://localhost:48080/reindex-path",
+                f"http://localhost:{indexer_port}/reindex-path",
                 params={"path": path}
             )
             
@@ -1844,6 +1874,9 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
                     text=json.dumps({
                         "status": "success",
                         "message": f"Reindex request queued for path: {path}",
+                        "project": project_name,
+                        "indexer_port": indexer_port,
+                        "container_id": container_id[:12] if container_id else None,
                         "details": result
                     }, indent=2)
                 )]
@@ -1853,18 +1886,21 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
                     text=json.dumps({
                         "status": "failed",
                         "error": f"HTTP {response.status_code}: {response.text}",
-                        "path": path
+                        "path": path,
+                        "project": project_name,
+                        "indexer_port": indexer_port
                     }, indent=2)
                 )]
                 
-    except httpx.ConnectError:
+    except httpx.ConnectError as e:
         return [types.TextContent(
             type="text",
             text=json.dumps({
                 "status": "failed",
-                "error": "Could not connect to indexer sidecar on localhost:48080",
+                "error": f"Could not connect to indexer on port {indexer_port}",
                 "path": path,
-                "note": "Indexer sidecar may not be running in container mode"
+                "project": project_name if 'project_name' in locals() else 'unknown',
+                "note": "Indexer container may not be running or port may be incorrect"
             }, indent=2)
         )]
     except Exception as e:
@@ -1873,7 +1909,8 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
             text=json.dumps({
                 "status": "error",
                 "error": str(e),
-                "path": path
+                "path": path,
+                "project": project_name if 'project_name' in locals() else 'unknown'
             }, indent=2)
         )]
 

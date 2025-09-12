@@ -30,6 +30,9 @@ cp -v "$SRC_DIR/src/servers/services/indexer_service.py" "$DEST_DIR/src/servers/
 # ADR-0033: Dynamic project context management
 cp -v "$SRC_DIR/src/servers/services/project_context_manager.py" "$DEST_DIR/src/servers/services/"
 
+# ADR-0030: Multi-container indexer orchestration with port mapping
+cp -v "$SRC_DIR/src/servers/services/indexer_orchestrator.py" "$DEST_DIR/src/servers/services/"
+
 # Verify the update
 echo ""
 echo "✅ Verifying update..."

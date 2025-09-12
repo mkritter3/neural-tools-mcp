@@ -38,8 +38,12 @@ class IndexerOrchestrator:
             max_concurrent: Maximum number of concurrent indexer containers
         """
         self.docker_client = None
-        self.active_indexers: Dict[str, dict] = {}  # project -> {container_id, last_activity}
+        self.active_indexers: Dict[str, dict] = {}  # project -> {container_id, last_activity, port}
         self.max_concurrent = max_concurrent
+        
+        # Port allocation for indexer HTTP APIs
+        self.port_base = 48100  # Start from 48100 for project indexers
+        self.allocated_ports = set()  # Track allocated ports
         
         # Resource limits per ADR-0030 and expert recommendations
         self.resource_limits = {
@@ -77,6 +81,26 @@ class IndexerOrchestrator:
         except docker.errors.DockerException as e:
             logger.error(f"Failed to initialize Docker client: {e}")
             raise
+    
+    def _allocate_port(self) -> int:
+        """Allocate a unique port for an indexer container"""
+        port = self.port_base
+        while port in self.allocated_ports:
+            port += 1
+            if port > self.port_base + 100:  # Max 100 indexers
+                raise ValueError("No available ports for indexer")
+        self.allocated_ports.add(port)
+        return port
+    
+    def _release_port(self, port: int):
+        """Release a port back to the pool"""
+        self.allocated_ports.discard(port)
+    
+    def get_indexer_port(self, project_name: str) -> Optional[int]:
+        """Get the port for a project's indexer if running"""
+        if project_name in self.active_indexers:
+            return self.active_indexers[project_name].get('port')
+        return None
             
     async def ensure_indexer(self, project_name: str, project_path: str) -> str:
         """
@@ -128,7 +152,9 @@ class IndexerOrchestrator:
                 
             # Spawn container with security hardening
             try:
-                logger.info(f"Starting indexer container for project: {project_name}")
+                # Allocate a unique port for this indexer
+                indexer_port = self._allocate_port()
+                logger.info(f"Starting indexer container for project: {project_name} on port {indexer_port}")
                 
                 container = self.docker_client.containers.run(
                     image='l9-neural-indexer:production',
@@ -162,6 +188,9 @@ class IndexerOrchestrator:
                     volumes={
                         project_path: {'bind': '/workspace', 'mode': 'ro'}  # Read-only mount
                     },
+                    ports={
+                        '8080/tcp': indexer_port  # Map container port 8080 to allocated host port
+                    },
                     network='l9-graphrag-network',
                     detach=True,
                     auto_remove=True,  # Clean up on stop
@@ -173,10 +202,11 @@ class IndexerOrchestrator:
                 self.active_indexers[project_name] = {
                     'container_id': container.id,
                     'last_activity': datetime.now(),
-                    'project_path': project_path
+                    'project_path': project_path,
+                    'port': indexer_port
                 }
                 
-                logger.info(f"Indexer container started for {project_name}: {container.id[:12]}")
+                logger.info(f"Indexer container started for {project_name}: {container.id[:12]} on port {indexer_port}")
                 return container.id
                 
             except docker.errors.ImageNotFound:
@@ -228,16 +258,27 @@ class IndexerOrchestrator:
         if project_name in self.active_indexers:
             try:
                 container_id = self.active_indexers[project_name]['container_id']
+                port = self.active_indexers[project_name].get('port')
                 container = self.docker_client.containers.get(container_id)
                 
                 logger.info(f"Stopping indexer container for {project_name}: {container_id[:12]}")
                 container.stop(timeout=10)
+                
+                # Release the allocated port
+                if port:
+                    self._release_port(port)
+                    logger.debug(f"Released port {port} from {project_name}")
                 
             except docker.errors.NotFound:
                 logger.warning(f"Container already stopped for {project_name}")
             except Exception as e:
                 logger.error(f"Error stopping container for {project_name}: {e}")
             finally:
+                # Release port if not already done
+                if project_name in self.active_indexers:
+                    port = self.active_indexers[project_name].get('port')
+                    if port:
+                        self._release_port(port)
                 del self.active_indexers[project_name]
                 
     async def _stop_least_recently_used(self):
