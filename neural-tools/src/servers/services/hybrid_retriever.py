@@ -145,30 +145,31 @@ class HybridRetriever:
         for chunk_id in chunk_ids:
             try:
                 # Enhanced query for ADR 0017: GraphRAG True Hybrid Search
+                # ADR-0029: All queries must filter by project for isolation
                 cypher = """
-                MATCH (c:CodeChunk {id: $chunk_id})
-                OPTIONAL MATCH (c)-[:PART_OF]->(f:File)
+                MATCH (c:CodeChunk {id: $chunk_id, project: $project})
+                OPTIONAL MATCH (c)-[:PART_OF]->(f:File {project: $project})
                 
                 // Get functions in this file/chunk
-                OPTIONAL MATCH (func:Function)-[:DEFINED_IN]->(f)
+                OPTIONAL MATCH (func:Function {project: $project})-[:DEFINED_IN]->(f)
                 WHERE func.start_line >= c.start_line AND func.end_line <= c.end_line
                 
                 // Get classes in this file/chunk  
-                OPTIONAL MATCH (cls:Class)-[:DEFINED_IN]->(f)
+                OPTIONAL MATCH (cls:Class {project: $project})-[:DEFINED_IN]->(f)
                 WHERE cls.start_line >= c.start_line AND cls.end_line <= c.end_line
                 
                 // Get functions this chunk's functions call
-                OPTIONAL MATCH (func)-[:CALLS]->(called:Function)
+                OPTIONAL MATCH (func)-[:CALLS]->(called:Function {project: $project})
                 
                 // Get functions that call this chunk's functions
-                OPTIONAL MATCH (caller:Function)-[:CALLS]->(func)
+                OPTIONAL MATCH (caller:Function {project: $project})-[:CALLS]->(func)
                 
                 // Get file-level imports
-                OPTIONAL MATCH (f)-[:IMPORTS]->(imported:File)
-                OPTIONAL MATCH (importer:File)-[:IMPORTS]->(f)
+                OPTIONAL MATCH (f)-[:IMPORTS]->(imported:File {project: $project})
+                OPTIONAL MATCH (importer:File {project: $project})-[:IMPORTS]->(f)
                 
                 // Get related chunks in same file
-                OPTIONAL MATCH (related:CodeChunk)-[:PART_OF]->(f)
+                OPTIONAL MATCH (related:CodeChunk {project: $project})-[:PART_OF]->(f)
                 WHERE related.id <> c.id
                 
                 RETURN 
@@ -189,6 +190,7 @@ class HybridRetriever:
                 LIMIT 1
                 """
                 
+                # ADR-0029: project parameter will be auto-injected by neo4j_service
                 result = await self.container.neo4j.execute_cypher(cypher, {
                     'chunk_id': chunk_id
                 })
@@ -289,8 +291,9 @@ class HybridRetriever:
         try:
             rel_pattern = '|'.join(relationship_types)
             
+            # ADR-0029: Add project filter for multi-project isolation
             cypher = f"""
-            MATCH (start:File {{path: $file_path}})
+            MATCH (start:File {{path: $file_path, project: $project}})
             CALL apoc.path.subgraphAll(start, {{
                 relationshipFilter: '{rel_pattern}',
                 maxLevel: $max_depth
@@ -301,20 +304,24 @@ class HybridRetriever:
             
             # Note: This requires APOC plugin in Neo4j
             # Fallback query without APOC:
+            # ADR-0029: Add project filter for multi-project isolation
             fallback_cypher = """
-            MATCH path = (start:File {path: $file_path})-[*1..3]-(related)
+            MATCH path = (start:File {path: $file_path, project: $project})-[*1..3]-(related)
             WHERE ALL(r IN relationships(path) WHERE type(r) IN $rel_types)
+                  AND ALL(n IN nodes(path) WHERE n.project = $project)
             RETURN collect(DISTINCT nodes(path)) AS nodes,
                    collect(DISTINCT relationships(path)) AS relationships
             """
             
             try:
+                # ADR-0029: project parameter will be auto-injected by neo4j_service
                 result = await self.container.neo4j.execute_cypher(cypher, {
                     'file_path': file_path,
                     'max_depth': max_depth
                 })
             except:
                 # Fallback if APOC not available
+                # ADR-0029: project parameter will be auto-injected by neo4j_service
                 result = await self.container.neo4j.execute_cypher(fallback_cypher, {
                     'file_path': file_path,
                     'rel_types': relationship_types
@@ -351,11 +358,13 @@ class HybridRetriever:
             result = {}
             
             if direction in ['imports', 'both']:
+                # ADR-0029: Add project filter for multi-project isolation
                 cypher_imports = """
-                MATCH (f:File {path: $file_path})-[:IMPORTS]->(m:Module)
-                OPTIONAL MATCH (m)<-[:PROVIDES]-(provider:File)
+                MATCH (f:File {path: $file_path, project: $project})-[:IMPORTS]->(m:Module)
+                OPTIONAL MATCH (m)<-[:PROVIDES]-(provider:File {project: $project})
                 RETURN collect(DISTINCT COALESCE(provider.path, m.name)) AS imports
                 """
+                # ADR-0029: project parameter will be auto-injected by neo4j_service
                 imports_result = await self.container.neo4j.execute_cypher(
                     cypher_imports, {'file_path': file_path}
                 )
@@ -363,10 +372,12 @@ class HybridRetriever:
                     result['imports'] = imports_result[0].get('imports', [])
             
             if direction in ['imported_by', 'both']:
+                # ADR-0029: Add project filter for multi-project isolation
                 cypher_imported = """
-                MATCH (f:File {path: $file_path})<-[:IMPORTS]-(importer:File)
+                MATCH (f:File {path: $file_path, project: $project})<-[:IMPORTS]-(importer:File {project: $project})
                 RETURN collect(DISTINCT importer.path) AS imported_by
                 """
+                # ADR-0029: project parameter will be auto-injected by neo4j_service
                 imported_result = await self.container.neo4j.execute_cypher(
                     cypher_imported, {'file_path': file_path}
                 )
@@ -439,15 +450,17 @@ class HybridRetriever:
             directly_affected = deps.get('imported_by', [])
             
             # Find transitive dependencies (2-3 hops)
+            # ADR-0029: Add project filter for multi-project isolation
             cypher = """
-            MATCH (f:File {path: $file_path})
-            OPTIONAL MATCH (f)<-[:IMPORTS*1..3]-(affected:File)
+            MATCH (f:File {path: $file_path, project: $project})
+            OPTIONAL MATCH (f)<-[:IMPORTS*1..3]-(affected:File {project: $project})
             WITH collect(DISTINCT affected.path) AS transitive
-            OPTIONAL MATCH (f)-[:CONTAINS]->(chunk:CodeChunk)
+            OPTIONAL MATCH (f)-[:CONTAINS]->(chunk:CodeChunk {project: $project})
             WHERE chunk.type IN ['class', 'function']
             RETURN transitive, count(DISTINCT chunk) AS api_surface
             """
             
+            # ADR-0029: project parameter will be auto-injected by neo4j_service
             result = await self.container.neo4j.execute_cypher(
                 cypher, {'file_path': file_path}
             )

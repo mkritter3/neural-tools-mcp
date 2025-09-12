@@ -1017,14 +1017,14 @@ class IncrementalIndexer(FileSystemEventHandler):
             file_hash = hashlib.sha256(content.encode()).hexdigest()
             
             # Create or update file node with content hash
+            # ADR-0029: Use composite key (project, path) for multi-project isolation
             cypher = """
-            MERGE (f:File {path: $path})
+            MERGE (f:File {path: $path, project: $project})
             SET f.name = $name,
                 f.type = $type,
                 f.size = $size,
                 f.content_hash = $content_hash,
-                f.indexed_at = datetime(),
-                f.project = $project
+                f.indexed_at = datetime()
             RETURN f.content_hash AS existing_hash
             """
             

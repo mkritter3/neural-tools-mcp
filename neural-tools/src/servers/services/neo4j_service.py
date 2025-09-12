@@ -247,30 +247,45 @@ class Neo4jService:
             }
     
     async def _ensure_constraints(self):
-        """Ensure basic graph constraints exist for code relationships"""
+        """Ensure graph constraints with project-based isolation (ADR-0029)"""
         try:
+            # ADR-0029: Composite constraints for multi-project isolation
+            # These constraints ensure uniqueness WITHIN each project
             constraints = [
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (f:File) REQUIRE f.path IS UNIQUE",
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Class) REQUIRE (c.name, c.file_path) IS UNIQUE",
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (m:Method) REQUIRE (m.name, m.class_name, m.file_path) IS UNIQUE",
-                "CREATE INDEX IF NOT EXISTS FOR (f:File) ON (f.language)",
-                "CREATE INDEX IF NOT EXISTS FOR (c:Class) ON (c.name)",
-                "CREATE INDEX IF NOT EXISTS FOR (m:Method) ON (m.name)"
+                # Composite constraints including project property
+                "CREATE CONSTRAINT file_project_path_unique IF NOT EXISTS FOR (f:File) REQUIRE (f.project, f.path) IS UNIQUE",
+                "CREATE CONSTRAINT class_project_name_unique IF NOT EXISTS FOR (c:Class) REQUIRE (c.project, c.name, c.file_path) IS UNIQUE",
+                "CREATE CONSTRAINT method_project_signature_unique IF NOT EXISTS FOR (m:Method) REQUIRE (m.project, m.name, m.class_name, m.file_path) IS UNIQUE",
+                
+                # CRITICAL: Index on project property for performance
+                "CREATE INDEX project_property_index IF NOT EXISTS FOR (n) ON (n.project)",
+                
+                # Additional indexes for query performance
+                "CREATE INDEX file_language_index IF NOT EXISTS FOR (f:File) ON (f.language)",
+                "CREATE INDEX class_name_index IF NOT EXISTS FOR (c:Class) ON (c.name)",
+                "CREATE INDEX method_name_index IF NOT EXISTS FOR (m:Method) ON (m.name)"
             ]
             
             for constraint in constraints:
                 await self.client.execute_query(constraint)
                 
+            logger.info(f"Neo4j constraints created for project isolation (ADR-0029)")
+                
         except Exception as e:
             logger.warning(f"Could not create constraints: {e}")
     
     async def execute_cypher(self, cypher_query: str, parameters: Optional[Dict] = None) -> Dict[str, Any]:
-        """Execute Cypher query with service validation and intelligent caching"""
+        """Execute Cypher query with service validation, project isolation (ADR-0029) and intelligent caching"""
         if not self.initialized or not self.client:
             return {
                 "status": "error",
                 "message": "Neo4j service not initialized"
             }
+        
+        # ADR-0029: Automatically inject project name for isolation
+        if parameters is None:
+            parameters = {}
+        parameters['project'] = self.project_name
         
         # Check cache for read queries (SELECT-like operations)
         is_read_query = self._is_read_only_query(cypher_query)
