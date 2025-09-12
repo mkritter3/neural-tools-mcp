@@ -1438,17 +1438,38 @@ async def neural_system_status_impl() -> List[types.TextContent]:
             "indexing_status": "REAL services - NO MOCKS!"
         }
         
-        # Test actual connections
+        # Test actual connections - PROJECT ISOLATED (ADR-0032)
         if container.neo4j:
             try:
-                # Neo4j service wrapper - use async query
+                # Neo4j service wrapper - use async query WITH PROJECT FILTER
                 if hasattr(container.neo4j, 'client') and container.neo4j.client:
+                    # Count only nodes for the current project
                     result = await container.neo4j.client.execute_query(
-                        "MATCH (n) RETURN count(n) as node_count"
+                        "MATCH (n {project: $project}) RETURN count(n) as node_count",
+                        {"project": project_name}
                     )
                     if result["status"] == "success" and result["result"]:
                         node_count = result["result"][0]["node_count"]
                         status["services"]["neo4j"]["node_count"] = node_count
+                        status["services"]["neo4j"]["project_scope"] = project_name
+                        
+                        # Add breakdown by node type for better visibility (ADR-0032)
+                        breakdown_query = """
+                        MATCH (f:File {project: $project}) WITH count(f) as files
+                        MATCH (c:Class {project: $project}) WITH files, count(c) as classes
+                        MATCH (m:Method {project: $project}) WITH files, classes, count(m) as methods
+                        RETURN files, classes, methods
+                        """
+                        breakdown_result = await container.neo4j.client.execute_query(
+                            breakdown_query, {"project": project_name}
+                        )
+                        if breakdown_result["status"] == "success" and breakdown_result["result"]:
+                            bd = breakdown_result["result"][0]
+                            status["services"]["neo4j"]["breakdown"] = {
+                                "files": bd.get("files", 0),
+                                "classes": bd.get("classes", 0),
+                                "methods": bd.get("methods", 0)
+                            }
                     else:
                         status["services"]["neo4j"]["node_count"] = 0
                 else:
@@ -1458,10 +1479,15 @@ async def neural_system_status_impl() -> List[types.TextContent]:
                 
         if container.qdrant:
             try:
-                # get_collections returns a list of strings directly
-                collections = await container.qdrant.get_collections()
-                status["services"]["qdrant"]["collections"] = collections
-                status["services"]["qdrant"]["collection_count"] = len(collections)
+                # Get ALL collections first
+                all_collections = await container.qdrant.get_collections()
+                # Filter to show only collections for the current project (ADR-0032)
+                project_prefix = f"project_{project_name}_"
+                project_collections = [c for c in all_collections if c.startswith(project_prefix)]
+                
+                status["services"]["qdrant"]["collections"] = project_collections
+                status["services"]["qdrant"]["collection_count"] = len(project_collections)
+                status["services"]["qdrant"]["project_scope"] = project_name
             except Exception as e:
                 status["services"]["qdrant"]["error"] = str(e)
         
@@ -1497,14 +1523,113 @@ async def neural_system_status_impl() -> List[types.TextContent]:
 
 
 async def project_understanding_impl(scope: str = "full") -> List[types.TextContent]:
+    """
+    Get real project understanding with actual data (ADR-0032)
+    Scopes: full, summary, files, services
+    """
     try:
+        project_name, container, retriever = await get_project_context({})
+        
         understanding = {
-            "project": DEFAULT_PROJECT_NAME,
+            "project": project_name,
             "timestamp": datetime.now().isoformat(),
             "scope": scope,
             "protocol": "2025-06-18",
             "transport": "stdio"
         }
+        
+        # Get real project statistics based on scope
+        if scope in ["full", "summary"]:
+            # Query Neo4j for project-specific counts
+            if container.neo4j and hasattr(container.neo4j, 'client'):
+                try:
+                    # Get file count
+                    file_result = await container.neo4j.client.execute_query(
+                        "MATCH (f:File {project: $project}) RETURN count(f) as count",
+                        {"project": project_name}
+                    )
+                    file_count = 0
+                    if file_result["status"] == "success" and file_result["result"]:
+                        file_count = file_result["result"][0]["count"]
+                    
+                    # Get class count
+                    class_result = await container.neo4j.client.execute_query(
+                        "MATCH (c:Class {project: $project}) RETURN count(c) as count",
+                        {"project": project_name}
+                    )
+                    class_count = 0
+                    if class_result["status"] == "success" and class_result["result"]:
+                        class_count = class_result["result"][0]["count"]
+                    
+                    # Get method count
+                    method_result = await container.neo4j.client.execute_query(
+                        "MATCH (m:Method {project: $project}) RETURN count(m) as count",
+                        {"project": project_name}
+                    )
+                    method_count = 0
+                    if method_result["status"] == "success" and method_result["result"]:
+                        method_count = method_result["result"][0]["count"]
+                    
+                    understanding["statistics"] = {
+                        "files": file_count,
+                        "classes": class_count,
+                        "methods": method_count,
+                        "total_nodes": file_count + class_count + method_count,
+                        "indexed": file_count > 0
+                    }
+                except Exception as e:
+                    understanding["statistics"] = {"error": str(e)}
+            
+            # Get Qdrant vector counts
+            if container.qdrant:
+                try:
+                    collection_name = f"project_{project_name}_code"
+                    # Check if collection exists
+                    all_collections = await container.qdrant.get_collections()
+                    if collection_name in all_collections:
+                        # TODO: Add vector count when method is available
+                        understanding["vectors"] = {
+                            "collection": collection_name,
+                            "exists": True
+                        }
+                    else:
+                        understanding["vectors"] = {
+                            "collection": collection_name,
+                            "exists": False
+                        }
+                except Exception as e:
+                    understanding["vectors"] = {"error": str(e)}
+        
+        if scope in ["full", "files"]:
+            # Get sample of indexed files
+            if container.neo4j and hasattr(container.neo4j, 'client'):
+                try:
+                    files_result = await container.neo4j.client.execute_query(
+                        """
+                        MATCH (f:File {project: $project})
+                        RETURN f.path as path, f.language as language
+                        ORDER BY f.path
+                        LIMIT 10
+                        """,
+                        {"project": project_name}
+                    )
+                    if files_result["status"] == "success":
+                        understanding["sample_files"] = [
+                            {"path": r["path"], "language": r.get("language", "unknown")}
+                            for r in files_result["result"]
+                        ]
+                except Exception as e:
+                    understanding["sample_files"] = {"error": str(e)}
+        
+        if scope in ["full", "services"]:
+            # Service status
+            understanding["services"] = {
+                "neo4j": "connected" if container.neo4j else "disconnected",
+                "qdrant": "connected" if container.qdrant else "disconnected",
+                "nomic": "connected" if container.nomic else "disconnected",
+                "retriever": "available" if retriever else "unavailable"
+            }
+        
         return [types.TextContent(type="text", text=json.dumps({"status": "success", "understanding": understanding}, indent=2))]
     except Exception as e:
         return [types.TextContent(type="text", text=json.dumps({"status": "error", "message": str(e)}))]
