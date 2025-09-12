@@ -37,14 +37,35 @@ secondary:
   # - pattern: "src/api/routes/*.py"
   #   weight: 0.75
   #   description: "API endpoint definitions"
+  
+  # Example: Add entire directories
+  # - pattern: "src/core/**/*"        # All files in src/core subdirectories (not direct files)
+  #   weight: 0.8
+  #   description: "Core application directory"
+  #
+  # To include EVERYTHING in a directory (direct files + all subdirs):
+  # - pattern: "src/core/*"           # Direct files in src/core
+  #   weight: 0.8
+  #   description: "Core files"
+  # - pattern: "src/core/**/*"        # All files in subdirectories
+  #   weight: 0.8  
+  #   description: "Core subdirectories"
+  
+  # - pattern: "docs/**/*.md"         # All .md files in docs directory
+  #   weight: 0.7
+  #   description: "Documentation directory"
+  
+  # - pattern: "src/utils/*"          # Only direct files in src/utils (no subdirs)
+  #   weight: 0.65
+  #   description: "Utility functions"
     
   - pattern: "neural-tools/src/neural_mcp/*.py"
     weight: 0.7
     description: "MCP server implementation"
     
-  - pattern: "neural-tools/src/infrastructure/*.py"
+  - pattern: "neural-tools/src/infrastructure/**/*"
     weight: 0.7
-    description: "Infrastructure components (PRISM, RRF)"
+    description: "Infrastructure components (PRISM, RRF) - entire directory"
     
   - path: "docker-compose.yml"
     weight: 0.65
@@ -111,6 +132,41 @@ inline_markers:
   - marker: "@legacy"
     weight_penalty: 0.7
     description: "Legacy code marker"
+
+# Foundational knowledge (critical for understanding the system)
+foundational:
+  # Architecture and system design - highest weight
+  - pattern: "docs/adr/*.md"
+    weight: 0.95
+    description: "Architecture Decision Records - explains WHY we built it this way"
+    
+  - path: "ARCHITECTURE.md"
+    weight: 0.9
+    description: "System architecture overview - MUST read before making changes"
+    
+  # Domain and business knowledge - high weight
+  - pattern: "docs/domain/**/*"
+    weight: 0.8
+    description: "Domain model and business concepts"
+    
+  # Integration and external dependencies - medium-high weight  
+  - pattern: "docs/integrations/**/*"
+    weight: 0.75
+    description: "How we connect to external systems"
+    
+  # Learning resources - medium weight
+  - pattern: "docs/guides/**/*.md"
+    weight: 0.65
+    description: "Implementation guides and best practices"
+    
+  - pattern: "examples/**/*"
+    weight: 0.6
+    description: "Reference implementations and patterns"
+    
+  # Background material - lower weight
+  - pattern: "docs/research/**/*"
+    weight: 0.45
+    description: "Research and background material"
 
 # Special patterns for this project
 special:
