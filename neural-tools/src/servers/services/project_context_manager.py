@@ -137,6 +137,7 @@ class ProjectContextManager:
             "project": project_name,
             "path": str(project_path),
             "method": "explicit",
+            "confidence": 1.0,  # Explicit set is 100% confidence
             "timestamp": datetime.now().isoformat(),
             "previous": old_project
         }
