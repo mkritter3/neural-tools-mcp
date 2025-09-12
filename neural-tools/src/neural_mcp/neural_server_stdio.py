@@ -36,6 +36,8 @@ from data_migrator import DataMigrator
 # Import canon management for ADR-0031
 from canon_manager import CanonManager
 from metadata_backfiller import MetadataBackfiller
+# Import project context management for ADR-0033
+from project_context_manager import ProjectContextManager
 
 # Configure logging to stderr (NEVER to stdout for STDIO transport)
 logging.basicConfig(
@@ -549,6 +551,10 @@ class MultiProjectServiceState:
 state = MultiProjectServiceState()
 server = Server("l9-neural-enhanced")
 
+# ADR-0033: Dynamic project context manager
+PROJECT_CONTEXT = ProjectContextManager()
+PROJECT_CONTEXT.set_instance_id(state.instance_id)
+
 # Update logger to include instance ID now that state is available
 logger.get_instance_id = lambda: state.instance_id if state else "unknown"
 
@@ -558,10 +564,38 @@ logger.get_instance_id = lambda: state.instance_id if state else "unknown"
 
 
 async def get_project_context(arguments: Dict[str, Any]):
-    # Derive project name (simple heuristic)
-    project_name = arguments.get('project') or DEFAULT_PROJECT_NAME
+    """
+    Get project context with ADR-0033 dynamic detection.
+    Falls back to DEFAULT_PROJECT_NAME if detection fails.
+    """
+    global PROJECT_CONTEXT
+    
+    # Check if project explicitly provided in arguments
+    if 'project' in arguments and arguments['project']:
+        project_name = arguments['project']
+        # Update context manager's current project
+        try:
+            await PROJECT_CONTEXT.switch_project(project_name)
+        except ValueError:
+            # Project not found, try to set by name pattern
+            pass
+    else:
+        # Use dynamic detection
+        context = await PROJECT_CONTEXT.get_current_project()
+        project_name = context['project']
+        
+        # Log detection for debugging
+        method = context.get('method', 'unknown')
+        confidence = context.get('confidence', 0)
+        if confidence < 0.7:
+            logger.warning(f"⚠️ Low confidence project detection: {project_name} (method: {method}, confidence: {confidence:.0%})")
+        else:
+            logger.debug(f"🎯 Detected project: {project_name} (method: {method}, confidence: {confidence:.0%})")
+    
+    # Get or create container for project
     container = await state.get_project_container(project_name)
     retriever = await state.get_project_retriever(project_name)
+    
     return project_name, container, retriever
 
 
@@ -838,6 +872,33 @@ async def handle_list_tools() -> List[types.Tool]:
                 "additionalProperties": False
             }
         ),
+        # Dynamic project context management (ADR-0033)
+        types.Tool(
+            name="set_project_context",
+            description=(
+                "Set or auto-detect the active project for this Claude session.\n"
+                "Solves the problem where MCP cannot detect which project you're working on.\n"
+                "Usage: {\"path\": \"/path/to/project\"} or {} for auto-detection"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to project directory. If not provided, will auto-detect."
+                    }
+                },
+                "additionalProperties": False
+            }
+        ),
+        types.Tool(
+            name="list_projects",
+            description=(
+                "List all known projects and their status.\n"
+                "Shows project paths, last activity, and which is currently active."
+            ),
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
+        ),
     ]
 
 
@@ -980,6 +1041,10 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             return await canon_understanding_impl(arguments)
         elif name == "backfill_metadata":
             return await backfill_metadata_impl(arguments)
+        elif name == "set_project_context":
+            return await set_project_context_impl(arguments)
+        elif name == "list_projects":
+            return await list_projects_impl(arguments)
         else:
             return [types.TextContent(type="text", text=json.dumps({
                 "error": f"Unknown tool: {name}",
@@ -2381,6 +2446,184 @@ def cleanup_resources():
                     logger.error(f"Error closing connections: {e}")
     
     logger.info("👋 MCP server shutdown complete")
+
+
+async def set_project_context_impl(arguments: dict) -> List[types.TextContent]:
+    """
+    Set or auto-detect the active project for this Claude session.
+    Implements ADR-0033 Dynamic Workspace Detection.
+    
+    Args:
+        arguments: Dict with optional 'path' key
+        
+    Returns:
+        Project information including name and detection method
+    """
+    global PROJECT_CONTEXT
+    
+    try:
+        path = arguments.get('path')
+        
+        if path:
+            # Explicit project setting
+            result = await PROJECT_CONTEXT.set_project(path)
+            
+            # Trigger indexer for new project if orchestrator is available
+            try:
+                container = await state.get_project_container(result["project"])
+                if hasattr(container, 'ensure_indexer_running'):
+                    await container.ensure_indexer_running(result["path"])
+                    indexer_status = "✅ Indexer starting for this project"
+                else:
+                    indexer_status = "ℹ️ Indexer orchestration not available (ADR-0030 pending)"
+            except Exception as e:
+                indexer_status = f"⚠️ Could not start indexer: {str(e)}"
+            
+            output = f"""✅ Project context set successfully!
+
+**Project:** {result['project']}
+**Path:** {result['path']}
+**Method:** Explicitly set by user
+**Timestamp:** {result['timestamp']}
+
+{indexer_status}
+
+All subsequent tools will operate on this project until you switch to another."""
+            
+            if result.get('previous') and result['previous'] != result['project']:
+                output += f"\n\n_Previous project: {result['previous']}_"
+            
+            return [types.TextContent(type="text", text=output)]
+            
+        else:
+            # Auto-detection
+            result = await PROJECT_CONTEXT.detect_project()
+            
+            confidence = result.get("confidence", 0)
+            if confidence > 0.7:
+                output = f"""🔍 Auto-detected project context:
+
+**Project:** {result['project']}
+**Path:** {result['path']}
+**Detection Method:** {result['method']}
+**Confidence:** {confidence:.0%}
+
+This project will be used for all subsequent operations."""
+                
+                return [types.TextContent(type="text", text=output)]
+            else:
+                # Low confidence - ask user to confirm
+                projects = await PROJECT_CONTEXT.list_projects()
+                
+                if projects:
+                    project_list = "\n".join([
+                        f"  • **{p['name']}** - `{p['path']}`"
+                        for p in projects[:10]  # Limit to 10 for readability
+                    ])
+                else:
+                    project_list = "  _No projects registered yet_"
+                
+                output = f"""⚠️ Project detection uncertain
+
+**Detected:** {result['project']}
+**Path:** {result['path']}
+**Confidence:** {confidence:.0%} (low)
+
+**Known projects:**
+{project_list}
+
+To set your project explicitly, use:
+`set_project_context` with the path to your project directory.
+
+Example: `set_project_context(path="/Users/mkr/local-coding/neural-novelist")`"""
+                
+                return [types.TextContent(type="text", text=output)]
+                
+    except Exception as e:
+        logger.error(f"Error in set_project_context: {e}")
+        return [types.TextContent(
+            type="text",
+            text=f"❌ Error setting project context: {str(e)}"
+        )]
+
+
+async def list_projects_impl(arguments: dict) -> List[types.TextContent]:
+    """
+    List all known projects and their status.
+    Shows which project is currently active.
+    
+    Returns:
+        List of projects with paths and activity information
+    """
+    global PROJECT_CONTEXT
+    
+    try:
+        projects = await PROJECT_CONTEXT.list_projects()
+        
+        if not projects:
+            return [types.TextContent(
+                type="text",
+                text="""📁 No projects registered yet.
+
+Use `set_project_context` with a project path to register your first project.
+
+Example: `set_project_context(path="/path/to/your/project")`"""
+            )]
+        
+        # Format project list
+        output = "📁 **Known Projects:**\n\n"
+        
+        for proj in projects:
+            # Status indicator
+            if proj["is_current"]:
+                marker = "➤ **[ACTIVE]**"
+            elif not proj.get("exists", True):
+                marker = "⚠️ _[MISSING]_"
+            else:
+                marker = "  "
+            
+            output += f"{marker} **{proj['name']}**\n"
+            output += f"   📍 Path: `{proj['path']}`\n"
+            
+            if proj["last_activity"] != "never":
+                # Parse ISO timestamp and format nicely
+                try:
+                    from datetime import datetime
+                    last_active = datetime.fromisoformat(proj["last_activity"])
+                    now = datetime.now()
+                    delta = now - last_active
+                    
+                    if delta.days > 0:
+                        time_str = f"{delta.days} days ago"
+                    elif delta.seconds > 3600:
+                        time_str = f"{delta.seconds // 3600} hours ago"
+                    elif delta.seconds > 60:
+                        time_str = f"{delta.seconds // 60} minutes ago"
+                    else:
+                        time_str = "just now"
+                    
+                    output += f"   🕐 Last active: {time_str}\n"
+                except:
+                    output += f"   🕐 Last active: {proj['last_activity']}\n"
+            
+            output += "\n"
+        
+        # Add usage instructions
+        output += """---
+**To switch projects:**
+Use `set_project_context(path="/path/to/project")`
+
+**To auto-detect current project:**
+Use `set_project_context()` without arguments"""
+        
+        return [types.TextContent(type="text", text=output)]
+        
+    except Exception as e:
+        logger.error(f"Error in list_projects: {e}")
+        return [types.TextContent(
+            type="text",
+            text=f"❌ Error listing projects: {str(e)}"
+        )]
 
 
 async def periodic_cleanup_task():
