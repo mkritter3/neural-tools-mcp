@@ -35,6 +35,7 @@ from migration_manager import MigrationManager, MigrationResult
 from data_migrator import DataMigrator
 # Import canon management for ADR-0031
 from canon_manager import CanonManager
+from metadata_backfiller import MetadataBackfiller
 
 # Configure logging to stderr (NEVER to stdout for STDIO transport)
 logging.basicConfig(
@@ -821,6 +822,22 @@ async def handle_list_tools() -> List[types.Tool]:
             ),
             inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
         ),
+        types.Tool(
+            name="backfill_metadata",
+            description=(
+                "Backfill metadata for already-indexed content.\n"
+                "Adds canonical weights, PRISM scores, and Git metadata to existing data.\n"
+                "Usage: {\"batch_size\": 100, \"dry_run\": false}"
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "batch_size": {"type": "integer", "default": 100, "description": "Number of files to process in each batch"},
+                    "dry_run": {"type": "boolean", "default": False, "description": "If true, only report what would be backfilled"}
+                },
+                "additionalProperties": False
+            }
+        ),
     ]
 
 
@@ -961,6 +978,8 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             return await schema_diff_impl(arguments)
         elif name == "canon_understanding":
             return await canon_understanding_impl(arguments)
+        elif name == "backfill_metadata":
+            return await backfill_metadata_impl(arguments)
         else:
             return [types.TextContent(type="text", text=json.dumps({
                 "error": f"Unknown tool: {name}",
@@ -1203,6 +1222,66 @@ deprecated:
 """
     
     return config
+
+
+async def backfill_metadata_impl(arguments: dict) -> List[types.TextContent]:
+    """
+    Backfill metadata for already-indexed content
+    
+    Args:
+        batch_size: Number of files to process in each batch
+        dry_run: If true, only report what would be backfilled
+    """
+    try:
+        project_name, container, _ = await get_project_context({})
+        project_path = container.project_path
+        
+        batch_size = arguments.get('batch_size', 100)
+        dry_run = arguments.get('dry_run', False)
+        
+        # Create backfiller
+        backfiller = MetadataBackfiller(project_name, project_path, container)
+        
+        if dry_run:
+            # Just count files needing backfill
+            files = await backfiller.get_files_needing_backfill()
+            
+            response = {
+                'mode': 'dry_run',
+                'files_needing_backfill': len(files),
+                'estimated_time_minutes': len(files) * 0.1 / 60  # ~0.1s per file
+            }
+            
+            # Include sample of files if not too many
+            if files and len(files) <= 10:
+                response['sample_files'] = [f['path'] for f in files]
+            elif files:
+                response['sample_files'] = [f['path'] for f in files[:10]]
+                response['sample_note'] = f"Showing first 10 of {len(files)} files"
+            
+            return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
+        
+        # Run the backfill
+        await backfiller.backfill_project(batch_size=batch_size, dry_run=False)
+        
+        response = {
+            'mode': 'executed',
+            'files_processed': backfiller.processed_count,
+            'neo4j_updated': backfiller.updated_neo4j,
+            'qdrant_updated': backfiller.updated_qdrant,
+            'skipped': backfiller.skipped_count,
+            'errors': backfiller.error_count,
+            'success': backfiller.error_count == 0
+        }
+        
+        return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
+        
+    except Exception as e:
+        logger.error(f"backfill_metadata failed: {e}")
+        return [types.TextContent(type="text", text=json.dumps({
+            "status": "error",
+            "message": str(e)
+        }))]
 
 
 async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextContent]:
