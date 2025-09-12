@@ -1002,7 +1002,8 @@ async def canon_understanding_impl(arguments: dict) -> List[types.TextContent]:
     """
     try:
         project_name, container, _ = await get_project_context({})
-        project_path = container.project_path
+        # Get project path from environment or default to current directory
+        project_path = os.getcwd()
         canon_manager = CanonManager(project_name, project_path)
         
         # Load canon configuration
@@ -1234,7 +1235,8 @@ async def backfill_metadata_impl(arguments: dict) -> List[types.TextContent]:
     """
     try:
         project_name, container, _ = await get_project_context({})
-        project_path = container.project_path
+        # Get project path from environment or default to current directory
+        project_path = os.getcwd()
         
         batch_size = arguments.get('batch_size', 100)
         dry_run = arguments.get('dry_run', False)

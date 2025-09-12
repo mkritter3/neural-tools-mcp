@@ -609,6 +609,29 @@ python3 scripts/run_l9_validation.py
   - `DataMigrator` - Handles data transformations for both databases
 - **Example migrations** provided for React, Redux, and data transformations
 
+### ✅ ADR-0031: Canonical Knowledge Management with Metadata Extraction
+- **Canonical authority levels** via `.canon.yaml` configuration:
+  - Primary sources (weight 0.9-1.0): CLAUDE.md, ADRs, config files
+  - Secondary sources (weight 0.6-0.8): Core service implementations
+  - Reference material (weight 0.3-0.5): Tests, examples
+  - Deprecated/experimental (weight 0.1-0.3): Legacy code, POCs
+- **20+ metadata fields** extracted and stored:
+  - PRISM scores: complexity, dependencies, recency, contextual
+  - Git metadata: last modified, change frequency, author count
+  - Pattern extraction: TODOs, FIXMEs, deprecated markers, security patterns
+  - Code characteristics: async code, type hints, test markers
+  - Canonical markers: @canon, @authority, @source-of-truth
+- **Fast pattern-based extraction** (<1ms per file) instead of LLM
+- **Metadata backfilling** for existing indexed content
+- **MCP tools**:
+  - `canon_understanding` - Get canonical knowledge insights
+  - `backfill_metadata` - Add metadata to existing indexed data
+- **Core components**:
+  - `PatternExtractor` - Regex-based metadata extraction
+  - `GitMetadataExtractor` - Git history and collaboration signals
+  - `CanonManager` - Manages .canon.yaml configuration
+  - `MetadataBackfiller` - Retroactive metadata addition
+
 #### Example Project Schemas:
 
 **React Project:**
