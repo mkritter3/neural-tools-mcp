@@ -1,7 +1,7 @@
 # ADR-0023: LLM-Based Metadata Tagging Container with Gemma 4B
 
 ## Status
-Replaced by Pattern-Based Extraction
+**Superseded** - Replaced by Pattern-Based Extraction (Sep 11, 2025)
 
 ## Context
 
@@ -45,9 +45,22 @@ Manual tagging is impractical for large codebases, and simple pattern matching m
 - Pattern-based extraction achieves 95% of metadata value at 100x speed (<10ms per file)
 - Grok 4 analysis confirmed objective patterns > subjective LLM interpretation for code
 
-**What we implemented instead**:
-- Fast regex-based metadata extraction
-- 12 metadata fields including dependencies, public API, type hints, TODO count
+**What we implemented instead (runs in-process in the indexer)**:
+- Fast regex-based metadata extraction in `MetadataTaggerClient._tag_with_patterns()`
+- No container needed - runs directly in the indexer process
+- 12 optimal metadata fields based on Grok 4 analysis:
+  - **Dependencies**: Package imports (critical for GraphRAG relationships)
+  - **Public API**: Non-underscore prefixed exports
+  - **Has type hints**: Boolean for type annotation presence
+  - **TODO count**: TODO/FIXME/HACK/XXX occurrences
+  - **Has I/O operations**: File/network/DB operation detection
+  - **Is async-heavy**: >50% async functions
+  - **Line count**: File size reference
+  - **Component type**: service/model/utility/config/test/entrypoint
+  - **Status**: active/deprecated/experimental
+  - **Key concepts**: async/neural/mcp/api/database/cache/queue/auth
+  - **Complexity score**: Based on lines/classes/functions/try blocks
+  - **Answers questions**: What questions this code can answer
 - Deterministic, reliable, no external service needed
 - See `async_preprocessing_pipeline.py` for implementation
 

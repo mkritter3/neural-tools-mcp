@@ -30,8 +30,8 @@ Implement a multi-stage async preprocessing pipeline with queue-based architectu
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐     ┌──────────────────┐
 │  File Watcher   │────▶│  Preprocessing   │────▶│  Metadata       │────▶│   Embedding      │
-│   (Watchdog)    │     │     Queue        │     │  Tagging        │     │   Generation     │
-└─────────────────┘     └──────────────────┘     │  (Gemma 4B)     │     │   (Nomic)        │
+│   (Watchdog)    │     │     Queue        │     │  Extraction     │     │   Generation     │
+└─────────────────┘     └──────────────────┘     │  (Patterns)     │     │   (Nomic)        │
                               │                   └─────────────────┘     └──────────────────┘
                               │                            │                        │
                               ▼                            ▼                        ▼
@@ -40,6 +40,8 @@ Implement a multi-stage async preprocessing pipeline with queue-based architectu
                         │  (Raw Files)     │     │  (Tagged Files)  │     │  (Embeddings)    │
                         └──────────────────┘     └──────────────────┘     └──────────────────┘
 ```
+
+**ACTUAL IMPLEMENTATION**: Pattern-based extraction runs in-process within the indexer, no separate container needed
 
 ### Queue Design
 
