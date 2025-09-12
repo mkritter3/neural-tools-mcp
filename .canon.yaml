@@ -16,12 +16,27 @@ primary:
   - path: ".mcp.json"
     weight: 0.9
     description: "MCP server configuration - Source of truth for connections"
+  
+  # Example: Add your project's main README as primary source
+  # - path: "README.md"
+  #   weight: 0.95
+  #   description: "Project documentation and setup instructions"
 
 # Secondary sources (high trust but not absolute)
 secondary:
   - pattern: "neural-tools/src/servers/services/*.py"
     weight: 0.75
     description: "Core service implementations"
+  
+  # Example: Add your main application code
+  # - pattern: "src/core/**/*.py"
+  #   weight: 0.8
+  #   description: "Core business logic"
+  
+  # Example: Add API definitions
+  # - pattern: "src/api/routes/*.py"
+  #   weight: 0.75
+  #   description: "API endpoint definitions"
     
   - pattern: "neural-tools/src/neural_mcp/*.py"
     weight: 0.7
