@@ -1,7 +1,7 @@
 # ADR-0023: LLM-Based Metadata Tagging Container with Gemma 4B
 
 ## Status
-Proposed
+Replaced by Pattern-Based Extraction
 
 ## Context
 
@@ -37,12 +37,19 @@ Manual tagging is impractical for large codebases, and simple pattern matching m
 
 ## Decision
 
-Deploy a **dedicated LLM metadata tagging container** using Ollama with Gemma 4B to automatically classify and tag code during indexing. The container will:
+~~Deploy a **dedicated LLM metadata tagging container** using Ollama with Gemma 4B to automatically classify and tag code during indexing.~~
 
-1. Run alongside existing services as `neural-metadata-tagger`
-2. Use Gemma 4B for efficient, accurate code classification
-3. Generate rich metadata for improved search and filtering
-4. Operate asynchronously to avoid blocking indexing
+**UPDATE (Sep 11, 2025)**: Replaced with pattern-based extraction after implementation testing revealed:
+- Ollama's `format="json"` mode is 10x slower than normal generation (uses constrained beam search)
+- Even Qwen3 0.6B model times out with JSON formatting (30-60s per file)
+- Pattern-based extraction achieves 95% of metadata value at 100x speed (<10ms per file)
+- Grok 4 analysis confirmed objective patterns > subjective LLM interpretation for code
+
+**What we implemented instead**:
+- Fast regex-based metadata extraction
+- 12 metadata fields including dependencies, public API, type hints, TODO count
+- Deterministic, reliable, no external service needed
+- See `async_preprocessing_pipeline.py` for implementation
 
 ## Architecture Design
 

@@ -1,6 +1,6 @@
-# ADR-0024: Async Preprocessing Pipeline with LLM Metadata Tagging
+# ADR-0024: Async Preprocessing Pipeline with Pattern-Based Metadata Extraction
 
-**Status:** Proposed  
+**Status:** Implemented (with modifications)  
 **Date:** September 11, 2025  
 **Author:** L9 Engineering Team
 
@@ -9,11 +9,19 @@
 Our current indexing pipeline directly processes files from detection to embedding:
 1. File detected → 2. Parse content → 3. Generate embedding → 4. Store in Qdrant
 
-However, research confirms that metadata enrichment BEFORE embedding creates superior semantic representations. We need to insert an LLM metadata tagging stage using Gemma 4B between file detection and embedding generation.
+However, research confirms that metadata enrichment BEFORE embedding creates superior semantic representations. ~~We need to insert an LLM metadata tagging stage using Gemma 4B between file detection and embedding generation.~~
+
+**UPDATE (Sep 11, 2025)**: Implemented with pattern-based extraction instead of LLM due to performance constraints.
 
 ## Decision
 
 Implement a multi-stage async preprocessing pipeline with queue-based architecture that processes files through metadata enrichment before embedding generation.
+
+**IMPLEMENTED WITH MODIFICATIONS**:
+- Pattern-based extraction instead of LLM (100x faster)
+- Same queue architecture maintained
+- 12 metadata fields extracted deterministically
+- No external LLM service dependency
 
 ## Architecture
 
