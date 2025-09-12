@@ -78,6 +78,10 @@ class ServiceContainer:
         self.auth_service = None    # OAuth2/JWT authentication
         self.error_handler = None   # Structured error handling/logging
         self.health_monitor = None  # Service health checks and metrics
+        
+        # ADR-0030: Multi-container indexer orchestration
+        # Manages lifecycle of per-project indexer containers
+        self.indexer_orchestrator = None  # Lazy-loaded when needed
     
     async def get_redis_cache_client(self):
         """Get async Redis client for caching"""
@@ -814,6 +818,49 @@ class ServiceContainer:
         if not self.qdrant_client:
             self.ensure_qdrant_client()
         return self.qdrant_client
+    
+    async def ensure_indexer_running(self, project_path: str = None):
+        """
+        Ensure indexer container is running for this project
+        Implements ADR-0030 multi-container orchestration
+        
+        Args:
+            project_path: Absolute path to project directory
+                         If None, uses current working directory
+        
+        Returns:
+            Container ID of the running indexer
+        """
+        if not self.indexer_orchestrator:
+            from servers.services.indexer_orchestrator import IndexerOrchestrator
+            self.indexer_orchestrator = IndexerOrchestrator()
+            await self.indexer_orchestrator.initialize()
+            logger.info("IndexerOrchestrator initialized")
+            
+        # Use provided path or current directory
+        if not project_path:
+            project_path = os.getcwd()
+            
+        # Ensure indexer is running
+        container_id = await self.indexer_orchestrator.ensure_indexer(
+            self.project_name,
+            project_path
+        )
+        
+        logger.info(f"Indexer container for {self.project_name} is running: {container_id[:12]}")
+        return container_id
+    
+    async def get_indexer_status(self):
+        """
+        Get status of all running indexers
+        
+        Returns:
+            Dict with indexer status information
+        """
+        if not self.indexer_orchestrator:
+            return {"status": "orchestrator_not_initialized"}
+            
+        return await self.indexer_orchestrator.get_status()
 
 
 # ALL MOCKS REMOVED! 

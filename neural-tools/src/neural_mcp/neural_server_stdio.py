@@ -290,6 +290,17 @@ class MultiProjectServiceState:
             # Initialize Phase 3 security and monitoring if available
             if hasattr(container, 'initialize_security_services'):
                 await container.initialize_security_services()
+            
+            # ADR-0030: Auto-start indexer container for this project
+            if hasattr(container, 'ensure_indexer_running'):
+                try:
+                    # Use current working directory as project path
+                    project_path = os.getcwd()
+                    logger.info(f"🚀 [Instance {self.instance_id}] Starting indexer for {project_name} at {project_path}")
+                    await container.ensure_indexer_running(project_path)
+                except Exception as e:
+                    logger.error(f"Failed to start indexer for {project_name}: {e}")
+                    # Continue without indexer - non-fatal error
         
         return container
     

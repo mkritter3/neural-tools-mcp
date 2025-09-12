@@ -72,13 +72,13 @@ else
     fi
 fi
 
-# Check/Build indexer service
-if docker images | grep -q "l9-indexer.*latest"; then
+# Check/Build indexer service (with ADR-0029 multi-project isolation)
+if docker images | grep -q "l9-neural-indexer.*production"; then
     echo -e "${GREEN}✓ Indexer service image already exists${NC}"
 else
     if [ -f "docker/Dockerfile.indexer" ]; then
-        echo "Building indexer service..."
-        docker build -f docker/Dockerfile.indexer -t l9-indexer:latest . --quiet
+        echo "Building indexer service with multi-project isolation..."
+        docker build -f docker/Dockerfile.indexer -t l9-neural-indexer:production . --quiet
     fi
 fi
 

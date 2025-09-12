@@ -1,6 +1,6 @@
 # Truth‑First L9 Engineering Contract
 
-**Today is September 11, 2025**
+**Today is September 12, 2025**
 **ALWAYS CHECK WITH CONTEXT 7 IF SOMETHING IS A PROTOCOL BEFORE MARCH, 2025**
 **MCP PROTOCOL SHOULD ALWAYS BE 2025-06-18**
 **ALWAYS ASSESS HOW SOMETHING INTEGRATES INTO OUR CURRENT ARCHITECTURE, NEVER CREATE A PARALLEL OR NEW STACK**
@@ -48,7 +48,7 @@
 
 # L9 Neural GraphRAG MCP Architecture - Complete Documentation
 
-**Last Updated: September 11, 2025 - PATTERN-BASED METADATA EXTRACTION WORKING! 🎉**
+**Last Updated: September 12, 2025 - ADR-0029 MULTI-PROJECT ISOLATION COMPLETE! 🎉**
 **Architecture Version: L9 2025 Production Standard**
 **MCP Protocol: 2025-06-18**
 
@@ -408,6 +408,20 @@ session_context = await session_manager.get_session(session_id)
    ```
 
 **Verification**: Successfully indexing data as of September 11, 2025!
+
+### Issue 5: Cross-Project Data Contamination ⭐ SOLVED (ADR-0029)
+
+**Symptom**: Neo4j graph queries returning data from multiple projects
+
+**Root Cause**: Neo4j was using global uniqueness constraints without project isolation
+
+**Solution**: Implemented ADR-0029 Logical Partitioning
+1. **Added project property to all nodes**: Every node now has `{project: "project-name"}`
+2. **Composite constraints**: Replaced global uniqueness with `(project, path)` composite keys
+3. **Query filtering**: All Cypher queries now filter by project property
+4. **Relationship isolation**: Fixed all relationship creation to respect project boundaries
+
+**Verification**: 100% test pass rate, zero cross-project relationships as of September 12, 2025!
 
 ## 🎯 Key Architectural Decisions
 

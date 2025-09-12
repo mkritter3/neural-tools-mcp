@@ -26,9 +26,10 @@ chmod +x setup.sh
 **Instant semantic code search** with:
 - **Pattern-based metadata extraction** (<10ms per file)
 - **Neural embeddings** (Nomic 768-dim vectors)
-- **GraphRAG** (Neo4j relationships)
-- **Vector search** (Qdrant similarity)
+- **GraphRAG** (Neo4j relationships with full project isolation)
+- **Vector search** (Qdrant similarity with per-project collections)
 - **Auto project detection** from directory
+- **Multi-project support** with complete data isolation (ADR-0029)
 
 ## 🛠️ Architecture
 

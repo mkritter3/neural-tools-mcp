@@ -166,102 +166,10 @@ services:
       start_period: 120s
     restart: unless-stopped
 
-  # Neural Indexer Sidecar Service
-  l9-indexer:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.indexer
-    container_name: l9-neural-indexer
-    environment:
-      # Service Configuration
-      - PROJECT_PATH=/workspace
-      - PROJECT_NAME=${PROJECT_NAME:-default}
-      - INITIAL_INDEX=true
-      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
-      
-      # Database Connections
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USERNAME=neo4j
-      - NEO4J_PASSWORD=graphrag-password
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      
-      # Embedding Service (External Container)
-      - EMBEDDING_SERVICE_HOST=embeddings
-      - EMBEDDING_SERVICE_PORT=8000
-      
-      # Performance Tuning
-      - BATCH_SIZE=10
-      - DEBOUNCE_INTERVAL=2.0
-      - MAX_QUEUE_SIZE=1000
-      
-      # Vector Configuration
-      - EMBED_DIM=768
-      
-      # Feature Flags
-      - STRUCTURE_EXTRACTION_ENABLED=true
-      
-      # Monitoring
-      - ENABLE_METRICS=true
-      - METRICS_PORT=8080
-      
-      # File watching optimization for Docker
-      - WATCHDOG_FORCE_POLLING=1
-      
-    volumes:
-      # Project Source (Read-Only) - override with PROJECT_HOST_DIR to mount any directory
-      - ${PROJECT_HOST_DIR:-.}:/workspace:ro
-      # Persistent State
-      - indexer_state:/app/state
-      # Configuration
-      - ./neural-tools/config:/app/config:ro
-      # Logs
-      - indexer_logs:/app/logs
-      
-    ports:
-      - "48080:8080"  # Health/Metrics endpoint
-      
-    depends_on:
-      neo4j:
-        condition: service_healthy
-      qdrant:
-        condition: service_started  # Changed from service_healthy since health check disabled
-      redis-queue:
-        condition: service_healthy
-      redis-cache:
-        condition: service_healthy
-      embeddings:
-        condition: service_healthy
-        
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-      
-    restart: unless-stopped
-    
-    # Resource Limits
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "1.0"
-        reservations:
-          memory: 512M
-          cpus: "0.5"
-          
-    # Security
-    user: "1000:1000"
-    security_opt:
-      - no-new-privileges:true
-    # NOTE: Removed read_only and tmpfs on /app/state & /app/logs to maintain persistence
-    tmpfs:
-      - /tmp:size=100M,noexec,nosuid,nodev
-      
-    networks:
-      - default
+  # ADR-0030: Indexer containers are now dynamically managed by IndexerOrchestrator
+  # Each project gets its own indexer container spawned on-demand by MCP
+  # The static l9-indexer service has been removed to eliminate parallel stacks
+  # See docs/adr/0030-multi-container-indexer-orchestration.md for details
 
   # Optional: Monitoring stack
   prometheus:
@@ -297,10 +205,8 @@ volumes:
   prometheus_data:
   grafana_data:
   models:
-  indexer_state:
-    driver: local
-  indexer_logs:
-    driver: local
+  # ADR-0030: Removed indexer_state and indexer_logs volumes
+  # Each dynamic indexer container manages its own state
   gemma_models:  # Ollama model storage
     driver: local
 
