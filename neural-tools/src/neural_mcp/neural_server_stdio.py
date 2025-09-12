@@ -1831,6 +1831,28 @@ async def indexer_status_impl() -> List[types.TextContent]:
         )]
 
 
+async def _wait_for_indexer_ready(port: int, timeout: int = 30) -> bool:
+    """Wait for indexer container to be ready by checking health endpoint"""
+    import httpx
+    import asyncio
+    
+    for attempt in range(timeout):
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(f"http://localhost:{port}/health")
+                if response.status_code == 200:
+                    logger.info(f"✅ Indexer on port {port} is ready (took {attempt + 1}s)")
+                    return True
+        except (httpx.ConnectError, httpx.TimeoutException):
+            # Container not ready yet, wait
+            pass
+        
+        await asyncio.sleep(1)
+    
+    logger.warning(f"⚠️ Indexer on port {port} not ready after {timeout}s")
+    return False
+
+
 async def reindex_path_impl(path: str) -> List[types.TextContent]:
     """Trigger reindexing of a specific path via project-specific indexer container"""
     import httpx
@@ -1868,6 +1890,22 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
                     "status": "error",
                     "error": f"Could not determine port for {project_name} indexer",
                     "project": project_name
+                }, indent=2)
+            )]
+        
+        # CRITICAL: Wait for container to be fully ready before attempting connection
+        logger.info(f"⏳ Waiting for indexer on port {indexer_port} to be ready...")
+        is_ready = await _wait_for_indexer_ready(indexer_port, timeout=30)
+        
+        if not is_ready:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error",
+                    "error": f"Indexer on port {indexer_port} did not become ready within 30 seconds",
+                    "project": project_name,
+                    "container_id": container_id[:12] if container_id else None,
+                    "troubleshooting": "Container may be building or have startup issues"
                 }, indent=2)
             )]
         
