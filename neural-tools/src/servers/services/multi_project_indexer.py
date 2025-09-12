@@ -80,6 +80,10 @@ class MultiProjectIndexer:
         logger.info(f"Discovering projects under {self.base_path}...")
         projects = []
         
+        # Directories to skip (too large or not code projects)
+        skip_dirs = {'Books', 'Novel-Projects', 'zz Archived', 'zip files', 
+                     'north-star-aws', 'north-star-aws-flow'}  # Too many files
+        
         # Check if base_path itself is a project
         base_project = self._analyze_project(self.base_path)
         if base_project and base_project.is_valid:
@@ -91,6 +95,11 @@ class MultiProjectIndexer:
         if self.base_path.is_dir():
             for path in self.base_path.iterdir():
                 if path.is_dir() and not path.name.startswith('.'):
+                    # Skip large non-code directories
+                    if path.name in skip_dirs:
+                        logger.info(f"Skipping directory: {path.name} (not a code project)")
+                        continue
+                    
                     project_info = self._analyze_project(path)
                     if project_info and project_info.is_valid:
                         projects.append(project_info)
