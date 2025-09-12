@@ -274,8 +274,9 @@ class IndexerRunner:
         project_path = args[0] if args else "/workspace"
         
         # Parse additional arguments
-        project_name = "default"
-        initial_index = False
+        # Check environment variables first, then command line
+        project_name = os.getenv('PROJECT_NAME', "default")
+        initial_index = os.getenv('INITIAL_INDEX', 'false').lower() == 'true'
         
         i = 1
         while i < len(args):
