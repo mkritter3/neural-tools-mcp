@@ -298,6 +298,146 @@ Current Implementation:
 
 The architecture is correct and mostly implemented. The main issue is a technical problem with async Neo4j query execution that prevents graph context from being included in results.
 
+## Fix Plan for Graph Context Retrieval
+
+### Problem Analysis
+
+The graph context retrieval fails with error: "Failed to fetch graph context for chunk... : 0"
+
+**Root Cause**: The neo4j_service's `execute_cypher` method is returning 0 (error code) instead of results when called from `_fetch_graph_context`.
+
+**Evidence**:
+1. Direct synchronous Neo4j query works perfectly and returns Functions
+2. Async execution through service layer returns 0
+3. The Cypher query itself is correct (verified by direct testing)
+
+### Implementation Plan
+
+#### Phase 1: Diagnose Async Issue (Immediate)
+
+1. **Check Parameter Injection**:
+   ```python
+   # In neo4j_service.execute_cypher
+   # The method auto-injects 'project' parameter
+   # But _fetch_graph_context passes 'chunk_id'
+   # Verify both parameters are properly merged
+   ```
+
+2. **Fix Parameter Passing**:
+   ```python
+   # In hybrid_retriever._fetch_graph_context line 195-197
+   result = await self.container.neo4j.execute_cypher(cypher, {
+       'chunk_id': chunk_id,
+       'project': self.container.project_name  # Explicitly pass project
+   })
+   ```
+
+#### Phase 2: Add Proper Error Handling (Short-term)
+
+1. **Enhanced Error Logging**:
+   ```python
+   async def _fetch_graph_context(self, chunk_ids, max_hops):
+       contexts = []
+       for chunk_id in chunk_ids:
+           try:
+               result = await self.container.neo4j.execute_cypher(...)
+               if result is None or result == 0:
+                   logger.error(f"Neo4j returned {result} for chunk {chunk_id}")
+                   contexts.append({})  # Empty context instead of None
+               else:
+                   # Process result normally
+           except Exception as e:
+               logger.error(f"Graph context failed: {e}", exc_info=True)
+               contexts.append({})
+       return contexts
+   ```
+
+2. **Fallback to Direct Query**:
+   ```python
+   # If service layer fails, try direct driver
+   if not result:
+       with self.container.neo4j.driver.session() as session:
+           result = session.run(cypher, params).data()
+   ```
+
+#### Phase 3: Fix Service Layer (Long-term)
+
+1. **Investigate neo4j_service.execute_cypher**:
+   - Check if it's properly handling async/await
+   - Verify parameter merging logic
+   - Ensure it returns proper result format
+
+2. **Potential Issues to Check**:
+   ```python
+   # In neo4j_service.execute_cypher
+   async def execute_cypher(self, query, params=None):
+       # Issue 1: Parameter injection might override user params
+       params = params or {}
+       params['project'] = self.project_name  # This might override
+
+       # Issue 2: Error handling might return 0 instead of empty list
+       try:
+           result = await self._run_query(query, params)
+           return result
+       except:
+           return 0  # Should return [] or raise
+   ```
+
+3. **Recommended Fix**:
+   ```python
+   async def execute_cypher(self, query, params=None):
+       # Merge params properly
+       final_params = {'project': self.project_name}
+       if params:
+           final_params.update(params)
+
+       # Return empty list on error, not 0
+       try:
+           async with self.driver.session() as session:
+               result = await session.run(query, final_params)
+               return [record.data() for record in result]
+       except Exception as e:
+           logger.error(f"Cypher execution failed: {e}")
+           return []  # Return empty list, not 0
+   ```
+
+### Testing Strategy
+
+1. **Unit Test for neo4j_service**:
+   ```python
+   async def test_execute_cypher_with_params():
+       service = Neo4jService(project_name="test")
+       result = await service.execute_cypher(
+           "MATCH (c:CodeChunk {id: $chunk_id}) RETURN c",
+           {"chunk_id": "test123"}
+       )
+       assert result is not None
+       assert result != 0
+   ```
+
+2. **Integration Test for Graph Context**:
+   ```python
+   async def test_graph_context_retrieval():
+       retriever = HybridRetriever(container)
+       results = await retriever.find_similar_with_context(
+           "test", include_graph_context=True
+       )
+       assert results[0].get('graph_context') is not None
+   ```
+
+### Success Criteria
+
+- [ ] Graph context returns actual data, not None or 0
+- [ ] No "Failed to fetch graph context" errors in logs
+- [ ] MCP GraphRAG includes functions, classes, and relationships in response
+- [ ] All existing tests continue to pass
+
+### Timeline
+
+- **Immediate** (5 min): Try explicit project parameter passing
+- **Short-term** (30 min): Add error handling and fallback
+- **Long-term** (2 hours): Fix service layer properly with tests
+
 ---
 *Confidence: 95%*
 *Assumptions: Tree-sitter grammars available for target languages, Neo4j performance adequate for graph size*
