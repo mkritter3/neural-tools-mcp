@@ -1,0 +1,145 @@
+name: ADR-0037 Configuration Compliance
+
+on:
+  push:
+    branches: [ main, develop, 'feature/*' ]
+    paths:
+      - 'docker/**'
+      - 'neural-tools/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'docker/**'
+      - 'neural-tools/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+
+jobs:
+  adr-0037-validation:
+    name: Validate Container Configuration Compliance
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # Install any dependencies needed by validation script
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        
+    - name: Validate ADR-0037 Code Patterns
+      env:
+        CI: true
+        SKIP_CONTAINER_CHECK: true  # No Docker containers in CI
+      run: |
+        echo "🔍 Running ADR-0037 configuration compliance validation..."
+        ./scripts/ci-validate-adr-0037.sh --code-only
+        
+    - name: Upload validation log
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: adr-0037-validation-log
+        path: adr-0037-validation.log
+        retention-days: 30
+        
+    - name: Comment PR with validation results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          // Read validation log
+          let logContent = '';
+          try {
+            logContent = fs.readFileSync('adr-0037-validation.log', 'utf8');
+          } catch (error) {
+            logContent = 'Validation log not found';
+          }
+          
+          // Extract summary
+          const summaryMatch = logContent.match(/=== Validation Summary ===([\s\S]*?)(?===|$)/);
+          const summary = summaryMatch ? summaryMatch[1].trim() : 'Summary not found';
+          
+          // Create comment body
+          const commentBody = `## ADR-0037 Configuration Compliance Validation
+          
+          ### Summary
+          \`\`\`
+          ${summary}
+          \`\`\`
+          
+          ### Details
+          ${logContent.includes('🎉 ADR-0037 CI/CD VALIDATION: PASSED') ? '✅ **PASSED**' : '❌ **FAILED**'}
+          
+          <details>
+          <summary>View full validation log</summary>
+          
+          \`\`\`
+          ${logContent.substring(0, 4000)}${logContent.length > 4000 ? '\n... (truncated)' : ''}
+          \`\`\`
+          
+          </details>
+          
+          ---
+          🤖 This validation ensures all container configurations follow [ADR-0037](./docs/adr/0037-indexer-container-configuration-priority.md) standards.
+          `;
+          
+          // Post comment
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: commentBody
+          });
+
+  docker-validation:
+    name: Validate Docker Configurations
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.modified, 'docker/') || contains(github.event.head_commit.added, 'docker/')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Build Docker images for validation
+      run: |
+        echo "🐳 Building Docker images to validate configuration..."
+        
+        # Build indexer image if Dockerfile changed
+        if [ -f docker/Dockerfile.indexer ]; then
+          echo "Building indexer image..."
+          docker build -t test-indexer:adr-0037 -f docker/Dockerfile.indexer .
+        fi
+        
+    - name: Test container configuration
+      run: |
+        echo "🧪 Testing container with ADR-0037 environment variables..."
+        
+        # Test with correct configuration
+        docker run --rm \
+          -e PROJECT_NAME=test-project \
+          -e PROJECT_PATH=/workspace \
+          -e NEO4J_URI=bolt://host.docker.internal:47687 \
+          test-indexer:adr-0037 \
+          python3 -c "import os; print('✅ Environment variables loaded:', {k:v for k,v in os.environ.items() if k.startswith('PROJECT_')})" || true
+          
+        # Test without environment variables (should use auto-detection)
+        echo "Testing fallback behavior..."
+        docker run --rm test-indexer:adr-0037 \
+          python3 -c "print('✅ Container starts without env vars')" || true

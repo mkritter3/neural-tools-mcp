@@ -184,9 +184,14 @@ class ADR0037Validator:
             non_compliant_patterns = [
                 (r'directories\[0\]', 'Using filesystem order instead of env vars'),
                 (r'os\.path\.basename.*selected_dir', 'Deriving project name from directory'),
-                (r'localhost:\d+', 'Using localhost instead of host.docker.internal'),
                 (r'172\.18\.0\.\d+', 'Using Docker internal IP'),
             ]
+            
+            # Only flag localhost in container-related code (docker/ directory)
+            if 'docker/' in str(file_path):
+                non_compliant_patterns.append(
+                    (r'localhost:\d+', 'Using localhost instead of host.docker.internal (container code)')
+                )
             
             try:
                 file_relative = file_path.relative_to(Path.cwd())
