@@ -43,6 +43,8 @@ class ProjectContextManager:
         self.detection_hints: List[str] = []  # Recent file accesses
         self.last_activity: Dict[str, datetime] = {}
         self._instance_id = None  # Will be set by MCP server
+        self.switch_lock = asyncio.Lock()  # Add lock for concurrent safety (ADR-0043)
+        self.container = None  # Store ServiceContainer here (Gemini: correct pattern)
         self._load_registry()
         logger.info("🎯 ProjectContextManager initialized")
     
@@ -443,10 +445,10 @@ class ProjectContextManager:
     async def switch_project(self, project_name: str) -> Dict:
         """
         Switch to a known project by name.
-        
+
         Args:
             project_name: Name of a registered project
-            
+
         Returns:
             Project info or error if not found
         """
@@ -458,7 +460,7 @@ class ProjectContextManager:
                 raise ValueError(f"Project path no longer exists: {project_path}")
         else:
             # Try to find similar project names
-            similar = [p for p in self.project_registry.keys() 
+            similar = [p for p in self.project_registry.keys()
                       if project_name.lower() in p.lower()]
             if similar:
                 raise ValueError(f"Project '{project_name}' not found. "
@@ -466,7 +468,80 @@ class ProjectContextManager:
             else:
                 raise ValueError(f"Project '{project_name}' not found. "
                                f"Use list_projects to see available projects.")
-    
+
+    async def switch_project_with_teardown(self, new_project_path: str) -> Dict:
+        """
+        Complete project context switch with full teardown/rebuild (ADR-0043)
+
+        Args:
+            new_project_path: Path to the new project directory
+
+        Returns:
+            Project info dict with name, path, and status
+        """
+        async with self.switch_lock:  # Grok: Critical for preventing race conditions
+            # Phase 1: Teardown
+            await self._teardown_current_context()
+
+            # Phase 2: Update
+            self.current_project = self._detect_project(new_project_path)
+
+            # Phase 3: Rebuild
+            await self._rebuild_context()
+
+            # Gemini: Must return project dict for handler
+            return self.current_project
+
+    def _detect_project(self, project_path: str) -> Dict:
+        """
+        Detect project info from path
+
+        Args:
+            project_path: Path to project directory
+
+        Returns:
+            Dict with project name and path
+        """
+        path = Path(project_path).resolve()
+
+        # Run synchronous detection in async context
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            # Convert async method to sync for compatibility
+            future = asyncio.create_task(self._detect_project_name(path))
+            project_name = asyncio.run_coroutine_threadsafe(future, loop).result(timeout=5)
+        except:
+            # Fallback to directory name
+            project_name = self._sanitize_name(path.name)
+
+        return {
+            'name': project_name,
+            'path': str(path)
+        }
+
+    async def _teardown_current_context(self):
+        """Delegate teardown to ServiceContainer for encapsulation"""
+        if self.container:
+            await self.container.teardown()  # Gemini: Better encapsulation
+            self.container = None
+
+    async def _rebuild_context(self):
+        """Initialize fresh ServiceContainer with validation"""
+        from servers.services.service_container import ServiceContainer
+
+        self.container = ServiceContainer(
+            project_name=self.current_project['name']
+        )
+
+        # Initialize the container
+        await self.container.initialize_all_services()
+
+        # Grok: Validate connections after rebuild
+        if hasattr(self.container, 'verify_connections'):
+            if not await self.container.verify_connections():
+                raise RuntimeError(f"Failed to initialize connections for {self.current_project['name']}")
+
     def clear_hints(self):
         """Clear detection hints (useful for testing)"""
         self.detection_hints.clear()

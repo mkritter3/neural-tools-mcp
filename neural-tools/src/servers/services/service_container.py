@@ -871,14 +871,98 @@ class ServiceContainer:
     async def get_indexer_status(self):
         """
         Get status of all running indexers
-        
+
         Returns:
             Dict with indexer status information
         """
         if not self.indexer_orchestrator:
             return {"status": "orchestrator_not_initialized"}
-            
+
         return await self.indexer_orchestrator.get_status()
+
+    async def teardown(self):
+        """Gracefully close all managed connections and resources
+
+        Implements ADR-0043: Project Context Lifecycle Management
+        Ensures proper cleanup when switching projects to prevent:
+        - Connection leaks
+        - Stale state retention
+        - Cross-project data contamination
+        """
+        logger.info("Tearing down service container...")
+
+        # Close Neo4j async driver (validated by Gemini)
+        try:
+            if self.neo4j and hasattr(self.neo4j, 'client') and self.neo4j.client.driver:
+                await self.neo4j.client.driver.close()
+                logger.info("Neo4j connection closed")
+        except Exception as e:
+            logger.error(f"Failed to close Neo4j connection: {e}")
+
+        # Close Qdrant client (Grok: handle both sync and async)
+        try:
+            if hasattr(self, 'qdrant') and self.qdrant:
+                if hasattr(self.qdrant, 'close'):
+                    # Check if async client
+                    if 'Async' in str(type(self.qdrant)):
+                        await self.qdrant.close()
+                    else:
+                        self.qdrant.close()
+                    logger.info("Qdrant client closed")
+        except Exception as e:
+            logger.error(f"Failed to close Qdrant client: {e}")
+
+        # Clear caches
+        if hasattr(self, 'cache'):
+            self.cache.clear()
+            logger.info("Caches cleared")
+
+        # Close Redis connections
+        try:
+            if self._redis_cache_client:
+                await self._redis_cache_client.close()
+                logger.info("Redis cache connection closed")
+        except Exception as e:
+            logger.error(f"Failed to close Redis cache: {e}")
+
+        try:
+            if self._redis_queue_client:
+                await self._redis_queue_client.close()
+                logger.info("Redis queue connection closed")
+        except Exception as e:
+            logger.error(f"Failed to close Redis queue: {e}")
+
+        # Close job queue
+        try:
+            if self._job_queue:
+                await self._job_queue.close()
+                logger.info("Job queue closed")
+        except Exception as e:
+            logger.error(f"Failed to close job queue: {e}")
+
+        # Stop indexer orchestrator
+        try:
+            if self.indexer_orchestrator:
+                await self.indexer_orchestrator.cleanup()
+                logger.info("Indexer orchestrator cleaned up")
+        except Exception as e:
+            logger.error(f"Failed to cleanup indexer orchestrator: {e}")
+
+        # Clear all references
+        self.neo4j = None
+        self.qdrant = None
+        self.nomic = None
+        self._redis_cache_client = None
+        self._redis_queue_client = None
+        self._job_queue = None
+        self._dlq_service = None
+        self._cache_warmer = None
+        self._cache_metrics = None
+        self.indexer_orchestrator = None
+        self.initialized = False
+        self._pool_initialized = False
+
+        logger.info("Service container teardown complete")
 
 
 # ALL MOCKS REMOVED! 

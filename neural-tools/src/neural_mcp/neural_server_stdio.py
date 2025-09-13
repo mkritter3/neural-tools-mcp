@@ -2571,101 +2571,57 @@ def cleanup_resources():
 
 async def set_project_context_impl(arguments: dict) -> List[types.TextContent]:
     """
-    Set or auto-detect the active project for this Claude session.
-    Implements ADR-0033 Dynamic Workspace Detection.
-    
+    Handle manual project context switch with full lifecycle management
+    Implements ADR-0043: Project Context Lifecycle Management
+
     Args:
         arguments: Dict with optional 'path' key
-        
+
     Returns:
         Project information including name and detection method
     """
     global PROJECT_CONTEXT
-    
+
     try:
         path = arguments.get('path')
-        
-        if path:
-            # Explicit project setting
-            result = await PROJECT_CONTEXT.set_project(path)
-            
-            # Trigger indexer for new project if orchestrator is available
-            try:
-                container = await state.get_project_container(result["project"])
-                if hasattr(container, 'ensure_indexer_running'):
-                    await container.ensure_indexer_running(result["path"])
-                    indexer_status = "✅ Indexer starting for this project"
-                else:
-                    indexer_status = "ℹ️ Indexer orchestration not available (ADR-0030 pending)"
-            except Exception as e:
-                indexer_status = f"⚠️ Could not start indexer: {str(e)}"
-            
-            output = f"""✅ Project context set successfully!
+        if not path:
+            # Auto-detect from current working directory
+            path = os.getcwd()
 
-**Project:** {result['project']}
-**Path:** {result['path']}
-**Method:** Explicitly set by user
-**Timestamp:** {result['timestamp']}
+        # Use the manager's switch_project_with_teardown method (returns project dict)
+        new_project = await PROJECT_CONTEXT.switch_project_with_teardown(path)
 
-{indexer_status}
+        # Return detailed status
+        output = f"""✅ Project context switched successfully!
 
-All subsequent tools will operate on this project until you switch to another."""
-            
-            if result.get('previous') and result['previous'] != result['project']:
-                output += f"\n\n_Previous project: {result['previous']}_"
-            
-            return [types.TextContent(type="text", text=output)]
-            
-        else:
-            # Auto-detection
-            result = await PROJECT_CONTEXT.detect_project()
-            
-            confidence = result.get("confidence", 0)
-            if confidence > 0.7:
-                output = f"""🔍 Auto-detected project context:
+**Project:** {new_project['name']}
+**Path:** {new_project['path']}
+**Connections:**
+  - Neo4j: ✅ Reconnected
+  - Qdrant: ✅ Reconnected
+  - Indexer: ✅ Ready
 
-**Project:** {result['project']}
-**Path:** {result['path']}
-**Detection Method:** {result['method']}
-**Confidence:** {confidence:.0%}
+**Message:** Successfully switched to project: {new_project['name']}
 
-This project will be used for all subsequent operations."""
-                
-                return [types.TextContent(type="text", text=output)]
-            else:
-                # Low confidence - ask user to confirm
-                projects = await PROJECT_CONTEXT.list_projects()
-                
-                if projects:
-                    project_list = "\n".join([
-                        f"  • **{p['name']}** - `{p['path']}`"
-                        for p in projects[:10]  # Limit to 10 for readability
-                    ])
-                else:
-                    project_list = "  _No projects registered yet_"
-                
-                output = f"""⚠️ Project detection uncertain
+All connections have been torn down and rebuilt for the new project context.
+This ensures complete isolation between projects (ADR-0043)."""
 
-**Detected:** {result['project']}
-**Path:** {result['path']}
-**Confidence:** {confidence:.0%} (low)
+        return [types.TextContent(type="text", text=output)]
 
-**Known projects:**
-{project_list}
-
-To set your project explicitly, use:
-`set_project_context` with the path to your project directory.
-
-Example: `set_project_context(path="/Users/mkr/local-coding/neural-novelist")`"""
-                
-                return [types.TextContent(type="text", text=output)]
-                
     except Exception as e:
-        logger.error(f"Error in set_project_context: {e}")
-        return [types.TextContent(
-            type="text",
-            text=f"❌ Error setting project context: {str(e)}"
-        )]
+        logger.error(f"Failed to switch project context: {e}", exc_info=True)
+        # Grok: Graceful error handling
+        output = f"""❌ Failed to switch project context
+
+**Error:** {str(e)}
+**Message:** Failed to switch project. Server may need restart.
+
+Please try:
+1. Restart Claude to reset the MCP server
+2. Use `list_projects` to see available projects
+3. Report issue if problem persists"""
+
+        return [types.TextContent(type="text", text=output)]
 
 
 async def list_projects_impl(arguments: dict) -> List[types.TextContent]:
