@@ -54,7 +54,7 @@
 
 # L9 Neural GraphRAG MCP Architecture - Complete Documentation
 
-**Last Updated: September 12, 2025 - ADR-0029 MULTI-PROJECT ISOLATION COMPLETE! 🎉**
+**Last Updated: September 12, 2025 - ADR-0038 DOCKER LIFECYCLE MANAGEMENT COMPLETE! 🎉**
 **Architecture Version: L9 2025 Production Standard**
 **MCP Protocol: 2025-06-18**
 
@@ -322,7 +322,7 @@ l9-neural-indexer:sha-a471e44  # Immutable Git SHA tags
 
 # WRONG - Debug suffixes and ad-hoc naming
 l9-neural-indexer:adr-37-fix
-neural-flow-nomic-v2:debug-build-20240912
+neural-flow-nomic-v2:debug-build-20250912
 ```
 
 #### Container Naming Standards
@@ -335,8 +335,8 @@ claude-l9-template-nomic-1
 claude-l9-template-neo4j-1
 
 # WRONG - Debug/development suffixes
-claude-l9-template-indexer-adr-37-1
-l9-neural-indexer-debug-1
+claude-l9-template-indexer-debug-1
+l9-neural-indexer-adr-37-1
 ```
 
 #### Image Lifecycle Rules
@@ -545,7 +545,7 @@ session_context = await session_manager.get_session(session_id)
    docker run --network l9-graphrag-network ...
    ```
 
-**Verification**: Successfully indexing data as of September 11, 2025!
+**Verification**: Successfully indexing data as of September 12, 2025!
 
 ### Issue 5: Cross-Project Data Contamination ⭐ SOLVED (ADR-0029)
 
@@ -824,6 +824,21 @@ python3 scripts/run_l9_validation.py
 **FastAPI Project:**
 - Neo4j: Endpoint, Model, Dependency nodes with VALIDATES, DEPENDS_ON relationships
 - Qdrant: endpoints collection with path, method, response_model fields
+
+### ✅ ADR-0037: Container Configuration Priority Standard
+- **Environment variable prioritization** over auto-detection
+- **Twelve-Factor App compliance** with explicit configuration
+- **Project isolation** preventing wrong directory selection
+- **Validation utilities** for ADR compliance checking
+- **CI/CD integration** for automated validation
+
+### ✅ ADR-0038: Docker Image Lifecycle Management
+- **Semantic versioning** with `vX.Y.Z` format
+- **Immutable Git SHA tags** for audit trail
+- **Production tag management** for automatic updates
+- **Image hygiene policies** (≤3 tags per service)
+- **Phased cleanup procedures** for safe transitions
+- **Self-healing architecture** with ephemeral containers
 
 ## 🚀 L9 MCP Development & Deployment Workflow
 
