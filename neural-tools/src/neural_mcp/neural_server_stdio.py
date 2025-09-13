@@ -87,18 +87,8 @@ class InstanceAwareLogger:
 logger = InstanceAwareLogger(base_logger)
 
 # Constants
-# Auto-detect project from CWD if AUTO_DETECT_PROJECT is set
-if os.environ.get('AUTO_DETECT_PROJECT', 'false').lower() == 'true':
-    # Try to detect project name from current working directory
-    cwd = os.getcwd()
-    # Extract project name from path
-    project_name = os.path.basename(cwd)
-    # Sanitize: lowercase, replace non-alphanumeric with underscore
-    import re
-    project_name = re.sub(r'[^a-z0-9-]', '_', project_name.lower())
-    DEFAULT_PROJECT_NAME = project_name or 'default'
-else:
-    DEFAULT_PROJECT_NAME = os.environ.get('PROJECT_NAME', 'default')
+# ADR-0034: Use ProjectContextManager for dynamic project detection (no hardcoding)
+DEFAULT_PROJECT_NAME = None  # Will be set dynamically by get_project_context()
 LIMITS = {
     "semantic_limit_max": 50,
     "graphrag_limit_max": 25,

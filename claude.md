@@ -646,6 +646,92 @@ python3 scripts/run_l9_validation.py
 - Neo4j: Endpoint, Model, Dependency nodes with VALIDATES, DEPENDS_ON relationships
 - Qdrant: endpoints collection with path, method, response_model fields
 
+## 🚀 L9 MCP Development & Deployment Workflow
+
+**ADR-0034 established the standard workflow for MCP server development and deployment.**
+
+### Development Process
+
+1. **Make changes in this project directory**:
+   ```bash
+   # Work in /Users/mkr/local-coding/claude-l9-template/neural-tools/
+   # All fixes, features, and improvements go here
+   ```
+
+2. **Use development MCP configuration**:
+   ```bash
+   # Set environment to use dev neural-tools with your fixes
+   export CLAUDE_MCP_CONFIG_PATH="$HOME/.claude/mcp-dev-config.json"
+   
+   # Restart Claude - now uses dev neural-tools from this directory
+   ```
+
+3. **Test and validate changes**:
+   ```bash
+   # Test neural tools functionality
+   # Run validation scripts as needed
+   # Verify fixes work correctly
+   ```
+
+### Production Deployment
+
+4. **Deploy to global MCP when ready**:
+   ```bash
+   # Run L9 deployment script (creates backup, validates, deploys)
+   ./scripts/deploy-to-global-mcp.sh
+   
+   # This copies your fixes to /Users/mkr/.claude/mcp-servers/neural-tools/
+   ```
+
+5. **Switch to production configuration**:
+   ```bash
+   # Use global MCP configuration for all projects
+   unset CLAUDE_MCP_CONFIG_PATH
+   
+   # Restart Claude - now uses deployed global neural-tools
+   ```
+
+### Configuration Files
+
+- **Dev Config**: `~/.claude/mcp-dev-config.json` (points to this project)
+- **Prod Config**: `~/.claude/mcp_config.json` (points to global MCP servers)
+- **Deployment Script**: `scripts/deploy-to-global-mcp.sh` (automated deployment)
+- **Workflow Guide**: `MCP_DEV_SETUP.md` (detailed instructions)
+
+### Benefits of This Approach
+
+✅ **Safe Development**: Changes isolated until explicitly deployed  
+✅ **Fast Iteration**: Immediate testing with dev config  
+✅ **Automatic Backups**: Deployment script creates rollback points  
+✅ **Validation**: Pre-deployment testing prevents broken deployments  
+✅ **Auditability**: Deployment manifest tracks all changes  
+✅ **L9 Standards**: Proper dev/test/prod separation  
+
+### Quick Commands
+
+```bash
+# Switch to development (test your changes)
+export CLAUDE_MCP_CONFIG_PATH="$HOME/.claude/mcp-dev-config.json"
+
+# Deploy to production (when satisfied with changes)  
+./scripts/deploy-to-global-mcp.sh
+
+# Switch to production (use deployed version)
+unset CLAUDE_MCP_CONFIG_PATH
+
+# Always restart Claude after config changes
+```
+
+### Rollback (If Needed)
+
+```bash
+# Deployment script creates automatic backups
+rm -rf /Users/mkr/.claude/mcp-servers/neural-tools
+mv /Users/mkr/.claude/mcp-servers/neural-tools-backup-* /Users/mkr/.claude/mcp-servers/neural-tools
+```
+
+**Key Insight**: This project serves as the **development environment** for neural-tools. The global MCP directory is **production**. Always develop here, test with dev config, then deploy to global when ready.
+
 ## 🎓 Key Learnings
 
 1. **Always verify environment propagation** - MCP's .mcp.json env vars may not always reach the Python process
@@ -653,6 +739,8 @@ python3 scripts/run_l9_validation.py
 3. **Defaults matter** - Code defaults should match your actual deployment
 4. **Pool sizing is conservative** - Start with larger pools, optimize down based on metrics
 5. **Session isolation prevents issues** - Resource contention is real in concurrent systems
+6. **Dev/Prod Separation is Critical** - Use dev config for changes, deploy script for production
+7. **MCP Configuration Controls Everything** - CLAUDE_MCP_CONFIG_PATH determines which neural-tools version loads
 
 ## 📚 Protocol Standards (September 2025)
 
