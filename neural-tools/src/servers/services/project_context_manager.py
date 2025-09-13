@@ -483,14 +483,16 @@ class ProjectContextManager:
             # Phase 1: Teardown
             await self._teardown_current_context()
 
-            # Phase 2: Update
-            self.current_project = self._detect_project(new_project_path)
+            # Phase 2: Update - FIX: Extract name and path separately
+            project_info = self._detect_project(new_project_path)
+            self.current_project = project_info['name']  # Keep as string for compatibility
+            self.current_project_path = Path(project_info['path'])
 
             # Phase 3: Rebuild
             await self._rebuild_context()
 
             # Gemini: Must return project dict for handler
-            return self.current_project
+            return project_info  # Return the full dict, not just the name
 
     def _detect_project(self, project_path: str) -> Dict:
         """
@@ -531,7 +533,7 @@ class ProjectContextManager:
         from servers.services.service_container import ServiceContainer
 
         self.container = ServiceContainer(
-            project_name=self.current_project['name']
+            project_name=self.current_project  # FIX: Use string name, not dict
         )
 
         # Initialize the container
@@ -540,7 +542,7 @@ class ProjectContextManager:
         # Grok: Validate connections after rebuild
         if hasattr(self.container, 'verify_connections'):
             if not await self.container.verify_connections():
-                raise RuntimeError(f"Failed to initialize connections for {self.current_project['name']}")
+                raise RuntimeError(f"Failed to initialize connections for {self.current_project}")
 
     def clear_hints(self):
         """Clear detection hints (useful for testing)"""
