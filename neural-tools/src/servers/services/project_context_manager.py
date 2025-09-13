@@ -152,6 +152,7 @@ class ProjectContextManager:
         3. .git config remote origin
         4. Directory name (sanitized)
         """
+        logger.debug(f"🔍 [Detection] Starting project name detection for path: {path}")
         # Try package.json (Node/JavaScript projects)
         package_json = path / "package.json"
         if package_json.exists():
@@ -161,7 +162,7 @@ class ProjectContextManager:
                     if "name" in data:
                         name = self._sanitize_name(data["name"])
                         if name and name != "default":
-                            logger.debug(f"Detected project name from package.json: {name}")
+                            logger.debug(f"✅ [Detection] Found from package.json: '{data['name']}' → sanitized: '{name}'")
                             return name
             except Exception as e:
                 logger.debug(f"Failed to parse package.json: {e}")
@@ -176,7 +177,7 @@ class ProjectContextManager:
                     if "project" in data and "name" in data["project"]:
                         name = self._sanitize_name(data["project"]["name"])
                         if name and name != "default":
-                            logger.debug(f"Detected project name from pyproject.toml: {name}")
+                            logger.debug(f"✅ [Detection] Found from pyproject.toml: '{data['project']['name']}' → sanitized: '{name}'")
                             return name
             except Exception as e:
                 logger.debug(f"Failed to parse pyproject.toml: {e}")
@@ -197,14 +198,14 @@ class ProjectContextManager:
                         repo_name = match.group(2)
                         name = self._sanitize_name(repo_name)
                         if name and name != "default":
-                            logger.debug(f"Detected project name from git config: {name}")
+                            logger.debug(f"✅ [Detection] Found from git config: '{repo_name}' → sanitized: '{name}'")
                             return name
             except Exception as e:
                 logger.debug(f"Failed to parse git config: {e}")
         
         # Fall back to directory name
         name = self._sanitize_name(path.name)
-        logger.debug(f"Using directory name as project name: {name}")
+        logger.debug(f"🏠 [Detection] Using directory name as fallback: '{path.name}' → sanitized: '{name}'")
         return name
     
     def _sanitize_name(self, name: str) -> str:
@@ -232,29 +233,62 @@ class ProjectContextManager:
         Auto-detect active project using heuristics.
         
         Detection strategies:
-        1. Current project if already set
+        1. Current working directory (highest priority for MCP)
         2. Most recently accessed project
         3. Project containing recently accessed files
         4. Scan common directories for projects
         5. Fall back to "default"
         """
-        # Strategy 0: Already have a current project
-        if self.current_project and self.current_project_path:
-            return {
-                "project": self.current_project,
-                "path": str(self.current_project_path),
-                "method": "current",
-                "confidence": 1.0
-            }
+        # Strategy 0: Always try current working directory first (critical for MCP)
+        current_dir = Path.cwd()
+        try:
+            current_project_name = await self._detect_project_name(current_dir)
+            if current_project_name and current_project_name != "default":
+                # Update state and registry
+                self.current_project = current_project_name
+                self.current_project_path = current_dir
+                self.project_registry[current_project_name] = current_dir
+                self.last_activity[current_project_name] = datetime.now()
+                self._save_registry()
+                
+                logger.info(f"🎯 Detected project from current directory: {current_project_name}")
+                return {
+                    "project": current_project_name,
+                    "path": str(current_dir),
+                    "method": "current_directory",
+                    "confidence": 0.95
+                }
+        except Exception as e:
+            logger.debug(f"Failed to detect from current directory: {e}")
         
-        # Strategy 1: Most recent activity
+        # Strategy 1: Already have a current project (but lower priority than cwd)
+        if self.current_project and self.current_project_path:
+            # Verify the path still exists
+            if self.current_project_path.exists():
+                logger.info(f"📌 Using cached project: {self.current_project}")
+                return {
+                    "project": self.current_project,
+                    "path": str(self.current_project_path),
+                    "method": "cached",
+                    "confidence": 0.9
+                }
+            else:
+                # Clear stale cache
+                self.current_project = None
+                self.current_project_path = None
+        
+        # Strategy 2: Most recent activity (only if not stale)
         if self.last_activity:
             most_recent = max(
                 self.last_activity.items(),
                 key=lambda x: x[1]
             )
             project_name = most_recent[0]
-            if project_name in self.project_registry:
+            # Only use if recent (within last hour) and path exists
+            if (project_name in self.project_registry and 
+                (datetime.now() - most_recent[1]).seconds < 3600 and
+                self.project_registry[project_name].exists()):
+                
                 self.current_project = project_name
                 self.current_project_path = self.project_registry[project_name]
                 logger.info(f"🕐 Detected project from recent activity: {project_name}")
@@ -262,54 +296,57 @@ class ProjectContextManager:
                     "project": project_name,
                     "path": str(self.current_project_path),
                     "method": "recent_activity",
-                    "confidence": 0.8
+                    "confidence": 0.7
                 }
         
-        # Strategy 2: Check detection hints (files recently accessed)
+        # Strategy 3: Check detection hints (files recently accessed)
         for hint_path in reversed(self.detection_hints[-10:]):  # Last 10 hints, newest first
             hint = Path(hint_path)
             for project_name, project_path in self.project_registry.items():
                 try:
-                    hint.relative_to(project_path)
-                    # File is within this project
-                    self.current_project = project_name
-                    self.current_project_path = project_path
-                    self.last_activity[project_name] = datetime.now()
-                    logger.info(f"📁 Detected project from file access: {project_name}")
-                    return {
-                        "project": project_name,
-                        "path": str(project_path),
-                        "method": "file_access_pattern",
-                        "confidence": 0.9
-                    }
+                    if project_path.exists():
+                        hint.relative_to(project_path)
+                        # File is within this project
+                        self.current_project = project_name
+                        self.current_project_path = project_path
+                        self.last_activity[project_name] = datetime.now()
+                        logger.info(f"📁 Detected project from file access: {project_name}")
+                        return {
+                            "project": project_name,
+                            "path": str(project_path),
+                            "method": "file_access_pattern",
+                            "confidence": 0.6
+                        }
                 except ValueError:
                     continue
         
-        # Strategy 3: Scan common directories for new projects
+        # Strategy 4: Scan common directories for new projects
         await self._scan_for_projects()
         
-        # Strategy 4: Use first registered project
+        # Strategy 5: Use first valid registered project
         if self.project_registry:
-            project_name = list(self.project_registry.keys())[0]
-            self.current_project = project_name
-            self.current_project_path = self.project_registry[project_name]
-            logger.info(f"📌 Using first registered project: {project_name}")
-            return {
-                "project": project_name,
-                "path": str(self.current_project_path),
-                "method": "first_registered",
-                "confidence": 0.5
-            }
+            for project_name, project_path in self.project_registry.items():
+                if project_path.exists():
+                    self.current_project = project_name
+                    self.current_project_path = project_path
+                    logger.info(f"📌 Using first valid registered project: {project_name}")
+                    return {
+                        "project": project_name,
+                        "path": str(self.current_project_path),
+                        "method": "first_registered",
+                        "confidence": 0.4
+                    }
         
-        # Strategy 5: Fall back to default with current directory
-        self.current_project = "default"
-        self.current_project_path = Path.cwd()
-        logger.info(f"🏠 Falling back to default project at {self.current_project_path}")
+        # Strategy 6: Fall back to current directory detection
+        fallback_name = await self._detect_project_name(current_dir)
+        self.current_project = fallback_name
+        self.current_project_path = current_dir
+        logger.warning(f"🏠 Falling back to current directory: {fallback_name}")
         return {
-            "project": "default",
+            "project": fallback_name,
             "path": str(self.current_project_path),
             "method": "fallback",
-            "confidence": 0.1
+            "confidence": 0.2 if fallback_name == "default" else 0.3
         }
     
     async def _scan_for_projects(self):

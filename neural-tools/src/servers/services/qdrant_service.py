@@ -31,7 +31,7 @@ class QdrantService:
     
     def __init__(self, project_name: str = "default"):
         self.project_name = project_name
-        self.collection_prefix = f"project_{project_name}_"
+        self.collection_prefix = f"project-{project_name}"
         
         # Qdrant configuration via central runtime config (with fallbacks)
         try:

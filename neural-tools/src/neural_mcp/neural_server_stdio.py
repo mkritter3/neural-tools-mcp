@@ -1369,7 +1369,7 @@ async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextCo
         embeddings = await container.nomic.get_embeddings([query])
         query_vector = embeddings[0]
         # Use Qdrant client wrapper
-        collection_name = f"project_{project_name}_code"
+        collection_name = f"project-{project_name}"
         try:
             search_results = await container.qdrant.search_vectors(
                 collection_name=collection_name,
@@ -1660,7 +1660,7 @@ async def project_understanding_impl(scope: str = "full") -> List[types.TextCont
             # Get Qdrant vector counts
             if container.qdrant:
                 try:
-                    collection_name = f"project_{project_name}_code"
+                    collection_name = f"project-{project_name}"
                     # Check if collection exists
                     all_collections = await container.qdrant.get_collections()
                     if collection_name in all_collections:

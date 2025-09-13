@@ -823,6 +823,7 @@ class ServiceContainer:
         """
         Ensure indexer container is running for this project
         Implements ADR-0030 multi-container orchestration
+        Uses ProjectContextManager for dynamic project detection (ADR-0034)
         
         Args:
             project_path: Absolute path to project directory
@@ -836,18 +837,35 @@ class ServiceContainer:
             self.indexer_orchestrator = IndexerOrchestrator()
             await self.indexer_orchestrator.initialize()
             logger.info("IndexerOrchestrator initialized")
-            
-        # Use provided path or current directory
+        
+        # Get current project from ProjectContextManager (ADR-0034 single source of truth)
+        from servers.services.project_context_manager import ProjectContextManager
+        project_manager = ProjectContextManager()
+        project_info = await project_manager.get_current_project()
+        
+        current_project_name = project_info["project"]
+        current_project_path = project_info["path"]
+        
+        # Use detected path if no path provided
         if not project_path:
-            project_path = os.getcwd()
+            project_path = current_project_path
             
-        # Ensure indexer is running
+        logger.info(f"🔄 [Container Sync] Ensuring indexer for project: {current_project_name}")
+        logger.info(f"🔄 [Container Sync] Project path: {project_path}")
+        logger.info(f"🔄 [Container Sync] Detection method: {project_info.get('method', 'unknown')}")
+        logger.info(f"🔄 [Container Sync] Detection confidence: {project_info.get('confidence', 0.0)}")
+        
+        # Validate project detection before container spawn
+        if current_project_name == "default" and project_info.get('confidence', 0.0) < 0.5:
+            logger.warning(f"⚠️ [Container Sync] Low confidence project detection - using fallback")
+        
+        # Ensure indexer is running with detected project name
         container_id = await self.indexer_orchestrator.ensure_indexer(
-            self.project_name,
+            current_project_name,
             project_path
         )
         
-        logger.info(f"Indexer container for {self.project_name} is running: {container_id[:12]}")
+        logger.info(f"✅ [Container Sync] Indexer container for {current_project_name} is running: {container_id[:12]}")
         return container_id
     
     async def get_indexer_status(self):
