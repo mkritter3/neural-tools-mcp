@@ -598,6 +598,37 @@ async def get_project_context(arguments: Dict[str, Any]):
     container = await state.get_project_container(project_name)
     retriever = await state.get_project_retriever(project_name)
     
+    # ADR-0035: Proactively ensure indexer container is ready to eliminate race conditions
+    # This prevents the common issue where first reindex fails because container isn't ready
+    if container:
+        try:
+            # Check if indexer auto-start is enabled (default: true)
+            indexer_auto_start = os.getenv('INDEXER_AUTO_START', 'true').lower() == 'true'
+            
+            if indexer_auto_start:
+                logger.debug(f"🚀 [ADR-0035] Ensuring indexer container ready for {project_name}")
+                
+                # Use existing ensure_indexer_running logic (already handles duplicates)
+                # Get project path from PROJECT_CONTEXT if available, else use current directory
+                if 'context' in locals() and isinstance(context, dict):
+                    project_path = context.get('path', os.getcwd())
+                else:
+                    # Get fresh project info for path
+                    current_context = await PROJECT_CONTEXT.get_current_project()
+                    project_path = current_context.get('path', os.getcwd())
+                
+                container_id = await container.ensure_indexer_running(project_path)
+                
+                logger.debug(f"✅ [ADR-0035] Indexer container ready: {container_id[:12] if container_id else 'N/A'}")
+            else:
+                logger.debug(f"⏭️ [ADR-0035] Indexer auto-start disabled for {project_name}")
+                
+        except Exception as e:
+            # Don't fail the entire request if indexer startup fails
+            # This allows graceful degradation while still providing other neural tools
+            logger.warning(f"⚠️ [ADR-0035] Indexer auto-start failed for {project_name}: {e}")
+            logger.warning(f"⚠️ Neural tools will work but first reindex may fail (user can retry)")
+    
     return project_name, container, retriever
 
 

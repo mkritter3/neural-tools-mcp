@@ -49,7 +49,11 @@
         
         "COMMENT_EMBEDDINGS": "=== Embedding Service Configuration ===",
         "EMBEDDING_SERVICE_HOST": "localhost",
-        "EMBEDDING_SERVICE_PORT": "48000"
+        "EMBEDDING_SERVICE_PORT": "48000",
+        
+        "COMMENT_ADR_0035": "=== ADR-0035 Indexer Auto-Start Configuration ===",
+        "INDEXER_AUTO_START": "true",
+        "INDEXER_STARTUP_TIMEOUT": "30"
       }
     }
   }
