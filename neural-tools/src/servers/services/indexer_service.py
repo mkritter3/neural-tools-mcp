@@ -1273,19 +1273,45 @@ class IncrementalIndexer(FileSystemEventHandler):
                         'project': self.project_name
                     })
                 
-                # Process imports with better extraction
+                # Process imports with flattened properties (ADR-0036: Neo4j primitive compatibility)
                 imports = structure.get('imports', [])
                 for imp in imports:
-                    # Create import relationships
+                    # Import flattening utility for ADR-0036 compliance
+                    from utils.property_flattener import extract_import_primitives
+                    
+                    # Extract primitive properties from complex import object
+                    if isinstance(imp, dict):
+                        # Use flattening utility to extract primitives
+                        import_props = extract_import_primitives(imp)
+                        module_name = import_props.get('import_module', 'unknown')
+                    else:
+                        # Handle simple string imports
+                        module_name = str(imp)
+                        import_props = {
+                            'import_statement': module_name,
+                            'import_module': module_name
+                        }
+                    
+                    # Create import relationships with rich flattened metadata
                     cypher = """
                     MATCH (f:File {path: $from_path, project: $project})
                     MERGE (m:Module {name: $module, project: $project})
-                    MERGE (f)-[:IMPORTS]->(m)
+                    CREATE (f)-[r:IMPORTS $import_properties]->(m)
+                    RETURN r
                     """
+                    
+                    # Prepare all properties as primitives
+                    import_properties = {
+                        'project': self.project_name,
+                        'created_at': datetime.utcnow().isoformat(),
+                        **import_props  # All flattened primitive properties
+                    }
+                    
                     result = await self.container.neo4j.execute_cypher(cypher, {
                         'from_path': str(relative_path),
-                        'module': imp,
-                        'project': self.project_name
+                        'module': module_name,  # ✅ Primitive string for module name
+                        'project': self.project_name,
+                        'import_properties': import_properties  # ✅ All primitive properties
                     })
                     if result.get('status') != 'success':
                         logger.warning(f"Failed to create import relationship: {result.get('message')}")
