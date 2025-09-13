@@ -8,8 +8,7 @@ Eliminates boilerplate by auto-generating proxy functions
 import json
 import logging
 import re
-from pathlib import Path
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List
 from urllib.parse import urlparse
 import httpx
 

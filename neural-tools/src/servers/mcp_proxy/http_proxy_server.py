@@ -10,8 +10,7 @@ that follows the 2025-06-18 MCP protocol specification.
 import asyncio
 import logging
 import sys
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import httpx
 
@@ -53,7 +52,7 @@ class HTTPProxyMCPServer:
         self.factory: Optional[ToolProxyFactory] = None
         self.initialized = False
         
-        logger.info(f"🚀 Initializing MCP HTTP Proxy Server")
+        logger.info("🚀 Initializing MCP HTTP Proxy Server")
         logger.info(f"📋 Configuration: {get_config_summary()}")
 
     async def setup(self):

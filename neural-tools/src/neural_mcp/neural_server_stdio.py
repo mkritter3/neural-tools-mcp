@@ -18,7 +18,7 @@ import logging
 import secrets
 import hashlib
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
 # Official MCP SDK for 2025-06-18 protocol (no namespace collision with neural_mcp)
@@ -31,13 +31,11 @@ import mcp.types as types
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'servers', 'services'))
 from schema_manager import SchemaManager, ProjectType
 # Import migration management for ADR-0021
-from migration_manager import MigrationManager, MigrationResult
-from data_migrator import DataMigrator
+from migration_manager import MigrationManager
 # Import canon management for ADR-0031
 from canon_manager import CanonManager
 from metadata_backfiller import MetadataBackfiller
 # Import project context management for ADR-0033
-from project_context_manager import ProjectContextManager
 
 # Configure logging to stderr (NEVER to stdout for STDIO transport)
 logging.basicConfig(
@@ -266,10 +264,12 @@ class MultiProjectServiceState:
             # Import services
             sys.path.insert(0, str(Path(__file__).parent.parent))
             from servers.services.service_container import ServiceContainer
-            
-            container = ServiceContainer(project_name)
+
+            # ADR-0044: Pass PROJECT_CONTEXT for dependency injection
+            container = ServiceContainer(context_manager=PROJECT_CONTEXT, project_name=project_name)
             # Don't initialize services yet - will happen on first use
             project_containers[project_name] = container
+            logger.info(f"✅ [ADR-0044] ServiceContainer created with injected context for: {project_name}")
         
         # Lazy initialization - only initialize when actually needed
         container = project_containers[project_name]
@@ -414,7 +414,7 @@ class MultiProjectServiceState:
         if hasattr(container, 'neo4j_driver') and container.neo4j_driver:
             try:
                 container.neo4j_driver.close()
-                logger.info(f"  ✅ Closed Neo4j connection")
+                logger.info("  ✅ Closed Neo4j connection")
             except Exception as e:
                 logger.error(f"  ❌ Failed to close Neo4j: {e}")
         
@@ -422,7 +422,7 @@ class MultiProjectServiceState:
         if hasattr(container, 'qdrant_client') and container.qdrant_client:
             try:
                 container.qdrant_client.close()
-                logger.info(f"  ✅ Closed Qdrant connection")
+                logger.info("  ✅ Closed Qdrant connection")
             except Exception as e:
                 logger.error(f"  ❌ Failed to close Qdrant: {e}")
         
@@ -430,14 +430,14 @@ class MultiProjectServiceState:
         if hasattr(container, 'redis_cache') and container.redis_cache:
             try:
                 await container.redis_cache.close()
-                logger.info(f"  ✅ Closed Redis cache connection")
+                logger.info("  ✅ Closed Redis cache connection")
             except Exception as e:
                 logger.error(f"  ❌ Failed to close Redis cache: {e}")
         
         if hasattr(container, 'redis_queue') and container.redis_queue:
             try:
                 await container.redis_queue.close()
-                logger.info(f"  ✅ Closed Redis queue connection")
+                logger.info("  ✅ Closed Redis queue connection")
             except Exception as e:
                 logger.error(f"  ❌ Failed to close Redis queue: {e}")
     
@@ -546,8 +546,9 @@ state = MultiProjectServiceState()
 server = Server("l9-neural-enhanced")
 
 # ADR-0033: Dynamic project context manager
-PROJECT_CONTEXT = ProjectContextManager()
-PROJECT_CONTEXT.set_instance_id(state.instance_id)
+# ADR-0044: Import singleton getter but don't call yet
+from project_context_manager import get_project_context_manager
+PROJECT_CONTEXT = None  # Will be initialized as singleton in run()
 
 # Update logger to include instance ID now that state is available
 logger.get_instance_id = lambda: state.instance_id if state else "unknown"
@@ -627,7 +628,7 @@ async def get_project_context(arguments: Dict[str, Any]):
             # Don't fail the entire request if indexer startup fails
             # This allows graceful degradation while still providing other neural tools
             logger.warning(f"⚠️ [ADR-0035] Indexer auto-start failed for {project_name}: {e}")
-            logger.warning(f"⚠️ Neural tools will work but first reindex may fail (user can retry)")
+            logger.warning("⚠️ Neural tools will work but first reindex may fail (user can retry)")
     
     return project_name, container, retriever
 
@@ -1406,7 +1407,7 @@ async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextCo
                 )
                 logger.debug(f"Found collection: {collection_name}")
                 break  # Success, stop trying
-            except Exception as e:
+            except Exception:
                 logger.debug(f"Collection {collection_name} not found, trying next...")
                 continue
 
@@ -1976,7 +1977,7 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
                     }, indent=2)
                 )]
                 
-    except httpx.ConnectError as e:
+    except httpx.ConnectError:
         return [types.TextContent(
             type="text",
             text=json.dumps({
@@ -2591,6 +2592,18 @@ async def set_project_context_impl(arguments: dict) -> List[types.TextContent]:
         # Use the manager's switch_project_with_teardown method (returns project dict)
         new_project = await PROJECT_CONTEXT.switch_project_with_teardown(path)
 
+        # ADR-0044: Clear cached ServiceContainers to force recreation with new context
+        instance_data = state._get_instance_data()
+        old_containers = instance_data.get('project_containers', {})
+        for project_name, container in old_containers.items():
+            logger.info(f"🧹 Clearing cached container for project: {project_name}")
+            if hasattr(container, 'teardown'):
+                try:
+                    await container.teardown()
+                except Exception as e:
+                    logger.error(f"Error tearing down container: {e}")
+        instance_data['project_containers'] = {}
+
         # Return detailed status
         output = f"""✅ Project context switched successfully!
 
@@ -2724,14 +2737,19 @@ async def periodic_cleanup_task():
 async def run():
     """
     Main entry point for MCP server following 2025-06-18 specification.
-    
+
     Per spec:
     - Server reads from stdin, writes to stdout
     - Logs go to stderr only
     - Client initiates shutdown by closing stdin
     - No signal handling in server (client handles termination)
     """
-    logger.info(f"🚀 Starting L9 Neural MCP Server (STDIO Transport)")
+    # ADR-0044: Initialize PROJECT_CONTEXT as singleton
+    global PROJECT_CONTEXT
+    PROJECT_CONTEXT = await get_project_context_manager()
+    PROJECT_CONTEXT.set_instance_id(state.instance_id)
+
+    logger.info("🚀 Starting L9 Neural MCP Server (STDIO Transport)")
     logger.info(f"🔐 Instance ID: {state.instance_id}")
     logger.info(f"🔧 Cleanup config: Timeout={INSTANCE_TIMEOUT_HOURS}h, Interval={CLEANUP_INTERVAL_MINUTES}m, Enabled={ENABLE_AUTO_CLEANUP}")
     

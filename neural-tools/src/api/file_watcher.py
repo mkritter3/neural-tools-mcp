@@ -11,9 +11,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Callable, Set, Optional, List, Any
-from collections import defaultdict
-import json
+from typing import Dict, Callable, Optional, List, Any
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -456,11 +454,11 @@ if __name__ == "__main__":
             print(f"   📝 {event_type.upper()}: {file_name} [{selective}, {changed}]")
             
             if not metadata.get('file_changed', True):
-                print(f"      ⏭️  Skipping unchanged file")
+                print("      ⏭️  Skipping unchanged file")
             elif metadata.get('requires_selective_update'):
-                print(f"      🎯 Using selective reprocessing")
+                print("      🎯 Using selective reprocessing")
             elif metadata.get('requires_full_reindex'):
-                print(f"      🔄 Full reindexing required")
+                print("      🔄 Full reindexing required")
         
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

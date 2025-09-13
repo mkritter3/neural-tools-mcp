@@ -8,11 +8,10 @@ Provides intelligent queue management and backpressure mechanisms:
 - Queue health metrics for operational insights
 """
 
-import asyncio
 import logging
 import os
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 

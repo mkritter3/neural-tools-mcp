@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from servers.services.indexer_service import IncrementalIndexer
 from servers.services.service_container import ServiceContainer
-from servers.services.collection_config import CollectionManager, CollectionType
 from servers.config.collection_naming import collection_naming
 
 logger = logging.getLogger(__name__)

@@ -12,9 +12,8 @@ import hashlib
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, Set, Optional, List, Tuple, Any
+from typing import Dict, Optional, List, Tuple, Any
 from datetime import datetime, timedelta
-from collections import deque
 import json
 
 from watchdog.observers import Observer
@@ -30,7 +29,6 @@ from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
 # ADR-0040: Import centralized collection naming
 sys.path.insert(0, str(services_dir.parent))  # Add parent for config directory
-from config.collection_naming import collection_naming
 
 # Configure logging to stderr for Docker
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -1877,7 +1875,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                     if not isinstance(state, dict) or "file_hashes" not in state:
                         raise ValueError("Invalid state file structure")
                         
-                    logger.info(f"Loaded primary state file")
+                    logger.info("Loaded primary state file")
                 else:
                     raise FileNotFoundError("Primary state file missing")
                     

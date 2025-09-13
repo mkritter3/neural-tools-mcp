@@ -5,7 +5,6 @@ FastAPI-based REST API for indexing and searching codebases
 Uses existing AsyncQdrantClient + multi-tenant architecture
 """
 
-import asyncio
 import logging
 import uuid
 import time
@@ -13,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, status
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 import uvicorn
 

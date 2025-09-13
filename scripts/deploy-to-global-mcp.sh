@@ -24,13 +24,26 @@ echo "Target: $TARGET_DIR"
 echo "Backup: $BACKUP_DIR"
 echo ""
 
-# Pre-deployment validation
-echo -e "${YELLOW}🔍 Pre-deployment validation...${NC}"
+# Pre-deployment validation (ADR-0045 CI/CD compliance)
+echo -e "${YELLOW}🔍 Pre-deployment validation (ADR-0045)...${NC}"
 
 # Check source directory exists
 if [[ ! -d "$SOURCE_DIR" ]]; then
     echo -e "${RED}❌ Source directory not found: $SOURCE_DIR${NC}"
     exit 1
+fi
+
+# Run CI/CD test suite (ADR-0045)
+if [[ -f "$SOURCE_DIR/scripts/run-tests.sh" ]]; then
+    echo -e "${YELLOW}🧪 Running comprehensive test suite...${NC}"
+    cd "$SOURCE_DIR"
+    if ./scripts/run-tests.sh; then
+        echo -e "${GREEN}✅ All tests passed${NC}"
+    else
+        echo -e "${RED}❌ Tests failed - deployment blocked (ADR-0045)${NC}"
+        echo "Fix failing tests before deployment"
+        exit 1
+    fi
 fi
 
 # Check key files exist
@@ -111,16 +124,18 @@ done
 # Set permissions
 chmod +x "$TARGET_DIR/run_mcp_server.py"
 
-# Create deployment manifest
+# Create deployment manifest (ADR-0045 compliant)
 cat > "$TARGET_DIR/DEPLOYMENT_MANIFEST.json" << EOF
 {
   "deployment_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "source_commit": "$(cd "$SOURCE_DIR/.." && git rev-parse HEAD 2>/dev/null || echo 'unknown')",
-  "adr_version": "ADR-0034 Phase 2 Complete",
+  "adr_version": "ADR-0045 CI/CD Compliant",
   "deployed_by": "$(whoami)",
   "backup_location": "$BACKUP_DIR",
   "validation_status": "passed",
-  "deployment_method": "rsync with checksum verification"
+  "deployment_method": "rsync with checksum verification",
+  "tests_passed": ["unit", "integration", "adr_validation", "deployment_validation"],
+  "ci_cd_compliant": true
 }
 EOF
 

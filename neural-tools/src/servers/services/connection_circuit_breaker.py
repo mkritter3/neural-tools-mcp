@@ -8,7 +8,7 @@ import asyncio
 import logging
 from enum import Enum
 from typing import Callable, Any, Optional, Dict
-from datetime import datetime, timedelta
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +154,7 @@ class ServiceConnectionBreaker:
             self._on_success()
             return result
             
-        except Exception as e:
+        except Exception:
             self._on_failure()
             raise
     

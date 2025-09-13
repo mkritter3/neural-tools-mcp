@@ -11,7 +11,7 @@ import json
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from enum import Enum
 import redis.asyncio as redis
 

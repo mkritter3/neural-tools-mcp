@@ -8,7 +8,7 @@ Following MCP 2025-06-18 specification for error handling and parameter validati
 import re
 import json
 import logging
-from typing import Dict, Any, List, Optional, Union, Tuple
+from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 

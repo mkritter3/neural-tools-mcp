@@ -12,8 +12,6 @@ import time
 from typing import Dict, List, Optional, Any, Tuple, Union
 from enum import Enum
 from dataclasses import dataclass
-import struct
-import json
 
 logger = logging.getLogger(__name__)
 

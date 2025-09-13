@@ -8,11 +8,10 @@ Provides robust error handling and failed job management:
 - Administrative recovery interfaces
 """
 
-import json
 import logging
 import os
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +330,7 @@ class DeadLetterService:
             
             return {
                 "success": True,
-                "message": f"Job requeued successfully",
+                "message": "Job requeued successfully",
                 "original_job_id": fields.get('job_id'),
                 "new_job_id": new_job.job_id
             }

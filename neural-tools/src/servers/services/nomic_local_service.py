@@ -7,7 +7,7 @@ Proven patterns from Context7 and 2024 documentation
 
 import os
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from dataclasses import dataclass
 
 try:
@@ -82,7 +82,7 @@ class LocalNomicService:
             
             return {
                 "success": True,
-                "message": f"Local Nomic model loaded successfully",
+                "message": "Local Nomic model loaded successfully",
                 "model": self.model_name,
                 "device": self.device,
                 "embedding_dim": actual_dim,

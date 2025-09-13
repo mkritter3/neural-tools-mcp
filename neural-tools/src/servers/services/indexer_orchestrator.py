@@ -28,16 +28,21 @@ class IndexerOrchestrator:
     """
     Dedicated orchestrator for indexer container lifecycle management
     Implements ADR-0030 multi-container architecture
+    Updated with ADR-0044 for dependency injection and container discovery
     """
-    
-    def __init__(self, max_concurrent: int = 8):
+
+    def __init__(self, context_manager=None, max_concurrent: int = 8):
         """
-        Initialize the orchestrator
-        
+        Initialize the orchestrator with dependency injection (ADR-0044)
+
         Args:
+            context_manager: Injected ProjectContextManager instance
             max_concurrent: Maximum number of concurrent indexer containers
         """
+        # ADR-0044: Accept injected context manager
+        self.context_manager = context_manager
         self.docker_client = None
+        self.discovery_service = None  # Will be initialized with docker client
         self.active_indexers: Dict[str, dict] = {}  # project -> {container_id, last_activity, port}
         self.max_concurrent = max_concurrent
         
@@ -73,11 +78,16 @@ class IndexerOrchestrator:
             self.docker_client = docker.from_env()
             # Verify Docker is accessible
             self.docker_client.ping()
-            logger.info("IndexerOrchestrator initialized successfully")
-            
+
+            # ADR-0044: Initialize container discovery service
+            from servers.services.container_discovery import ContainerDiscoveryService
+            self.discovery_service = ContainerDiscoveryService(self.docker_client)
+
+            logger.info("IndexerOrchestrator initialized with container discovery")
+
             # Start background cleanup task
             self._cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
-            
+
         except docker.errors.DockerException as e:
             logger.error(f"Failed to initialize Docker client: {e}")
             raise
@@ -105,24 +115,53 @@ class IndexerOrchestrator:
     async def ensure_indexer(self, project_name: str, project_path: str) -> str:
         """
         Ensure indexer is running for project, with resource limits
-        
+        Updated with ADR-0044 to use ContainerDiscoveryService
+
         Args:
             project_name: Name of the project (used for container naming)
             project_path: Absolute path to project directory
-            
+
         Returns:
             Container ID of the running indexer
-            
+
         Raises:
             ValueError: If project path is invalid or insecure
             docker.errors.DockerException: If container operations fail
         """
         async with self._lock:
+            # ADR-0044: Use discovery service to find or create container
+            if self.discovery_service and self.context_manager:
+                logger.info(f"🔍 Using discovery service for project: {project_name}")
+
+                # Update context manager's current project path if needed
+                if not self.context_manager.current_project_path:
+                    self.context_manager.current_project_path = Path(project_path)
+
+                # Use discovery service to get or create container
+                container_info = await self.discovery_service.get_or_create_container(
+                    project_name,
+                    self.context_manager
+                )
+
+                # Update active indexers tracking
+                self.active_indexers[project_name] = {
+                    'container_id': container_info['container_id'],
+                    'last_activity': datetime.now(),
+                    'project_path': project_path,
+                    'port': container_info['port']
+                }
+
+                logger.info(f"✅ Container ready: {container_info['container_name']} on port {container_info['port']}")
+                return container_info['container_id']
+
+            # Fallback to original logic if no discovery service
+            logger.warning("⚠️ No discovery service, using legacy container creation")
+
             # Check if already running
             if project_name in self.active_indexers:
                 self.active_indexers[project_name]['last_activity'] = datetime.now()
                 container_id = self.active_indexers[project_name]['container_id']
-                
+
                 # Verify container is still running
                 try:
                     container = self.docker_client.containers.get(container_id)

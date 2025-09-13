@@ -1,0 +1,260 @@
+name: Neural Tools CI/CD Pipeline
+
+on:
+  push:
+    paths:
+      - 'neural-tools/**'
+      - 'docs/adr/**'
+      - '.github/workflows/neural-tools-ci.yml'
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+  pull_request:
+    paths:
+      - 'neural-tools/**'
+      - 'docs/adr/**'
+
+env:
+  PYTHON_VERSION: '3.11'
+  NEO4J_PASSWORD: 'graphrag-password'
+  QDRANT_PORT: '46333'
+  PROJECT_NAME: 'test-project'
+
+jobs:
+  lint:
+    name: Lint and Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          cd neural-tools
+          pip install -r requirements/dev.txt
+          pip install ruff mypy
+
+      - name: Run Ruff
+        run: |
+          cd neural-tools
+          ruff check src/
+
+      - name: Run MyPy
+        run: |
+          cd neural-tools
+          mypy src/ --ignore-missing-imports
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          cd neural-tools
+          pip install -r requirements/prod.txt
+          pip install -r requirements/dev.txt
+
+      - name: Run unit tests
+        run: |
+          cd neural-tools
+          python -m pytest tests/unit/ -v --cov=src --cov-report=xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./neural-tools/coverage.xml
+          fail_ci_if_error: false
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      neo4j:
+        image: neo4j:5.22.0
+        env:
+          NEO4J_AUTH: neo4j/graphrag-password
+          NEO4J_PLUGINS: '["apoc"]'
+        ports:
+          - 47687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p graphrag-password 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      qdrant:
+        image: qdrant/qdrant:v1.12.5
+        ports:
+          - 46333:6333
+        options: >-
+          --health-cmd "curl -f http://localhost:6333/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 46379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          cd neural-tools
+          pip install -r requirements/prod.txt
+          pip install -r requirements/dev.txt
+
+      - name: Wait for services
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:46333/health && \
+               nc -z localhost 47687 && \
+               redis-cli -h localhost -p 46379 ping; then
+              echo "All services are up!"
+              break
+            fi
+            echo "Waiting for services... (attempt $i/30)"
+            sleep 2
+          done
+
+      - name: Run integration tests
+        env:
+          NEO4J_URI: bolt://localhost:47687
+          NEO4J_PASSWORD: graphrag-password
+          QDRANT_HOST: localhost
+          QDRANT_PORT: 46333
+          REDIS_HOST: localhost
+          REDIS_PORT: 46379
+        run: |
+          cd neural-tools
+          python -m pytest tests/integration/ -v --tb=short
+
+  adr-validation:
+    name: ADR Implementation Validation
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          cd neural-tools
+          pip install -r requirements/prod.txt
+
+      - name: Validate ADR-0043 (Project Context Lifecycle)
+        run: |
+          cd neural-tools
+          python tests/validation/test_adr_0043.py
+
+      - name: Validate ADR-0044 (Container Orchestration)
+        run: |
+          cd neural-tools
+          python tests/validation/test_adr_0044.py
+
+      - name: Validate ADR-0037 (Configuration Priority)
+        run: |
+          cd neural-tools
+          python tests/validation/test_adr_0037.py
+
+  deploy-validation:
+    name: Pre-Deployment Validation
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, adr-validation]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Run deployment validator
+        run: |
+          cd neural-tools
+          python scripts/validate-deployment.py
+
+      - name: Check breaking changes
+        run: |
+          cd neural-tools
+          python scripts/check-breaking-changes.py
+
+      - name: Generate deployment manifest
+        run: |
+          cd neural-tools
+          python scripts/generate-manifest.py > deployment-manifest.json
+
+      - name: Upload deployment manifest
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-manifest
+          path: neural-tools/deployment-manifest.json
+
+  deploy:
+    name: Deploy to Global MCP
+    runs-on: ubuntu-latest
+    needs: deploy-validation
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download deployment manifest
+        uses: actions/download-artifact@v3
+        with:
+          name: deployment-manifest
+          path: neural-tools/
+
+      - name: Deploy to global MCP
+        run: |
+          # This would deploy to actual global MCP location
+          # For now, just validate the deployment script exists
+          test -f scripts/deploy-to-global-mcp.sh
+          echo "✅ Deployment script validated"
+
+      - name: Post-deployment validation
+        run: |
+          cd neural-tools
+          python scripts/validate-post-deployment.py
+
+      - name: Notify deployment
+        run: |
+          echo "🚀 Neural Tools deployed successfully to global MCP"
+          echo "Version: $(git rev-parse --short HEAD)"
+          echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"

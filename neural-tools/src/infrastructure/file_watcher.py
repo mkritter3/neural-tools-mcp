@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, Set, Optional, List
 from datetime import datetime
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent, FileDeletedEvent
+from watchdog.events import FileSystemEventHandler
 import httpx
 from qdrant_client import QdrantClient, models
 

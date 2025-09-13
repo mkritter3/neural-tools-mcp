@@ -214,7 +214,7 @@ class CollectionNamingManager:
 
         # Validate result
         if not name:
-            raise ValueError(f"Project name resulted in empty sanitized name")
+            raise ValueError("Project name resulted in empty sanitized name")
 
         # Ensure length limit (Qdrant max is 255)
         if len(name) > 255:

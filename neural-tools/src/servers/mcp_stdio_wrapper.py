@@ -11,7 +11,6 @@ This file is kept for backward compatibility but should not be used in new setup
 import asyncio
 import sys
 import json
-import os
 from pathlib import Path
 
 # Add the server directory to Python path

@@ -24,7 +24,6 @@ import logging
 import time
 from typing import Dict, Any, Optional, Union
 from datetime import datetime
-from pathlib import Path
 
 # Conditionally import structlog with graceful fallback
 try:

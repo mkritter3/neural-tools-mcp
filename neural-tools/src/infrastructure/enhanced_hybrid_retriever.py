@@ -13,7 +13,6 @@ from typing import List, Dict, Any, Optional
 
 from src.servers.services.hybrid_retriever import HybridRetriever
 from src.infrastructure.async_haiku_reranker import AsyncHaikuReRanker, ReRankingMode
-from src.infrastructure.haiku_reranker import SearchResult
 from src.infrastructure.cross_encoder_reranker import CrossEncoderReranker, RerankConfig
 from src.infrastructure.telemetry import get_telemetry
 

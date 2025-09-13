@@ -8,7 +8,6 @@ Updated per ADR-0041 to delegate to CollectionNamingManager
 import os
 import sys
 import logging
-import asyncio
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -172,7 +171,7 @@ class CollectionManager:
             logger.info(f"Attempting to create collection: {config.name} with vector_size: {config.vector_dimension}")
             
             try:
-                from qdrant_client.models import Distance, VectorParams
+                from qdrant_client.models import Distance
                 
                 # Use QdrantService wrapper's ensure_collection method
                 success = await qdrant_client.ensure_collection(

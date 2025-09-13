@@ -4,11 +4,8 @@ Minimal ServiceContainer implementation for multi-project GraphRAG
 
 import os
 import logging
-import secrets
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
-from datetime import datetime
 from enum import Enum
 
 import redis.asyncio as redis
@@ -28,11 +25,31 @@ class ConnectionState(Enum):
 
 class ServiceContainer:
     """Simplified service container for multi-project GraphRAG support"""
-    
-    def __init__(self, project_name: str = "default"):
-        # Store the project name for multi-tenant isolation
-        self.project_name = project_name
-        
+
+    def __init__(self, context_manager=None, project_name: str = None):
+        """
+        Initialize with injected ProjectContextManager (ADR-0044)
+
+        Args:
+            context_manager: ProjectContextManager instance (dependency injection)
+            project_name: Optional project name override (deprecated, use context_manager)
+        """
+        # ADR-0044: Use injected context manager if provided
+        if context_manager:
+            from servers.services.project_context_manager import ProjectContextManager
+            if not isinstance(context_manager, ProjectContextManager):
+                raise TypeError("context_manager must be a ProjectContextManager instance")
+            self.context_manager = context_manager
+            self.project_name = context_manager.current_project or "default"
+            self.project_path = context_manager.current_project_path
+            logger.info(f"🔗 ServiceContainer using injected context for project: {self.project_name}")
+        else:
+            # Fallback for backward compatibility
+            self.context_manager = None
+            self.project_name = project_name or "default"
+            self.project_path = None
+            logger.warning("⚠️ ServiceContainer created without context_manager (deprecated)")
+
         # Configuration base path for storing project-specific configs
         self.config_base = Path("/app/config/.neural-tools")
         
@@ -834,22 +851,42 @@ class ServiceContainer:
         """
         if not self.indexer_orchestrator:
             from servers.services.indexer_orchestrator import IndexerOrchestrator
-            self.indexer_orchestrator = IndexerOrchestrator()
+            # ADR-0044: Pass context manager to orchestrator
+            if self.context_manager:
+                self.indexer_orchestrator = IndexerOrchestrator(context_manager=self.context_manager)
+            else:
+                # Fallback without context manager
+                self.indexer_orchestrator = IndexerOrchestrator()
             await self.indexer_orchestrator.initialize()
-            logger.info("IndexerOrchestrator initialized")
+            logger.info("IndexerOrchestrator initialized with dependency injection")
         
-        # Get current project from ProjectContextManager (ADR-0034 single source of truth)
-        from servers.services.project_context_manager import ProjectContextManager
-        project_manager = ProjectContextManager()
-        project_info = await project_manager.get_current_project()
-        
-        current_project_name = project_info["project"]
-        current_project_path = project_info["path"]
-        
+        # ADR-0044: Use injected context manager, don't create new instance!
+        project_info = {}  # Initialize for later use
+        if self.context_manager:
+            # Use the injected context manager
+            current_project_name = self.context_manager.current_project
+            current_project_path = str(self.context_manager.current_project_path)
+            logger.info(f"✅ Using injected context: project={current_project_name}")
+            # Create project_info for consistency
+            project_info = {
+                "project": current_project_name,
+                "path": current_project_path,
+                "method": "injected",
+                "confidence": 1.0
+            }
+        else:
+            # Fallback: Get from singleton (should not happen in normal flow)
+            from servers.services.project_context_manager import get_project_context_manager
+            project_manager = await get_project_context_manager()
+            project_info = await project_manager.get_current_project()
+            current_project_name = project_info["project"]
+            current_project_path = project_info["path"]
+            logger.warning("⚠️ Had to get singleton context manager in ensure_indexer_running")
+
         # Use detected path if no path provided
         if not project_path:
             project_path = current_project_path
-            
+
         logger.info(f"🔄 [Container Sync] Ensuring indexer for project: {current_project_name}")
         logger.info(f"🔄 [Container Sync] Project path: {project_path}")
         logger.info(f"🔄 [Container Sync] Detection method: {project_info.get('method', 'unknown')}")
@@ -857,7 +894,7 @@ class ServiceContainer:
         
         # Validate project detection before container spawn
         if current_project_name == "default" and project_info.get('confidence', 0.0) < 0.5:
-            logger.warning(f"⚠️ [Container Sync] Low confidence project detection - using fallback")
+            logger.warning("⚠️ [Container Sync] Low confidence project detection - using fallback")
         
         # Ensure indexer is running with detected project name
         container_id = await self.indexer_orchestrator.ensure_indexer(

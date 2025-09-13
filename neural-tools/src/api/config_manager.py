@@ -7,7 +7,7 @@ Handles persistent storage of project paths and server settings
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Set, Optional
+from typing import Dict, Optional
 import time
 
 logger = logging.getLogger(__name__)

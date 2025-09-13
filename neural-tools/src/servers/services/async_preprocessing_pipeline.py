@@ -10,7 +10,6 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Dict, List, Optional, Any
 import hashlib
 import redis.asyncio as aioredis
@@ -75,7 +74,6 @@ class MetadataTaggerClient:
         """Fast pattern-based metadata extraction with optimal fields"""
         import re
         import os
-        from pathlib import Path
         
         # Get file stats
         file_stats = None

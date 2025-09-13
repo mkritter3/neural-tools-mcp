@@ -16,7 +16,7 @@ import json
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import List
 from datetime import datetime
 
 # Fix PYTHONPATH conflict - ensure we import real MCP SDK, not our local mcp module

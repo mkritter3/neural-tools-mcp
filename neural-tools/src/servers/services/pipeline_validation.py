@@ -11,9 +11,8 @@ Date: 2025-09-12
 """
 
 import logging
-import os
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -43,7 +42,7 @@ class PipelineValidationService:
         validation_start = datetime.now()
         issues = []
         
-        logger.info(f"🔍 [Validation] Starting project detection validation")
+        logger.info("🔍 [Validation] Starting project detection validation")
         logger.info(f"🔍 [Validation] Project: {project_name}, Path: {project_path}, Confidence: {confidence}")
         
         # Check 1: Project name should not be default for valid projects
@@ -81,7 +80,7 @@ class PipelineValidationService:
         self.validation_results.append(result)
         
         if result["passed"]:
-            logger.info(f"✅ [Validation] Project detection validation passed")
+            logger.info("✅ [Validation] Project detection validation passed")
         else:
             logger.error(f"❌ [Validation] Project detection validation failed: {issues}")
         
@@ -102,7 +101,7 @@ class PipelineValidationService:
         validation_start = datetime.now()
         issues = []
         
-        logger.info(f"🔍 [Validation] Starting container sync validation")
+        logger.info("🔍 [Validation] Starting container sync validation")
         logger.info(f"🔍 [Validation] Container: {container_name}, Project: {project_name}, Mount: {mounted_path}")
         
         # Check 1: Container name should match pattern
@@ -135,7 +134,7 @@ class PipelineValidationService:
         self.validation_results.append(result)
         
         if result["passed"]:
-            logger.info(f"✅ [Validation] Container sync validation passed")
+            logger.info("✅ [Validation] Container sync validation passed")
         else:
             logger.error(f"❌ [Validation] Container sync validation failed: {issues}")
         
@@ -156,7 +155,7 @@ class PipelineValidationService:
         validation_start = datetime.now()
         issues = []
         
-        logger.info(f"🔍 [Validation] Starting collection naming validation")
+        logger.info("🔍 [Validation] Starting collection naming validation")
         logger.info(f"🔍 [Validation] Collection: {collection_name}, Project: {project_name}, Type: {collection_type}")
         
         if collection_type == "qdrant":
@@ -189,7 +188,7 @@ class PipelineValidationService:
         self.validation_results.append(result)
         
         if result["passed"]:
-            logger.info(f"✅ [Validation] Collection naming validation passed")
+            logger.info("✅ [Validation] Collection naming validation passed")
         else:
             logger.error(f"❌ [Validation] Collection naming validation failed: {issues}")
         
@@ -206,7 +205,7 @@ class PipelineValidationService:
             Validation result dictionary
         """
         validation_start = datetime.now()
-        logger.info(f"🔍 [Validation] Starting end-to-end synchronization validation")
+        logger.info("🔍 [Validation] Starting end-to-end synchronization validation")
         
         project_name = project_info.get("project", "unknown")
         project_path = project_info.get("path", "")

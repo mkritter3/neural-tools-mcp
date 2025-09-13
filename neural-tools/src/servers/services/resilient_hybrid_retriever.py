@@ -7,13 +7,11 @@ Following roadmap Phase 1.5 specifications
 
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any
 from datetime import datetime
 
 from infrastructure.error_handling import (
-    database_retry, VectorDatabaseException, GraphDatabaseException,
-    EmbeddingException, error_handler, graceful_degradation,
-    ErrorCategory, ErrorSeverity
+    database_retry, error_handler, graceful_degradation
 )
 
 logger = logging.getLogger(__name__)

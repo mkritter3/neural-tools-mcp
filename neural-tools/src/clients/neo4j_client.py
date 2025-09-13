@@ -11,8 +11,8 @@ Features: Code relationships, semantic search integration, hybrid GraphRAG
 import os
 import logging
 import asyncio
-from typing import Dict, List, Any, Optional, Tuple
-from neo4j import AsyncGraphDatabase, AsyncDriver, AsyncSession
+from typing import Dict, List, Any, Optional
+from neo4j import AsyncGraphDatabase, AsyncDriver
 from neo4j.exceptions import ServiceUnavailable, AuthError, ConfigurationError
 import json
 import hashlib
@@ -192,8 +192,8 @@ class Neo4jGraphRAGClient:
                 "embedding_vector": embedding_vector
             })
             
-            query = f"""
-            MERGE (f:File {{project_path: $project_path}})
+            query = """
+            MERGE (f:File {project_path: $project_path})
             SET f += $properties
             SET f.updated_at = datetime()
             RETURN f.project_path as path
@@ -254,12 +254,12 @@ class Neo4jGraphRAGClient:
                 "embedding_vector": embedding_vector
             })
             
-            query = f"""
-            MERGE (fn:Function {{project_signature: $project_signature}})
+            query = """
+            MERGE (fn:Function {project_signature: $project_signature})
             SET fn += $properties
             SET fn.updated_at = datetime()
             WITH fn
-            MATCH (f:File {{project_path: $project_file_path}})
+            MATCH (f:File {project_path: $project_file_path})
             MERGE (f)-[:CONTAINS]->(fn)
             RETURN fn.name as name
             """
@@ -317,12 +317,12 @@ class Neo4jGraphRAGClient:
                 "embedding_vector": embedding_vector
             })
             
-            query = f"""
-            MERGE (c:Class {{project_name: $project_class_name}})
+            query = """
+            MERGE (c:Class {project_name: $project_class_name})
             SET c += $properties
             SET c.updated_at = datetime()
             WITH c
-            MATCH (f:File {{project_path: $project_file_path}})
+            MATCH (f:File {project_path: $project_file_path})
             MERGE (f)-[:CONTAINS]->(c)
             RETURN c.name as name
             """

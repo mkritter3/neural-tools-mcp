@@ -6,7 +6,7 @@ Manages .canon.yaml configuration and applies canonical weights
 
 import yaml
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 import fnmatch
 import logging
 

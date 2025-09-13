@@ -7,7 +7,7 @@ import time
 import logging
 import asyncio
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 import redis.asyncio as redis
 
 logger = logging.getLogger(__name__)

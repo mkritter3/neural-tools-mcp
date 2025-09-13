@@ -18,11 +18,9 @@ Key components:
 
 import asyncio
 import logging
-import time
 import functools
 from typing import Dict, List, Any, Optional, Callable, Awaitable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 
 try:
     from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -483,7 +481,7 @@ if __name__ == "__main__":
             
             # Show stats
             stats = service.get_stats()
-            print(f"\n📊 Resilience Stats:")
+            print("\n📊 Resilience Stats:")
             print(f"  Circuit breakers: {len(stats['circuit_breakers'])}")
             print(f"  Config: {stats['config']}")
             

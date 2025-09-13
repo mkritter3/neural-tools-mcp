@@ -8,11 +8,10 @@ import asyncio
 import logging
 import hashlib
 from pathlib import Path
-from typing import Dict, Set, Optional, Callable, Awaitable, List
+from typing import Dict, Optional, Callable, Awaitable, List
 import time
-from datetime import datetime
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent, FileDeletedEvent
+from watchdog.events import FileSystemEventHandler
 
 logger = logging.getLogger(__name__)
 

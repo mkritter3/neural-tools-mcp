@@ -7,7 +7,7 @@ Following MCP 2025-06-18 specification
 
 import json
 import logging
-from typing import Dict, Any, List, Optional, Callable, Awaitable
+from typing import Dict, Any, Optional, Callable, Awaitable
 from functools import wraps
 
 from .validation_service import ValidationResult, ErrorType, validate_mcp_parameters

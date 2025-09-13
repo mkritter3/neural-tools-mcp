@@ -7,9 +7,8 @@ FastAPI server that exposes Nomic's latest embedding model with MoE architecture
 
 import os
 import time
-import asyncio
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -81,8 +80,8 @@ async def lifespan(app: FastAPI):
                     logger.warning(f"Torch compile failed: {e}")
             
             logger.info(f"✅ Loaded Nomic Embed v2-MoE: {model_name}")
-            logger.info(f"📊 Model parameters: 305M active / 475M total")
-            logger.info(f"⚡ Expected 30-40% lower inference costs vs v1")
+            logger.info("📊 Model parameters: 305M active / 475M total")
+            logger.info("⚡ Expected 30-40% lower inference costs vs v1")
             
             # Test embedding to verify model works
             test_embedding = embedding_model.encode(["test"], normalize_embeddings=True)

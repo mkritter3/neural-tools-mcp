@@ -10,7 +10,6 @@ import json
 import hashlib
 import time
 from typing import Dict, List, Any, Optional
-import asyncio
 
 # Neo4j imports with availability check
 NEO4J_AVAILABLE = False
@@ -269,7 +268,7 @@ class Neo4jService:
             for constraint in constraints:
                 await self.client.execute_query(constraint)
                 
-            logger.info(f"Neo4j constraints created for project isolation (ADR-0029)")
+            logger.info("Neo4j constraints created for project isolation (ADR-0029)")
                 
         except Exception as e:
             logger.warning(f"Could not create constraints: {e}")

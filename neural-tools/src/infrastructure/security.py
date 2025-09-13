@@ -22,10 +22,8 @@ import re
 import hmac
 import hashlib
 import time
-from typing import Dict, List, Any, Optional, Set, Union
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from pathlib import Path
 
 try:
     from pydantic import BaseModel, Field, validator, ValidationError
@@ -732,7 +730,7 @@ if __name__ == "__main__":
     
     # Show security stats
     stats = manager.get_security_stats()
-    print(f"\n📊 Security Statistics:")
+    print("\n📊 Security Statistics:")
     print(f"  Injection detection: {stats['config']['injection_detection_enabled']}")
     print(f"  Strict mode: {stats['config']['strict_mode']}")
     print(f"  Injection patterns: {stats['patterns']['injection_patterns_count']}")

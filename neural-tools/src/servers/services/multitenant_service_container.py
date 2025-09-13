@@ -8,10 +8,9 @@ Following roadmap Phase 1.3 specifications
 import asyncio
 import logging
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
 
-from service_container import ServiceContainer, ServiceHealth
-from infrastructure.multitenancy import TenantManager, TenantConfig, MultitenantQueryFilter, TenantResourceMonitor
+from service_container import ServiceContainer
+from infrastructure.multitenancy import TenantManager, MultitenantQueryFilter, TenantResourceMonitor
 
 logger = logging.getLogger(__name__)
 

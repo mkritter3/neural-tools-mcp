@@ -11,14 +11,11 @@ Date: 2025-09-12
 """
 
 import logging
-import asyncio
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List
 from datetime import datetime
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
 from neo4j import AsyncGraphDatabase
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

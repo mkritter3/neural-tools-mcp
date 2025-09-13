@@ -5,7 +5,7 @@ Implements ADR 0017: GraphRAG True Hybrid Search
 """
 
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from pathlib import Path
 import re
 try:
@@ -105,7 +105,7 @@ class CodeParser:
                 'exports': List of exported items
             }
         """
-        if not file_ext in self.supported_extensions:
+        if file_ext not in self.supported_extensions:
             return {}
         
         # Try tree-sitter first

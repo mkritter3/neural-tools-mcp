@@ -9,7 +9,6 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from fastmcp import FastMCP
 
-from services.service_container import ServiceContainer
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +450,7 @@ def register_core_tools(mcp: FastMCP, container=None):
         """
         try:
             # Simplified implementation for refactored version
-            from neural_server_refactored import ensure_services_initialized, qdrant_client, nomic_client, PROJECT_NAME
+            from neural_server_refactored import ensure_services_initialized, qdrant_client, nomic_client
             await ensure_services_initialized()
             
             if not qdrant_client:

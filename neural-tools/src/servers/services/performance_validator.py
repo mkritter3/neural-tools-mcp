@@ -5,12 +5,12 @@ Validates pool optimization and performance benchmarks
 
 import logging
 import statistics
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime
+from typing import Dict, List, Any
 from dataclasses import dataclass
 from enum import Enum
 
-from .load_tester import LoadTestResults, LoadTestConfig
+from .load_tester import LoadTestResults
 
 logger = logging.getLogger(__name__)
 

@@ -1114,7 +1114,6 @@ class SmartCodeChunker:
     
     async def benchmark_parsing_performance(self, source: str, language: str, iterations: int = 100) -> Dict[str, float]:
         """Benchmark Tree-sitter parsing performance vs traditional methods"""
-        import time
         
         # Use Tree-sitter if available
         if self.tree_sitter and language in self.tree_sitter.get_supported_languages():

@@ -5,13 +5,11 @@ Uses Claude Code SDK with your Pro/Max subscription authentication
 No separate API key required - leverages your existing Claude subscription
 """
 
-import asyncio
 import logging
 import time
 import json
 import hashlib
 from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 try:

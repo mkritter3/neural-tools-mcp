@@ -5,7 +5,7 @@ Distributed rate limiting with sliding window algorithm
 
 import time
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Dict, Tuple
 import redis.asyncio as redis
 
 logger = logging.getLogger(__name__)

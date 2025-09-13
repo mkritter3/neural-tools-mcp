@@ -7,8 +7,8 @@ import os
 import time
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from datetime import datetime
+from typing import Dict, Any, Optional
 import redis.asyncio as redis
 from dataclasses import dataclass
 from enum import Enum

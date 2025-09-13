@@ -13,9 +13,9 @@ import json
 import logging
 import os
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any
 
-from arq import create_pool, Worker
+from arq import Worker
 from arq.connections import RedisSettings
 
 logger = logging.getLogger(__name__)

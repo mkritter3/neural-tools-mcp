@@ -8,7 +8,6 @@ import typer
 from pathlib import Path
 import subprocess
 import psutil
-import json
 import httpx
 import time
 import sys
@@ -180,7 +179,7 @@ def server_status():
     running, pid = is_server_running()
     
     if running:
-        typer.echo(f"✅ Server is running")
+        typer.echo("✅ Server is running")
         typer.echo(f"🔗 URL: {get_server_url()}")
         typer.echo(f"📋 PID: {pid}")
         

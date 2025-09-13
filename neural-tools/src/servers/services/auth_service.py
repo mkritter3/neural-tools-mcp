@@ -8,7 +8,7 @@ import time
 import jwt
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any
 import redis.asyncio as redis
 import secrets
 import hashlib

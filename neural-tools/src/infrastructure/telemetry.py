@@ -13,7 +13,6 @@ import os
 import logging
 from contextlib import contextmanager
 from typing import Dict, Optional, Any
-from pathlib import Path
 
 # OpenTelemetry core
 from opentelemetry import trace, metrics

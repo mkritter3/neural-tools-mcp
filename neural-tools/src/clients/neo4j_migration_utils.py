@@ -17,9 +17,8 @@ import asyncio
 import logging
 import argparse
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 from datetime import datetime
-import sqlite3
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -540,7 +539,7 @@ class Neo4jMigrationManager:
                     # Restore backup
                     shutil.copytree(backup_path, kuzu_path)
                     rollback_results["kuzu_restored"] = True
-                    logger.info(f"✅ Kuzu data restored from backup")
+                    logger.info("✅ Kuzu data restored from backup")
                     
                 except Exception as e:
                     logger.error(f"Kuzu restore error: {e}")

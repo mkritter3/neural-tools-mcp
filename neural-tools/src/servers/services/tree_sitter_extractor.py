@@ -12,7 +12,6 @@ import tree_sitter_python as tspython
 import tree_sitter_javascript as tsjavascript
 import tree_sitter_typescript as tstypescript
 from tree_sitter import Language, Parser, Node
-import time
 
 logger = logging.getLogger(__name__)
 

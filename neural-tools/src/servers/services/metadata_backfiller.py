@@ -4,14 +4,12 @@ Metadata Backfiller for Existing Indexed Data
 ADR-0031: Backfills canonical metadata and PRISM scores for already-indexed content
 """
 
-import os
 import sys
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 from datetime import datetime
-import json
 
 # Add parent directories to path for imports
 services_dir = Path(__file__).parent

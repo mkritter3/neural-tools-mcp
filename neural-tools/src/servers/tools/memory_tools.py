@@ -4,10 +4,8 @@ Memory Tools - Storage and retrieval MCP tools with service injection
 Extracted from monolithic neural-mcp-server-enhanced.py
 """
 
-import os
 import logging
 import uuid
-import hashlib
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from fastmcp import FastMCP

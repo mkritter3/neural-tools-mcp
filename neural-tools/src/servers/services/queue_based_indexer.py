@@ -9,10 +9,9 @@ instead of directly processing them.
 import asyncio
 import hashlib
 import logging
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, Optional
 from watchdog.events import FileSystemEventHandler
 
 from .async_preprocessing_pipeline import AsyncPreprocessingPipeline

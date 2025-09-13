@@ -11,16 +11,37 @@ Author: L9 Engineering Team
 Date: 2025-09-12
 """
 
-import os
 import json
 import re
 import logging
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List
 from datetime import datetime
 import asyncio
 
 logger = logging.getLogger(__name__)
+
+# Module-level singleton instance (ADR-0044)
+_global_context_manager = None
+_manager_lock = asyncio.Lock()
+
+
+async def get_project_context_manager() -> 'ProjectContextManager':
+    """
+    Get or create the singleton ProjectContextManager instance.
+    Implements ADR-0044 for proper state management.
+
+    Returns:
+        ProjectContextManager: The singleton instance
+    """
+    global _global_context_manager
+
+    async with _manager_lock:
+        if _global_context_manager is None:
+            logger.info("🏗️ Creating singleton ProjectContextManager instance")
+            _global_context_manager = ProjectContextManager()
+            # Note: Don't call async initialize here, let caller do it if needed
+        return _global_context_manager
 
 
 class ProjectContextManager:
@@ -45,6 +66,7 @@ class ProjectContextManager:
         self._instance_id = None  # Will be set by MCP server
         self.switch_lock = asyncio.Lock()  # Add lock for concurrent safety (ADR-0043)
         self.container = None  # Store ServiceContainer here (Gemini: correct pattern)
+        self.container_registry: Dict[str, int] = {}  # Track container->port mappings (ADR-0044)
         self._load_registry()
         logger.info("🎯 ProjectContextManager initialized")
     
@@ -78,6 +100,14 @@ class ProjectContextManager:
                         if "active_project_path" in data and data["active_project_path"]:
                             self.current_project_path = Path(data["active_project_path"])
                             logger.info(f"📌 Restored active project: {self.current_project}")
+
+                    # Load container port registry (ADR-0044)
+                    if "container_ports" in data:
+                        self.container_registry = {
+                            k: int(v) for k, v in data["container_ports"].items()
+                        }
+                        logger.info(f"🐳 Loaded container ports: {self.container_registry}")
+
                     logger.info(f"📚 Loaded {len(self.project_registry)} projects from registry")
             except Exception as e:
                 logger.error(f"Failed to load project registry: {e}")
@@ -87,7 +117,7 @@ class ProjectContextManager:
         registry_path = self._get_registry_path()
         try:
             registry_path.parent.mkdir(exist_ok=True, parents=True)
-            
+
             data = {
                 "projects": {k: str(v) for k, v in self.project_registry.items()},
                 "last_activity": {
@@ -95,6 +125,7 @@ class ProjectContextManager:
                 },
                 "active_project": self.current_project,
                 "active_project_path": str(self.current_project_path) if self.current_project_path else None,
+                "container_ports": self.container_registry,  # Save container ports (ADR-0044)
                 "version": "1.0",
                 "updated": datetime.now().isoformat()
             }
@@ -488,11 +519,28 @@ class ProjectContextManager:
             self.current_project = project_info['name']  # Keep as string for compatibility
             self.current_project_path = Path(project_info['path'])
 
+            # CRITICAL: Persist to registry immediately (ADR-0044)
+            await self._persist_registry()
+
             # Phase 3: Rebuild
             await self._rebuild_context()
 
             # Gemini: Must return project dict for handler
             return project_info  # Return the full dict, not just the name
+
+    async def _persist_registry(self):
+        """
+        Persist current state to registry file asynchronously (ADR-0044)
+        This ensures state is saved immediately after changes.
+        """
+        try:
+            # Use sync _save_registry in executor to avoid blocking
+            import asyncio
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._save_registry)
+            logger.info(f"💾 Persisted registry with project: {self.current_project}")
+        except Exception as e:
+            logger.error(f"Failed to persist registry: {e}")
 
     def _detect_project(self, project_path: str) -> Dict:
         """
