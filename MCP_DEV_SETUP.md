@@ -6,46 +6,48 @@ This document outlines the L9 engineering approach for managing MCP server confi
 
 ### Use Development Neural Tools (This Project)
 ```bash
-# Set environment variable (add to your shell profile for persistence)
-export CLAUDE_MCP_CONFIG_PATH="$HOME/.claude/mcp-dev-config.json"
+# Simply work from this project directory
+cd /Users/mkr/local-coding/claude-l9-template
 
-# Start Claude - it will use the dev neural tools with all ADR-0034 fixes
+# Restart Claude - it automatically uses local .mcp.json with all ADR-0034 fixes
 ```
 
 ### Use Production Neural Tools (Global)
 ```bash
-# Remove or unset the environment variable
-unset CLAUDE_MCP_CONFIG_PATH
+# Work from any other directory 
+cd ~/
 
-# Start Claude - it will use the global production neural tools
+# Restart Claude - it uses global ~/.claude/mcp_config.json
 ```
 
 ## Configuration Files
 
 ### Development Config
-- **Location**: `~/.claude/mcp-dev-config.json`
+- **Location**: `.mcp.json` (local to this project)
 - **Neural Tools Path**: `/Users/mkr/local-coding/claude-l9-template/neural-tools/`
 - **Purpose**: Testing and development with latest fixes
 - **Features**: ADR-0034 pipeline synchronization, dynamic project detection, data migration
+- **Activation**: Automatic when Claude starts from this project directory
 
 ### Production Config  
-- **Location**: `~/.claude/mcp_config.json`
+- **Location**: `~/.claude/mcp_config.json` (global)
 - **Neural Tools Path**: `/Users/mkr/.claude/mcp-servers/neural-tools/`
 - **Purpose**: Stable version for all projects
 - **Deployment**: Via `scripts/deploy-to-global-mcp.sh`
+- **Activation**: Automatic when Claude starts from any other directory
 
 ## L9 Engineering Workflow
 
 ### Development Phase
 1. Work in `/Users/mkr/local-coding/claude-l9-template/neural-tools/`
-2. Use dev config: `export CLAUDE_MCP_CONFIG_PATH="$HOME/.claude/mcp-dev-config.json"`
+2. Ensure Claude is started from project directory (uses local `.mcp.json`)
 3. Test changes with Claude using dev neural tools
 4. Run validation: `python3 -c "...validation tests..."`
 
 ### Production Deployment
 1. Validate all tests pass in development
 2. Run deployment script: `./scripts/deploy-to-global-mcp.sh`
-3. Switch to production config: `unset CLAUDE_MCP_CONFIG_PATH`
+3. Change to any directory outside the project: `cd ~/`
 4. Restart Claude to load production neural tools
 5. Verify functionality across multiple projects
 
@@ -56,13 +58,12 @@ rm -rf /Users/mkr/.claude/mcp-servers/neural-tools
 mv /Users/mkr/.claude/mcp-servers/neural-tools-backup-YYYYMMDD-HHMMSS /Users/mkr/.claude/mcp-servers/neural-tools
 ```
 
-## Environment Variables
+## Configuration Selection
 
-| Variable | Development | Production |
-|----------|-------------|------------|
-| `CLAUDE_MCP_CONFIG_PATH` | `~/.claude/mcp-dev-config.json` | *(unset)* |
-| `MCP_ENV` | `development` | *(not set)* |
-| `PROJECT_VALIDATION_ENABLED` | `true` | *(not set)* |
+| Context | Config Used | Neural Tools Path |
+|---------|-------------|------------------|
+| **Development** (in project dir) | `.mcp.json` (local) | This project's neural-tools |
+| **Production** (outside project) | `~/.claude/mcp_config.json` (global) | Deployed neural-tools |
 
 ## Benefits of This Approach
 
@@ -83,10 +84,12 @@ mv /Users/mkr/.claude/mcp-servers/neural-tools-backup-YYYYMMDD-HHMMSS /Users/mkr
 
 ### Claude Not Using Dev Config
 ```bash
-# Verify environment variable is set
-echo $CLAUDE_MCP_CONFIG_PATH
+# Verify you're in the project directory
+pwd
+# Should output: /Users/mkr/local-coding/claude-l9-template
 
-# Should output: /Users/mkr/.claude/mcp-dev-config.json
+# Check local .mcp.json exists
+ls -la .mcp.json
 ```
 
 ### Project Detection Still Shows "default" 

@@ -658,18 +658,19 @@ python3 scripts/run_l9_validation.py
    # All fixes, features, and improvements go here
    ```
 
-2. **Use development MCP configuration**:
+2. **Test with local MCP configuration**:
    ```bash
-   # Set environment to use dev neural-tools with your fixes
-   export CLAUDE_MCP_CONFIG_PATH="$HOME/.claude/mcp-dev-config.json"
+   # Ensure you're in the project directory
+   cd /Users/mkr/local-coding/claude-l9-template
    
-   # Restart Claude - now uses dev neural-tools from this directory
+   # Restart Claude - it automatically uses local .mcp.json for development
+   # Local .mcp.json points to THIS project's neural-tools with your fixes
    ```
 
 3. **Test and validate changes**:
    ```bash
    # Test neural tools functionality
-   # Run validation scripts as needed
+   # Run validation scripts as needed  
    # Verify fixes work correctly
    ```
 
@@ -683,18 +684,19 @@ python3 scripts/run_l9_validation.py
    # This copies your fixes to /Users/mkr/.claude/mcp-servers/neural-tools/
    ```
 
-5. **Switch to production configuration**:
+5. **Use production configuration**:
    ```bash
-   # Use global MCP configuration for all projects
-   unset CLAUDE_MCP_CONFIG_PATH
+   # Change to any other directory (outside this project)
+   cd ~/  
    
-   # Restart Claude - now uses deployed global neural-tools
+   # Restart Claude - now uses global MCP configuration
+   # Global config points to deployed neural-tools in ~/.claude/mcp-servers/
    ```
 
 ### Configuration Files
 
-- **Dev Config**: `~/.claude/mcp-dev-config.json` (points to this project)
-- **Prod Config**: `~/.claude/mcp_config.json` (points to global MCP servers)
+- **Dev Config**: `.mcp.json` (local, points to this project's neural-tools)
+- **Prod Config**: `~/.claude/mcp_config.json` (global, points to deployed MCP servers)
 - **Deployment Script**: `scripts/deploy-to-global-mcp.sh` (automated deployment)
 - **Workflow Guide**: `MCP_DEV_SETUP.md` (detailed instructions)
 
@@ -710,16 +712,16 @@ python3 scripts/run_l9_validation.py
 ### Quick Commands
 
 ```bash
-# Switch to development (test your changes)
-export CLAUDE_MCP_CONFIG_PATH="$HOME/.claude/mcp-dev-config.json"
+# Development mode (test your changes)
+cd /Users/mkr/local-coding/claude-l9-template  # Uses local .mcp.json
+# Restart Claude
 
 # Deploy to production (when satisfied with changes)  
 ./scripts/deploy-to-global-mcp.sh
 
-# Switch to production (use deployed version)
-unset CLAUDE_MCP_CONFIG_PATH
-
-# Always restart Claude after config changes
+# Production mode (use deployed version)
+cd ~/  # Uses global ~/.claude/mcp_config.json
+# Restart Claude
 ```
 
 ### Rollback (If Needed)
@@ -730,7 +732,7 @@ rm -rf /Users/mkr/.claude/mcp-servers/neural-tools
 mv /Users/mkr/.claude/mcp-servers/neural-tools-backup-* /Users/mkr/.claude/mcp-servers/neural-tools
 ```
 
-**Key Insight**: This project serves as the **development environment** for neural-tools. The global MCP directory is **production**. Always develop here, test with dev config, then deploy to global when ready.
+**Key Insight**: This project serves as the **development environment** for neural-tools. The local `.mcp.json` automatically activates when Claude is started from this directory. The global MCP directory is **production**. Always develop here, test locally, then deploy to global when ready.
 
 ## 🎓 Key Learnings
 
@@ -739,8 +741,8 @@ mv /Users/mkr/.claude/mcp-servers/neural-tools-backup-* /Users/mkr/.claude/mcp-s
 3. **Defaults matter** - Code defaults should match your actual deployment
 4. **Pool sizing is conservative** - Start with larger pools, optimize down based on metrics
 5. **Session isolation prevents issues** - Resource contention is real in concurrent systems
-6. **Dev/Prod Separation is Critical** - Use dev config for changes, deploy script for production
-7. **MCP Configuration Controls Everything** - CLAUDE_MCP_CONFIG_PATH determines which neural-tools version loads
+6. **Dev/Prod Separation is Critical** - Local .mcp.json for development, global config for production
+7. **Directory-Based MCP Selection** - Claude uses local .mcp.json when present, falls back to global config
 
 ## 📚 Protocol Standards (September 2025)
 
