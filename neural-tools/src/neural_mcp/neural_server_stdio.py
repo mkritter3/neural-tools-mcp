@@ -36,6 +36,9 @@ from migration_manager import MigrationManager
 from canon_manager import CanonManager
 from metadata_backfiller import MetadataBackfiller
 # Import project context management for ADR-0033
+from servers.services.project_context_manager import get_project_context_manager
+# Import project detector for working directory detection
+from neural_mcp.project_detector import get_user_project
 
 # Configure logging to stderr (NEVER to stdout for STDIO transport)
 logging.basicConfig(
@@ -542,17 +545,67 @@ class MultiProjectServiceState:
         return metrics
 
 
-state = MultiProjectServiceState()
-server = Server("l9-neural-enhanced")
+from contextlib import asynccontextmanager
 
-# ADR-0033: Dynamic project context manager
-# ADR-0044: Import singleton getter but don't call yet
-from project_context_manager import get_project_context_manager
-PROJECT_CONTEXT = None  # Will be initialized as singleton in run()
+# CRITICAL FIX: Capture working directory ONLY at MCP initialization time
+# This variable will be set ONCE during the MCP initialization handshake
+INITIAL_WORKING_DIRECTORY = None
+PROJECT_CONTEXT = None
+
+@asynccontextmanager
+async def server_lifespan(server: Server):
+    """
+    MCP server lifespan handler - manages initialization and shutdown.
+    This is where we capture the working directory ONCE at startup.
+    """
+    global INITIAL_WORKING_DIRECTORY, PROJECT_CONTEXT
+
+    # Capture the working directory ONCE at server startup
+    # This happens BEFORE any navigation by Claude
+    INITIAL_WORKING_DIRECTORY = os.getcwd()
+    logger.info(f"🎯 MCP Server Started - Captured working directory: {INITIAL_WORKING_DIRECTORY}")
+
+    # Initialize PROJECT_CONTEXT singleton
+    PROJECT_CONTEXT = await get_project_context_manager()
+    PROJECT_CONTEXT.set_instance_id(state.instance_id)
+
+    # Determine project based on initial working directory
+    cwd_path = Path(INITIAL_WORKING_DIRECTORY)
+
+    # Check if this is the actual user directory or just the server location
+    if "mcp-servers" in str(cwd_path) or "mcp_servers" in str(cwd_path):
+        # We're running from global MCP location, need to detect actual project
+        logger.info("📍 Running from global MCP location - attempting project detection")
+
+        # Try to detect the project using various strategies
+        project_name, project_path = await get_user_project()
+
+        if project_name and project_path:
+            logger.info(f"✅ Auto-detected project: {project_name} at {project_path}")
+            await PROJECT_CONTEXT.set_project(str(project_path))
+        else:
+            logger.warning("⚠️ Could not auto-detect project from global MCP location")
+            logger.warning("⚠️ User must call set_project_context() to specify project")
+    else:
+        # We're running from a project directory - use it!
+        project_name = await PROJECT_CONTEXT._detect_project_name(cwd_path)
+        logger.info(f"✅ Using initial MCP directory as project: {project_name} at {cwd_path}")
+        await PROJECT_CONTEXT.set_project(str(cwd_path))
+
+    logger.info("✨ MCP initialization complete - project context established")
+
+    # Yield control back to the server
+    yield
+
+    # Cleanup on shutdown
+    logger.info("👋 MCP server shutting down")
+
+
+state = MultiProjectServiceState()
+server = Server("neural-tools", lifespan=server_lifespan)
 
 # Update logger to include instance ID now that state is available
 logger.get_instance_id = lambda: state.instance_id if state else "unknown"
-
 
 # Removed initialize_services() - services now initialized lazily on first use
 # This prevents blocking the MCP handshake with 30+ second service initialization
@@ -564,7 +617,14 @@ async def get_project_context(arguments: Dict[str, Any]):
     Falls back to DEFAULT_PROJECT_NAME if detection fails.
     """
     global PROJECT_CONTEXT
-    
+
+    # Ensure PROJECT_CONTEXT is initialized (should be done in lifespan)
+    if PROJECT_CONTEXT is None:
+        logger.warning("⚠️ PROJECT_CONTEXT not initialized yet, initializing now")
+        PROJECT_CONTEXT = await get_project_context_manager()
+        if hasattr(state, 'instance_id'):
+            PROJECT_CONTEXT.set_instance_id(state.instance_id)
+
     # Check if project explicitly provided in arguments
     if 'project' in arguments and arguments['project']:
         project_name = arguments['project']
@@ -2581,13 +2641,14 @@ async def set_project_context_impl(arguments: dict) -> List[types.TextContent]:
     Returns:
         Project information including name and detection method
     """
-    global PROJECT_CONTEXT
+    global PROJECT_CONTEXT, INITIAL_WORKING_DIRECTORY
 
     try:
         path = arguments.get('path')
         if not path:
-            # Auto-detect from current working directory
-            path = os.getcwd()
+            # Use the INITIAL working directory captured at MCP initialization
+            # NOT os.getcwd() which could have changed
+            path = INITIAL_WORKING_DIRECTORY or os.getcwd()
 
         # Use the manager's switch_project_with_teardown method (returns project dict)
         new_project = await PROJECT_CONTEXT.switch_project_with_teardown(path)
@@ -2743,15 +2804,16 @@ async def run():
     - Logs go to stderr only
     - Client initiates shutdown by closing stdin
     - No signal handling in server (client handles termination)
-    """
-    # ADR-0044: Initialize PROJECT_CONTEXT as singleton
-    global PROJECT_CONTEXT
-    PROJECT_CONTEXT = await get_project_context_manager()
-    PROJECT_CONTEXT.set_instance_id(state.instance_id)
 
+    CRITICAL: Project context is now established in handle_initialized()
+    which captures the working directory ONLY at MCP initialization time.
+    """
     logger.info("🚀 Starting L9 Neural MCP Server (STDIO Transport)")
     logger.info(f"🔐 Instance ID: {state.instance_id}")
     logger.info(f"🔧 Cleanup config: Timeout={INSTANCE_TIMEOUT_HOURS}h, Interval={CLEANUP_INTERVAL_MINUTES}m, Enabled={ENABLE_AUTO_CLEANUP}")
+
+    # PROJECT_CONTEXT will be initialized in handle_initialized()
+    # This ensures we capture the working directory at the RIGHT time
     
     # Create PID file for tracking (helps with orphan cleanup)
     pid = os.getpid()
@@ -2779,7 +2841,7 @@ async def run():
                 read_stream,
                 write_stream,
                 InitializationOptions(
-                    server_name="l9-neural-enhanced",
+                    server_name="neural-tools",
                     server_version="2.0.0-stdio",
                     capabilities=server.get_capabilities(notification_options=NotificationOptions(), experimental_capabilities={}),
                 ),

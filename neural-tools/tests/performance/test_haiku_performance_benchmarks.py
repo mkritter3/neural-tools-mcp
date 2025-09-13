@@ -22,8 +22,14 @@ import psutil
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
 
-from src.infrastructure.haiku_reranker import HaikuReRanker
-from src.infrastructure.enhanced_hybrid_retriever import EnhancedHybridRetriever
+import sys
+from pathlib import Path
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+
+from infrastructure.haiku_reranker import HaikuReRanker
+from infrastructure.enhanced_hybrid_retriever import EnhancedHybridRetriever
 
 
 class TestHaikuPerformanceBenchmarks:

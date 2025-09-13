@@ -1,0 +1,44 @@
+version: '1.0'
+project_type: generic
+description: GraphRAG schema for claude-l9-template (generic project)
+extends: []
+created_at: '2025-09-13T13:01:13.453011'
+updated_at: '2025-09-13T13:01:15.322996'
+node_types:
+  TestNodeE2E:
+    properties:
+      id: string
+      name: string
+      value: integer
+    indexes: []
+    constraints: []
+    description: E2E test node type
+relationship_types:
+  E2E_TEST_RELATION:
+    from:
+    - TestNodeE2E
+    to:
+    - TestNodeE2E
+    properties: {}
+    description: E2E test relationship
+collections:
+  code:
+    name: project_claude-l9-template_code
+    vector_size: 768
+    distance: cosine
+    fields:
+    - content
+    - file_path
+    - language
+    - node_type
+    description: ''
+  docs:
+    name: project_claude-l9-template_docs
+    vector_size: 768
+    distance: cosine
+    fields:
+    - content
+    - file_path
+    - title
+    - section
+    description: ''

@@ -1,8 +1,9 @@
 #!/bin/bash
-# Automated Test Runner for MCP Changes
-# Runs comprehensive test suite before deployment
+# L9 Neural Tools Comprehensive Test Suite
+# Implements ADR-0047: CI/CD Validation Framework
+# Based on Grok-4 and Gemini-2.5-pro consensus analysis
 
-set -e  # Exit on any error
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NEURAL_TOOLS_DIR="$(dirname "$SCRIPT_DIR")"
