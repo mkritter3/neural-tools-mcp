@@ -306,6 +306,64 @@ REDIS_QUEUE_PORT=46380
 
 **Critical**: Use `host.docker.internal` (not `localhost`) for container-to-host communication.
 
+### ADR-0038: Docker Image Lifecycle Management
+
+**🚨 CRITICAL DOCKER IMAGE REQUIREMENTS (ADR-0038) 🚨**
+**ALL DOCKER IMAGES MUST FOLLOW SEMANTIC VERSIONING AND LIFECYCLE MANAGEMENT!**
+
+#### Required Image Tagging Strategy
+
+**Production Images MUST use semantic versioning:**
+```bash
+# CORRECT - Semantic versioning
+l9-neural-indexer:v1.2.0
+neural-flow-nomic-v2:v1.1.0
+l9-neural-indexer:sha-a471e44  # Immutable Git SHA tags
+
+# WRONG - Debug suffixes and ad-hoc naming
+l9-neural-indexer:adr-37-fix
+neural-flow-nomic-v2:debug-build-20240912
+```
+
+#### Container Naming Standards
+
+**Production containers MUST NOT have debug suffixes:**
+```bash
+# CORRECT - Clean production names
+claude-l9-template-indexer-1
+claude-l9-template-nomic-1
+claude-l9-template-neo4j-1
+
+# WRONG - Debug/development suffixes
+claude-l9-template-indexer-adr-37-1
+l9-neural-indexer-debug-1
+```
+
+#### Image Lifecycle Rules
+
+| Tag Type | Purpose | Lifecycle | Example |
+|----------|---------|-----------|---------|
+| `vX.Y.Z` | Production releases | Permanent | `v1.2.0` |
+| `sha-{hash}` | Immutable artifacts | Permanent | `sha-a471e44` |
+| `production` | Latest stable | Moved on release | Points to latest vX.Y.Z |
+| `latest` | Latest build | Updated continuously | Development use only |
+| `dev-{feature}` | Feature branches | Temporary | `dev-adr37` |
+
+#### Docker Image Hygiene Requirements
+
+- **Target**: ≤3 tags per service (`vX.Y.Z`, `sha-{hash}`, `production`)
+- **Cleanup**: Remove debug/temporary tags after 7 days
+- **Storage**: ≤2GB total Docker image storage
+- **Validation**: Zero downtime during image transitions
+
+**FAILURE TO FOLLOW ADR-0038 CAUSES:**
+- Docker image proliferation (8+ tags per service)
+- Storage bloat and confusion
+- Non-standard deployments
+- L9 compliance violations
+
+**SEE ADR-0038 FOR COMPLETE IMPLEMENTATION DETAILS**
+
 ## 🚀 L9 2025 Architecture Standards
 
 ### MCP Protocol (2025-06-18)
