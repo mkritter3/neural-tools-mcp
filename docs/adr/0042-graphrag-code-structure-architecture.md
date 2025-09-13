@@ -1,6 +1,6 @@
 # ADR-0042: GraphRAG Code Structure Architecture - From Chunks to AST
 
-**Status**: Proposed
+**Status**: Partially Implemented
 **Date**: September 13, 2025
 **Author**: L9 Engineering Team
 **Reviewed By**: Gemini 2.5 Pro, Grok-4
@@ -250,6 +250,53 @@ async def hybrid_search(query: str, structure_filter: Optional[str] = None):
 **Approved for immediate implementation.** This aligns with GraphRAG best practices, leverages our existing tree-sitter infrastructure, and provides actual value through relationship modeling that Qdrant alone cannot provide.
 
 The key insight: **For code, AST parsing > LLM extraction**. Code has formal grammar and deterministic structure - we should use the right tool for the job.
+
+## Implementation Status (September 13, 2025)
+
+### ✅ What's Working
+
+1. **Hybrid Architecture Implemented**:
+   - CodeChunk nodes ARE created in Neo4j with matching IDs to Qdrant
+   - Function and Class nodes ARE extracted via tree-sitter
+   - Relationships ARE properly created (Function -> DEFINED_IN -> File)
+   - GraphRAG search DOES return results
+
+2. **Data Flow Working**:
+   - Files indexed to both Neo4j and Qdrant with same chunk IDs
+   - Semantic search via Qdrant works perfectly
+   - Graph queries via Neo4j work when tested directly
+   - Line number tracking enables chunk-to-function mapping
+
+3. **Fixed Issues**:
+   - Collection naming centralized (removed `_code` suffix)
+   - Project name persistence fixed
+   - ID matching between databases verified
+   - Drift prevention mechanism added
+
+### ⚠️ Partial Implementation
+
+1. **Graph Context Not Returned**:
+   - The `_fetch_graph_context` method executes but returns errors
+   - Cypher query works directly but fails in async execution
+   - Graph context exists but shows as `None` in responses
+
+2. **Remaining Work**:
+   - Fix async Neo4j query execution in `_fetch_graph_context`
+   - Add proper error handling for graph traversal
+   - Include graph context in MCP response formatting
+
+### 📊 Current State
+
+```
+Current Implementation:
+- CodeChunk nodes: ✅ Created with content and line numbers
+- Function/Class nodes: ✅ Extracted and stored
+- PART_OF relationships: ✅ CodeChunk -> File
+- DEFINED_IN relationships: ✅ Function -> File
+- Graph context retrieval: ❌ Returns None due to async error
+```
+
+The architecture is correct and mostly implemented. The main issue is a technical problem with async Neo4j query execution that prevents graph context from being included in results.
 
 ---
 *Confidence: 95%*

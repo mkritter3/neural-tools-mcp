@@ -561,6 +561,30 @@ session_context = await session_manager.get_session(session_id)
 
 **Verification**: 100% test pass rate, zero cross-project relationships as of September 12, 2025!
 
+### Issue 6: GraphRAG Empty Results ⭐ SOLVED (September 13, 2025)
+
+**Symptom**: GraphRAG hybrid search returns empty results despite data in both Neo4j and Qdrant
+
+**Root Causes & Solutions**:
+
+1. **Collection Naming Mismatch**:
+   - **Problem**: Indexer used `project_claude-l9-template_code`, search expected `project-claude-l9-template`
+   - **Fix**: Created `CollectionNamingManager` as single source of truth, removed `_code` suffix everywhere (ADR-0039)
+
+2. **Project Name Instability**:
+   - **Problem**: Project detection changed with directory navigation (Path.cwd())
+   - **Fix**: Modified `ProjectContextManager` to persist active project in registry
+
+3. **ID Mismatch Between Databases**:
+   - **Problem**: Neo4j and Qdrant had different IDs for same chunks
+   - **Fix**: Ensured both use same 64-char hex hash as chunk ID
+
+4. **Database Drift**:
+   - **Problem**: Neo4j and Qdrant could get out of sync
+   - **Fix**: Created `DriftMonitor` service for automatic reconciliation
+
+**Verification**: GraphRAG now returns results with proper scoring!
+
 ## 🎯 Key Architectural Decisions
 
 ### 1. Pattern-Based Metadata Extraction vs LLM
