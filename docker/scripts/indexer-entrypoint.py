@@ -269,24 +269,48 @@ class IndexerRunner:
         """Main entry point for the indexer container."""
         logger.info("Starting Neural Indexer Sidecar Container")
         
-        workspace_path = Path("/workspace")
+        # ADR-0037: Environment Variable Configuration Priority
+        # 1. PRIORITY: Environment Variables (explicit configuration)
+        project_name = os.getenv("PROJECT_NAME")
+        project_path_env = os.getenv("PROJECT_PATH")
         
-        # Find the single project directory mounted inside /workspace
-        project_dirs = [d for d in workspace_path.iterdir() if d.is_dir() and not d.name.startswith('.')]
-        
-        if not project_dirs:
-            logger.error("FATAL: No project directory found inside /workspace.")
-            logger.error("Mount your project directory as a volume, e.g., -v /path/to/my-project:/workspace/my-project")
-            sys.exit(1)
-        
-        if len(project_dirs) > 1:
-            logger.warning(f"Multiple directories found in /workspace: {[d.name for d in project_dirs]}.")
-            logger.warning(f"Using the first one found: {project_dirs[0].name}")
-        
-        project_path = project_dirs[0]
-        project_name = project_path.name
-        
-        logger.info(f"Auto-detected PROJECT_NAME='{project_name}' from mounted directory '{project_path}'")
+        if project_name and project_path_env:
+            project_path = Path(project_path_env)
+            if not project_path.exists() or not project_path.is_dir():
+                logger.error(f"FATAL: PROJECT_PATH does not exist or is not a directory: {project_path_env}")
+                sys.exit(1)
+            logger.info(f"✅ [ADR-0037] Using explicit configuration: PROJECT_NAME='{project_name}', PROJECT_PATH='{project_path_env}'")
+        else:
+            # 2. FALLBACK: Auto-detection (only if env vars missing)  
+            logger.warning("⚠️ [ADR-0037] Environment variables missing. Falling back to auto-detection.")
+            logger.warning("⚠️ [ADR-0037] For production, set PROJECT_NAME and PROJECT_PATH explicitly.")
+            
+            workspace_path = Path("/workspace")
+            
+            # Look for project markers instead of directory ordering
+            if (workspace_path / ".git").exists() or (workspace_path / "pyproject.toml").exists() or (workspace_path / "package.json").exists():
+                # Use workspace root if it has project markers
+                project_path = workspace_path
+                project_name = project_name or "default"
+                logger.info(f"🔍 [ADR-0037] Auto-detected project root with markers: {project_path}")
+            else:
+                # Legacy fallback: Find subdirectories (improved logic)
+                project_dirs = [d for d in workspace_path.iterdir() if d.is_dir() and not d.name.startswith('.')]
+                
+                if not project_dirs:
+                    logger.error("FATAL: No project directory found inside /workspace.")
+                    logger.error("Set PROJECT_NAME and PROJECT_PATH explicitly, or mount project with markers (.git, pyproject.toml, etc.)")
+                    sys.exit(1)
+                
+                if len(project_dirs) > 1:
+                    logger.warning(f"Multiple directories found in /workspace: {[d.name for d in project_dirs]}.")
+                    logger.warning(f"Using the first one found: {project_dirs[0].name}")
+                    logger.warning("For reliable behavior, set PROJECT_NAME and PROJECT_PATH environment variables.")
+                
+                project_path = project_dirs[0]
+                project_name = project_name or project_path.name
+            
+            logger.info(f"🔍 [ADR-0037] Auto-detected: PROJECT_NAME='{project_name}', PROJECT_PATH='{project_path}'")
         
         initial_index = os.getenv('INITIAL_INDEX', 'true').lower() == 'true'
         

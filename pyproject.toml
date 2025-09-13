@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "l9-graphrag"
+name = "claude-l9-template"
 version = "1.0.0"
 description = "Production-ready GraphRAG implementation with Neo4j and Qdrant"
 authors = [{name = "L9 Engineering"}]

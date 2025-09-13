@@ -10,6 +10,12 @@
 **YOU'RE AN L9 ENGINEER. YOU ONLY ACCEPT THE HIGHEST QUALITY OF STANDARDS. FIGHT FOR THE CORRECT ARCHITECTURE & RESPONSE AND LOOK DEEPER INTO THE CODEBASE IF THERE SEEMS TO BE CONFLICTING INFORMATION PRESENTED. NEVER ASSUME!**
 **YOU DON'T KNOW WHAT YOU DON'T KNOW. ALWAYS VERIFY**
 
+**🚨 CRITICAL NEO4J DATA TYPE REQUIREMENT (ADR-0036) 🚨**
+**ALL INDEXER DATA MUST USE PRIMITIVE PROPERTIES - NO COMPLEX OBJECTS!**
+**Neo4j ONLY accepts: String, Long, Double, Boolean, [primitives] - NOT Map{} or nested objects**
+**ANY complex objects must be flattened: Map{statement -> "import", line -> 11} becomes {import_statement: "import", import_line: 11}**
+**FAILURE TO FOLLOW THIS BREAKS ALL INDEXING WITH TypeError - SEE ADR-0036 FOR IMPLEMENTATION**
+
 **Prime Directive:** Truth > likeability. Correct me even if I prefer a different answer.
 
 **Evidence Rule:** Niche/time‑sensitive claims must be verified (tools/docs) and cited. If unverifiable, say so and outline verification.
@@ -225,6 +231,80 @@ scripts/
   "EMBEDDING_SERVICE_PORT": "48000"
 }
 ```
+
+### ADR-0037: Container Configuration Priority Standard
+
+**All containerized services MUST follow this configuration hierarchy:**
+
+#### Configuration Priority Order (Highest to Lowest)
+
+1. **Environment Variables** (Explicit Configuration)
+   ```bash
+   PROJECT_NAME=claude-l9-template    # Explicit project identifier
+   PROJECT_PATH=/workspace            # Explicit project root directory
+   NEO4J_URI=bolt://host.docker.internal:47687
+   QDRANT_HOST=host.docker.internal
+   ```
+
+2. **Configuration Files** (Medium Priority)
+   - `pyproject.toml` project.name field
+   - `package.json` name field
+   - `.graphrag/config.yaml` project settings
+
+3. **Auto-Detection** (Fallback Only)
+   - Project marker files (`.git`, `pyproject.toml`, etc.)
+   - Directory name sanitization
+   - Git remote origin parsing
+
+4. **Hard-coded Defaults** (Last Resort)
+   - `DEFAULT_PROJECT_NAME = "default"`
+
+#### Implementation Requirements
+
+**✅ COMPLIANT**: Environment variables take precedence
+```python
+# CORRECT - ADR-0037 compliant
+project_name = os.getenv("PROJECT_NAME")
+project_path = os.getenv("PROJECT_PATH")
+
+if project_name and project_path:
+    logging.info(f"✅ [ADR-0037] Using explicit config: {project_name}")
+    return project_name, project_path
+else:
+    logging.warning("⚠️ [ADR-0037] Falling back to auto-detection")
+    return auto_detect_project()
+```
+
+**❌ NON-COMPLIANT**: Auto-detection without checking env vars
+```python
+# WRONG - Ignores environment variables
+if multiple_directories_found:
+    selected_dir = directories[0]  # Uses filesystem order!
+    project_name = os.path.basename(selected_dir)  # Ignores env vars!
+```
+
+#### Container Environment Variables
+
+**Required for all containerized services:**
+```bash
+# Project Configuration (ADR-0037 Priority 1)
+PROJECT_NAME=claude-l9-template
+PROJECT_PATH=/workspace
+
+# Service Connections (Container-to-Host)
+NEO4J_URI=bolt://host.docker.internal:47687
+NEO4J_PASSWORD=graphrag-password
+QDRANT_HOST=host.docker.internal
+QDRANT_PORT=46333
+EMBEDDING_SERVICE_HOST=host.docker.internal
+EMBEDDING_SERVICE_PORT=48000
+REDIS_CACHE_HOST=host.docker.internal
+REDIS_CACHE_PORT=46379
+REDIS_QUEUE_HOST=host.docker.internal
+REDIS_QUEUE_PORT=46380
+```
+
+**Critical**: Use `host.docker.internal` (not `localhost`) for container-to-host communication.
 
 ## 🚀 L9 2025 Architecture Standards
 
