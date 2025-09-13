@@ -91,7 +91,7 @@ class HybridRetriever:
                 result = {
                     'score': float(_score),
                     'chunk_id': _payload.get('chunk_hash'),
-                    'neo4j_chunk_id': _payload.get('neo4j_chunk_id'),
+                    'neo4j_chunk_id': _payload.get('neo4j_chunk_id') or _payload.get('chunk_hash'),  # Use chunk_hash as fallback
                     'file_path': _payload.get('file_path'),
                     'content': _payload.get('content'),
                     'start_line': _payload.get('start_line'),
@@ -99,17 +99,24 @@ class HybridRetriever:
                     'file_type': _payload.get('file_type')
                 }
                 results.append(result)
-                
-                if _payload.get('neo4j_chunk_id'):
-                    chunk_ids.append(_payload['neo4j_chunk_id'])
+
+                # Use chunk_hash as fallback if neo4j_chunk_id not present
+                chunk_id_for_neo4j = _payload.get('neo4j_chunk_id') or _payload.get('chunk_hash')
+                if chunk_id_for_neo4j:
+                    chunk_ids.append(chunk_id_for_neo4j)
+                    logger.debug(f"Added chunk_id for Neo4j lookup: {chunk_id_for_neo4j}")
             
             # Step 3: Enrich with graph context from Neo4j
             if include_graph_context and chunk_ids and self.container.neo4j:
+                logger.info(f"Fetching graph context for {len(chunk_ids)} chunks")
                 graph_context = await self._fetch_graph_context(chunk_ids, max_hops)
-                
+                logger.info(f"Got {len(graph_context)} graph contexts")
+
                 # Merge graph context with results and boost scores (ADR 0017)
-                for result, context in zip(results, graph_context):
+                for i, (result, context) in enumerate(zip(results, graph_context)):
                     result['graph_context'] = context
+                    if context:
+                        logger.debug(f"Added graph context to result {i}: {list(context.keys())}")
                     # Boost score based on graph importance
                     result['original_score'] = result['score']
                     result['score'] = self._adjust_score_by_graph_importance(
@@ -191,13 +198,46 @@ class HybridRetriever:
                 LIMIT 1
                 """
                 
-                # ADR-0029: project parameter will be auto-injected by neo4j_service
+                # ADR-0029: Explicitly pass both chunk_id and project parameters
+                # Fix: neo4j_service was overwriting params dict, need to pass project explicitly
+                logger.debug(f"Executing graph context query for chunk: {chunk_id}, project: {self.container.project_name}")
                 result = await self.container.neo4j.execute_cypher(cypher, {
-                    'chunk_id': chunk_id
+                    'chunk_id': chunk_id,
+                    'project': self.container.project_name  # Explicitly pass project to prevent overwrite
                 })
-                
-                if result:
-                    context = result[0]
+                logger.debug(f"Graph context query result type: {type(result)}, value: {result if result != 0 else 'zero'}")
+
+                # Enhanced error handling - check for error status or numeric error code
+                if result is None or result == 0:
+                    logger.error(f"Neo4j returned invalid result ({result}) for chunk {chunk_id}")
+                    logger.debug(f"Query was: {cypher[:200]}...")  # Log first 200 chars of query
+                    logger.debug(f"Project: {self.container.project_name}, Chunk ID: {chunk_id}")
+                    contexts.append({})
+                    continue
+
+                # Check for explicit error status
+                if isinstance(result, dict) and result.get('status') == 'error':
+                    logger.error(f"Neo4j query failed: {result.get('message', 'Unknown error')}")
+                    contexts.append({})
+                    continue
+
+                # Process successful result
+                context = {}
+                if result and isinstance(result, dict) and result.get('status') == 'success':
+                    records = result.get('result', [])
+                    if records:
+                        context = records[0]  # Get first record
+                        logger.debug(f"Got context from success result: {list(context.keys()) if context else 'empty'}")
+                elif result and isinstance(result, list) and len(result) > 0:
+                    context = result[0]  # Direct list result
+                    logger.debug(f"Got context from list result: {list(context.keys()) if context else 'empty'}")
+                else:
+                    logger.warning(f"Unexpected result format from Neo4j: {type(result)}, value: {result}")
+                    contexts.append({})
+                    continue
+
+                # If we have a context, clean it up and enhance it
+                if context:
                     # Clean up empty collections and build enhanced context (ADR 0017)
                     enhanced_context = {
                         'file_path': context.get('file_path'),
@@ -209,7 +249,7 @@ class HybridRetriever:
                         'imports': [i for i in context.get('imports', []) if i],
                         'imported_by': [i for i in context.get('imported_by', []) if i],
                         'related_chunks': [
-                            c for c in context.get('related_chunks', []) 
+                            c for c in context.get('related_chunks', [])
                             if c and c.get('id')
                         ]
                     }

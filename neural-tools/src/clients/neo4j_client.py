@@ -12,7 +12,7 @@ import os
 import logging
 import asyncio
 from typing import Dict, List, Any, Optional, Tuple
-from neo4j import GraphDatabase, Driver, Session
+from neo4j import AsyncGraphDatabase, AsyncDriver, AsyncSession
 from neo4j.exceptions import ServiceUnavailable, AuthError, ConfigurationError
 import json
 import hashlib
@@ -47,7 +47,7 @@ class Neo4jGraphRAGClient:
         self.password = password or os.getenv('NEO4J_PASSWORD', 'graphrag-password')
         self.project_name = project_name or os.getenv('PROJECT_NAME', 'default')
         
-        self.driver: Optional[Driver] = None
+        self.driver: Optional[AsyncDriver] = None
         self.connection_verified = False
         
         # L9 project isolation - all nodes get project prefix
@@ -62,30 +62,31 @@ class Neo4jGraphRAGClient:
     async def connect(self) -> bool:
         """
         Establish connection to Neo4j database
-        
+
         Returns:
             bool: True if connection successful
         """
         try:
-            self.driver = GraphDatabase.driver(
-                self.uri, 
+            self.driver = AsyncGraphDatabase.driver(
+                self.uri,
                 auth=(self.username, self.password),
                 max_connection_lifetime=30 * 60,  # 30 minutes
                 max_connection_pool_size=50,
                 connection_acquisition_timeout=60  # 1 minute
             )
-            
+
             # Verify connection
-            with self.driver.session() as session:
-                result = session.run("RETURN 1 as test")
-                test_value = result.single()["test"]
+            async with self.driver.session() as session:
+                result = await session.run("RETURN 1 as test")
+                record = await result.single()
+                test_value = record["test"]
                 if test_value == 1:
                     self.connection_verified = True
                     logger.info("Neo4j connection verified successfully")
-                    
+
                     # Initialize project schema
                     await self._initialize_project_schema()
-                    
+
                     return True
                     
         except (ServiceUnavailable, AuthError, ConfigurationError) as e:
@@ -120,10 +121,10 @@ class Neo4jGraphRAGClient:
         ]
         
         try:
-            with self.driver.session() as session:
+            async with self.driver.session() as session:
                 for query in constraints_and_indexes:
                     try:
-                        session.run(query)
+                        await session.run(query)
                         logger.debug(f"Applied schema: {query[:50]}...")
                     except Exception as e:
                         # Ignore if constraint/index already exists
@@ -138,7 +139,7 @@ class Neo4jGraphRAGClient:
     async def close(self):
         """Close Neo4j driver connection"""
         if self.driver:
-            self.driver.close()
+            await self.driver.close()
             self.connection_verified = False
             logger.info("Neo4j connection closed")
     
@@ -198,8 +199,8 @@ class Neo4jGraphRAGClient:
             RETURN f.project_path as path
             """
             
-            with self.driver.session() as session:
-                result = session.run(query, {
+            async with self.driver.session() as session:
+                result = await session.run(query, {
                     "project_path": project_path,
                     "properties": properties
                 })
@@ -263,8 +264,8 @@ class Neo4jGraphRAGClient:
             RETURN fn.name as name
             """
             
-            with self.driver.session() as session:
-                result = session.run(query, {
+            async with self.driver.session() as session:
+                result = await session.run(query, {
                     "project_signature": project_signature,
                     "project_file_path": project_file_path,
                     "properties": properties
@@ -326,8 +327,8 @@ class Neo4jGraphRAGClient:
             RETURN c.name as name
             """
             
-            with self.driver.session() as session:
-                result = session.run(query, {
+            async with self.driver.session() as session:
+                result = await session.run(query, {
                     "project_class_name": project_class_name,
                     "project_file_path": project_file_path,
                     "properties": properties
@@ -372,8 +373,8 @@ class Neo4jGraphRAGClient:
             RETURN type(r) as relationship
             """
             
-            with self.driver.session() as session:
-                result = session.run(query, {
+            async with self.driver.session() as session:
+                result = await session.run(query, {
                     "source_path": source_path,
                     "target_path": target_path,
                     "project": self.project_name
@@ -433,8 +434,8 @@ class Neo4jGraphRAGClient:
             LIMIT $limit
             """
             
-            with self.driver.session() as session:
-                result = session.run(query, {
+            async with self.driver.session() as session:
+                result = await session.run(query, {
                     "query_text": query_text,
                     "project": self.project_name,
                     "node_types": node_types,
@@ -442,7 +443,7 @@ class Neo4jGraphRAGClient:
                 })
                 
                 results = []
-                for record in result:
+                async for record in result:
                     results.append({
                         "name": record["name"],
                         "path": record["path"],
@@ -493,8 +494,8 @@ class Neo4jGraphRAGClient:
                 }}) as dependencies
             """
             
-            with self.driver.session() as session:
-                result = session.run(query, {
+            async with self.driver.session() as session:
+                result = await session.run(query, {
                     "project_file_path": project_file_path,
                     "project": self.project_name
                 })
@@ -531,16 +532,20 @@ class Neo4jGraphRAGClient:
 
         try:
             # Add project isolation to parameters
+            # Fix: Properly merge parameters instead of overwriting
             if parameters is None:
                 parameters = {}
-            parameters["project"] = self.project_name
-            parameters["node_prefix"] = self.node_prefix
+            # Only add if not already present
+            if "project" not in parameters:
+                parameters["project"] = self.project_name
+            if "node_prefix" not in parameters:
+                parameters["node_prefix"] = self.node_prefix
 
-            with self.driver.session() as session:
-                result = session.run(query, parameters)
+            async with self.driver.session() as session:
+                result = await session.run(query, parameters)
 
                 records = []
-                for record in result:
+                async for record in result:
                     records.append(dict(record))
 
                 logger.debug(f"Cypher query returned {len(records)} records")
@@ -572,24 +577,28 @@ class Neo4jGraphRAGClient:
 
         try:
             # Add project isolation to parameters
+            # Fix: Properly merge parameters instead of overwriting
             if parameters is None:
                 parameters = {}
-            parameters["project"] = self.project_name
-            parameters["node_prefix"] = self.node_prefix
+            # Only add if not already present
+            if "project" not in parameters:
+                parameters["project"] = self.project_name
+            if "node_prefix" not in parameters:
+                parameters["node_prefix"] = self.node_prefix
 
-            with self.driver.session() as session:
-                result = session.run(query, parameters)
-
+            # Directly use async session - no need for executor
+            async with self.driver.session() as session:
+                result = await session.run(query, parameters)
                 records = []
-                for record in result:
+                async for record in result:
                     records.append(dict(record))
 
-                logger.debug(f"Cypher query returned {len(records)} records")
-                return {
-                    "status": "success",
-                    "result": records,
-                    "message": f"Query executed successfully, returned {len(records)} records"
-                }
+            logger.debug(f"Cypher query returned {len(records)} records")
+            return {
+                "status": "success",
+                "result": records,
+                "message": f"Query executed successfully, returned {len(records)} records"
+            }
 
         except Exception as e:
             logger.error(f"Error executing Cypher query: {str(e)}")
@@ -616,8 +625,8 @@ class Neo4jGraphRAGClient:
             RETURN collect({type: node_type, count: count}) as node_stats
             """
             
-            with self.driver.session() as session:
-                result = session.run(query, {"project": self.project_name})
+            async with self.driver.session() as session:
+                result = await session.run(query, {"project": self.project_name})
                 record = result.single()
                 
                 stats = {
@@ -650,8 +659,8 @@ class Neo4jGraphRAGClient:
             RETURN count(*) as deleted_count
             """
             
-            with self.driver.session() as session:
-                result = session.run(query, {"project": self.project_name})
+            async with self.driver.session() as session:
+                result = await session.run(query, {"project": self.project_name})
                 deleted_count = result.single()["deleted_count"]
                 
                 logger.warning(f"Cleared {deleted_count} nodes for project: {self.project_name}")

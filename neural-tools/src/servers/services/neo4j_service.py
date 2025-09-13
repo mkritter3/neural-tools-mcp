@@ -283,9 +283,12 @@ class Neo4jService:
             }
         
         # ADR-0029: Automatically inject project name for isolation
+        # Fix: Properly merge parameters instead of overwriting
         if parameters is None:
             parameters = {}
-        parameters['project'] = self.project_name
+        # Only add project if not already present (don't overwrite user-provided value)
+        if 'project' not in parameters:
+            parameters['project'] = self.project_name
         
         # Check cache for read queries (SELECT-like operations)
         is_read_query = self._is_read_only_query(cypher_query)
