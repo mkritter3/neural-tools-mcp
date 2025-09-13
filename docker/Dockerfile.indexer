@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir fastapi uvicorn[standard] prometheus-client
 
 # Copy source code
-ARG CACHEBUST=1
+# Force rebuild: Sep 13 2025 v3
 COPY neural-tools/src/ ./src/
 
 # Create directories with proper ownership

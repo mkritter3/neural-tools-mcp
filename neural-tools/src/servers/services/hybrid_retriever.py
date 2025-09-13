@@ -25,12 +25,14 @@ class HybridRetriever:
     def __init__(self, container):
         """
         Initialize with service container
-        
+
         Args:
             container: ServiceContainer with Neo4j, Qdrant, Nomic services
         """
         self.container = container
-        self.collection_prefix = f"project_{container.project_name}_"
+        # Use centralized collection naming - no _code suffix per ADR-0041
+        from servers.config.collection_naming import collection_naming
+        self.collection_name = collection_naming.get_collection_name(container.project_name)
         
     async def find_similar_with_context(
         self, 
@@ -66,9 +68,8 @@ class HybridRetriever:
             query_vector = embeddings[0]
             
             # Step 2: Semantic search in Qdrant
-            collection_name = f"{self.collection_prefix}code"
             search_results = await self.container.qdrant.search_vectors(
-                collection_name=collection_name,
+                collection_name=self.collection_name,
                 query_vector=query_vector,
                 limit=limit
             )

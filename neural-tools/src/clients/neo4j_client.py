@@ -513,42 +513,91 @@ class Neo4jGraphRAGClient:
             logger.error(f"Error getting dependencies: {str(e)}")
             return {}
     
-    async def execute_cypher_query(self, 
-                                 query: str, 
+    async def execute_cypher_query(self,
+                                 query: str,
                                  parameters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Execute custom Cypher query with project isolation
-        
+
         Args:
             query: Cypher query string
             parameters: Query parameters
-            
+
         Returns:
             Query results
         """
         if not self.connection_verified:
             return []
-        
+
         try:
             # Add project isolation to parameters
             if parameters is None:
                 parameters = {}
             parameters["project"] = self.project_name
             parameters["node_prefix"] = self.node_prefix
-            
+
             with self.driver.session() as session:
                 result = session.run(query, parameters)
-                
+
                 records = []
                 for record in result:
                     records.append(dict(record))
-                
+
                 logger.debug(f"Cypher query returned {len(records)} records")
                 return records
-                
+
         except Exception as e:
             logger.error(f"Error executing Cypher query: {str(e)}")
             return []
+
+    async def execute_query(self,
+                           query: str,
+                           parameters: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Execute Cypher query and return status dict (for neo4j_service compatibility)
+
+        Args:
+            query: Cypher query string
+            parameters: Query parameters
+
+        Returns:
+            Status dict with 'status' and 'result' keys
+        """
+        if not self.connection_verified:
+            return {
+                "status": "error",
+                "message": "Neo4j connection not verified",
+                "result": []
+            }
+
+        try:
+            # Add project isolation to parameters
+            if parameters is None:
+                parameters = {}
+            parameters["project"] = self.project_name
+            parameters["node_prefix"] = self.node_prefix
+
+            with self.driver.session() as session:
+                result = session.run(query, parameters)
+
+                records = []
+                for record in result:
+                    records.append(dict(record))
+
+                logger.debug(f"Cypher query returned {len(records)} records")
+                return {
+                    "status": "success",
+                    "result": records,
+                    "message": f"Query executed successfully, returned {len(records)} records"
+                }
+
+        except Exception as e:
+            logger.error(f"Error executing Cypher query: {str(e)}")
+            return {
+                "status": "error",
+                "message": str(e),
+                "result": []
+            }
     
     async def get_project_statistics(self) -> Dict[str, Any]:
         """

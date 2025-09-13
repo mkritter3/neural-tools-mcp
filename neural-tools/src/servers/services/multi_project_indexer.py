@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from servers.services.indexer_service import IncrementalIndexer
 from servers.services.service_container import ServiceContainer
 from servers.services.collection_config import CollectionManager, CollectionType
+from servers.config.collection_naming import collection_naming
 
 logger = logging.getLogger(__name__)
 
@@ -180,8 +181,8 @@ class MultiProjectIndexer:
                 container=self.container  # Share container across projects
             )
             
-            # Ensure collection exists
-            collection_name = f"project_{project_name}_code"
+            # ADR-0039: Use centralized collection naming
+            collection_name = collection_naming.get_collection_name(project_name)
             await self._ensure_collection(collection_name)
             
             # Store indexer

@@ -195,10 +195,10 @@ class IndexerRunner:
             from servers.services.service_container import ServiceContainer
             
             logger.info(f"Starting neural indexer for project: {project_name} at {project_path}")
-            
-            # Initialize service container with real services
-            container = ServiceContainer()
-            
+
+            # Initialize service container with real services - MUST pass project name!
+            container = ServiceContainer(project_name)
+
             # Create and configure indexer with proper parameters
             self.indexer = IncrementalIndexer(
                 project_path=project_path,  # Pass as string, not Path

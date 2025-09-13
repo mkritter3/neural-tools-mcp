@@ -1386,19 +1386,32 @@ async def backfill_metadata_impl(arguments: dict) -> List[types.TextContent]:
 
 async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextContent]:
     try:
+        # Import centralized naming (ADR-0039)
+        from servers.config.collection_naming import collection_naming
+
         project_name, container, _ = await get_project_context({})
         embeddings = await container.nomic.get_embeddings([query])
         query_vector = embeddings[0]
-        # Use Qdrant client wrapper
-        collection_name = f"project-{project_name}"
-        try:
-            search_results = await container.qdrant.search_vectors(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                limit=limit
-            )
-        except Exception as e:
-            logger.error(f"Qdrant search failed: {e}")
+
+        # ADR-0039: Use centralized naming with backward compatibility
+        possible_names = collection_naming.get_possible_names_for_lookup(project_name)
+
+        search_results = None
+        for collection_name in possible_names:
+            try:
+                search_results = await container.qdrant.search_vectors(
+                    collection_name=collection_name,
+                    query_vector=query_vector,
+                    limit=limit
+                )
+                logger.debug(f"Found collection: {collection_name}")
+                break  # Success, stop trying
+            except Exception as e:
+                logger.debug(f"Collection {collection_name} not found, trying next...")
+                continue
+
+        if search_results is None:
+            logger.error(f"No collection found for project {project_name}. Tried: {possible_names}")
             return await _fallback_neo4j_search(query, limit)
 
         formatted = []

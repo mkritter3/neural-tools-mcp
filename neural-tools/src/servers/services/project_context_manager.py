@@ -70,6 +70,12 @@ class ProjectContextManager:
                             self.last_activity[k] = datetime.fromisoformat(v)
                         except:
                             pass
+                    # Load active project if present
+                    if "active_project" in data and data["active_project"]:
+                        self.current_project = data["active_project"]
+                        if "active_project_path" in data and data["active_project_path"]:
+                            self.current_project_path = Path(data["active_project_path"])
+                            logger.info(f"📌 Restored active project: {self.current_project}")
                     logger.info(f"📚 Loaded {len(self.project_registry)} projects from registry")
             except Exception as e:
                 logger.error(f"Failed to load project registry: {e}")
@@ -85,6 +91,8 @@ class ProjectContextManager:
                 "last_activity": {
                     k: v.isoformat() for k, v in self.last_activity.items()
                 },
+                "active_project": self.current_project,
+                "active_project_path": str(self.current_project_path) if self.current_project_path else None,
                 "version": "1.0",
                 "updated": datetime.now().isoformat()
             }
@@ -401,7 +409,8 @@ class ProjectContextManager:
             return {
                 "project": self.current_project,
                 "path": str(self.current_project_path),
-                "method": "cached"
+                "method": "cached",
+                "confidence": 1.0
             }
         else:
             return await self.detect_project()

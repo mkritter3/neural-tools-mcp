@@ -2,14 +2,20 @@
 """
 Battle-Tested Collection Configuration Management
 Implements centralized collection naming and validation patterns from Neo4j GraphRAG
+Updated per ADR-0041 to delegate to CollectionNamingManager
 """
 
 import os
+import sys
 import logging
 import asyncio
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
+
+# ADR-0041: Import centralized collection naming
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from config.collection_naming import collection_naming
 
 logger = logging.getLogger(__name__)
 
@@ -70,33 +76,36 @@ class CollectionManager:
         logger.info(f"Initialized CollectionManager for project: {self.project_name}, embedding_dim: {self.embedding_dimension}")
     
     def _initialize_collection_configs(self) -> Dict[CollectionType, CollectionConfig]:
-        """Initialize collection configurations following GraphRAG patterns"""
-        base_name = f"project_{self.project_name}"
-        
+        """Initialize collection configurations following GraphRAG patterns
+        ADR-0041: Now delegates to CollectionNamingManager for names
+        """
+        # ADR-0041: Use centralized naming (no _code suffix)
+        base_name = collection_naming.get_collection_name(self.project_name)
+
         configs = {
             CollectionType.CODE: CollectionConfig(
-                name=f"{base_name}_code",
+                name=base_name,  # ADR-0041: No _code suffix per user requirement
                 vector_dimension=self.embedding_dimension,
                 id_property_external="neo4j_id",  # Following Neo4j GraphRAG pattern
                 id_property_neo4j="id",
                 embedding_model=self.embedding_model
             ),
             CollectionType.DOCS: CollectionConfig(
-                name=f"{base_name}_docs",
+                name=f"{base_name}-docs",  # Future: separate docs collection
                 vector_dimension=self.embedding_dimension,
                 id_property_external="neo4j_id",
                 id_property_neo4j="id",
                 embedding_model=self.embedding_model
             ),
             CollectionType.GENERAL: CollectionConfig(
-                name=f"{base_name}_general",
+                name=f"{base_name}-general",  # Future: general collection
                 vector_dimension=self.embedding_dimension,
                 id_property_external="neo4j_id",
                 id_property_neo4j="id",
                 embedding_model=self.embedding_model
             )
         }
-        
+
         return configs
     
     def get_collection_config(self, collection_type: CollectionType) -> CollectionConfig:

@@ -28,6 +28,9 @@ sys.path.insert(0, str(services_dir))
 
 from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
+# ADR-0040: Import centralized collection naming
+sys.path.insert(0, str(services_dir.parent))  # Add parent for config directory
+from config.collection_naming import collection_naming
 
 # Configure logging to stderr for Docker
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -1042,9 +1045,13 @@ class IncrementalIndexer(FileSystemEventHandler):
             await self.container.qdrant.upsert_points(collection_name, points)
             
             # Update Neo4j with chunk references (if available)
+            logger.info(f"Neo4j update check: degraded={self.degraded_mode['neo4j']}, chunks={len(neo4j_chunk_ids)}")
             if not self.degraded_mode['neo4j'] and neo4j_chunk_ids:
+                logger.info(f"Calling _update_neo4j_chunks for {file_path} with {len(neo4j_chunk_ids)} chunks")
                 await self._update_neo4j_chunks(file_path, relative_path, neo4j_chunk_ids, symbols_data)
                 self.metrics['cross_references_created'] += len(neo4j_chunk_ids)
+            else:
+                logger.warning(f"Skipping Neo4j update: degraded={self.degraded_mode['neo4j']}, has_chunks={bool(neo4j_chunk_ids)}")
             
         except Exception as e:
             error_category = self._categorize_error(e, file_path)
@@ -1374,7 +1381,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                     c.collection_name = $collection_name,
                     c.indexed_at = datetime()
                 WITH c
-                MATCH (f:File {path: $file_path, project: $project})
+                MERGE (f:File {path: $file_path, project: $project})
                 MERGE (c)-[:PART_OF]->(f)
                 """
                 
@@ -1391,11 +1398,11 @@ class IncrementalIndexer(FileSystemEventHandler):
                     'chunk_type': chunk_info['chunk_type'],
                     'content': content_to_store,  # Include content in parameters
                     'collection_name': collection_name,  # Add collection name parameter
-                    'project': self.project_name
+                    'project': self.project_name  # Use indexer's project_name, not container's
                 })
-                
+
                 # Check if query executed successfully
-                logger.debug(f"Neo4j execute result: {result}")
+                logger.info(f"Neo4j execute result for chunk {chunk_info['id']}: {result}")
                 if result.get('status') != 'success':
                     logger.error(f"Failed to update chunk in Neo4j: {result.get('message', 'Unknown error')}")
                     raise ValueError(f"Neo4j chunk update failed: {result.get('message')}")
@@ -2017,3 +2024,9 @@ if __name__ == "__main__":
         project_name=args.project_name,
         initial_index=args.initial_index
     ))
+# Test trigger
+# Test trigger 2
+# Test trigger 3
+
+# Trigger reindex
+# Fri Sep 12 22:56:47 PDT 2025

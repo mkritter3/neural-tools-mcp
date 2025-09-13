@@ -59,7 +59,7 @@ services:
       start_period: 30s
 
   qdrant:
-    image: qdrant/qdrant:v1.12.4
+    image: qdrant/qdrant:latest  # v1.15.1+ for client compatibility
     ports:
       - "46333:6333"
       - "46334:6334"
