@@ -622,6 +622,47 @@ session_context = await session_manager.get_session(session_id)
 
 **Trade-off**: More complex session management code
 
+### 4. Self-Healing Container Architecture (ADR-0030 + ADR-0038)
+
+**Decision**: Ephemeral containers with versioned images for automatic updates
+
+**Architecture Pattern**:
+```python
+# IndexerOrchestrator always uses production tag
+container = docker_client.containers.run(
+    image='l9-neural-indexer:production',  # Never hardcoded versions!
+    name=f'indexer-{project_name}',
+    # ... dynamic configuration
+)
+```
+
+**How Self-Healing Works**:
+1. **Containers are Ephemeral** (ADR-0030): Spawned on-demand, destroyed when idle
+2. **Images are Versioned** (ADR-0038): `production` tag moves to latest stable
+3. **No Manual Updates**: Code references `production`, never specific versions
+4. **Automatic Bug Fixes**: New image → retag → next container spawn gets fix
+
+**Self-Healing Flow**:
+```
+User requests indexing → MCP calls ensure_indexer()
+→ Check: container running? → NO → docker run :production
+→ production tag resolves to latest v1.2.0 → NEW container with all fixes! ✨
+```
+
+**Benefits**:
+- **Zero-downtime updates**: No restarts needed
+- **Automatic bug deployment**: Build → tag → automatic pickup
+- **Safe rollbacks**: Retag old image as production
+- **Project isolation**: Each project gets clean ephemeral container
+
+**Rationale**:
+- Follows Twelve-Factor App principles (containers as cattle, not pets)
+- Eliminates manual deployment steps
+- Prevents configuration drift
+- Enables safe experimentation with automatic rollback
+
+**Trade-off**: Requires disciplined image tagging but eliminates operational overhead
+
 ## 📊 Performance Validation Results
 
 ### L9 Benchmark Compliance
