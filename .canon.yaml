@@ -1,18 +1,30 @@
 # .canon.yaml - Canonical Knowledge Configuration for L9 Neural GraphRAG
 # ADR-0031: Canonical Knowledge Management System
 version: "1.0"
-updated: "2025-09-12"
+updated: "2025-09-13"
 
 # Primary sources of truth (highest authority)
 primary:
   - path: "CLAUDE.md"
     weight: 1.0
     description: "L9 Truth-First Engineering Contract - Prime directive"
-    
+
   - pattern: "docs/adr/*.md"
     weight: 0.95
     description: "Architecture Decision Records - Design rationale"
-    
+
+  - pattern: "docs/reference-knowledge/anthropic-official-documentation/03-claude-code/**/*"
+    weight: 0.95
+    description: "Official Anthropic Claude Code documentation - Latest protocols and standards"
+
+  - pattern: "docs/reference-knowledge/anthropic-official-documentation/04-mcps/**/*"
+    weight: 0.95
+    description: "Official Anthropic MCP documentation - Protocol specifications and best practices"
+
+  - pattern: "docs/reference-knowledge/anthropic-official-documentation/01-developer-guide/**/*"
+    weight: 0.95
+    description: "Official Anthropic developer guide - Core development principles"
+
   - path: ".mcp.json"
     weight: 0.9
     description: "MCP server configuration - Source of truth for connections"

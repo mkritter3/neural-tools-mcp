@@ -2312,6 +2312,7 @@ async def migration_generate_impl(arguments: dict) -> List[types.TextContent]:
         from servers.services.migration_manager import MigrationManager
         migration_manager = MigrationManager(
             project_name=project_name,
+            project_path=project_path,
             neo4j_service=container.neo4j if container else None,
             qdrant_service=container.qdrant if container else None
         )
@@ -2369,6 +2370,7 @@ async def migration_apply_impl(arguments: dict) -> List[types.TextContent]:
         from servers.services.migration_manager import MigrationManager
         migration_manager = MigrationManager(
             project_name=project_name,
+            project_path=project_path,
             neo4j_service=container.neo4j,
             qdrant_service=container.qdrant
         )
@@ -2426,6 +2428,7 @@ async def migration_rollback_impl(arguments: dict) -> List[types.TextContent]:
         from servers.services.migration_manager import MigrationManager
         migration_manager = MigrationManager(
             project_name=project_name,
+            project_path=project_path,
             neo4j_service=container.neo4j,
             qdrant_service=container.qdrant
         )
@@ -2455,11 +2458,15 @@ async def migration_status_impl(arguments: dict) -> List[types.TextContent]:
     """Check migration status and history"""
     try:
         project_name, container, _ = await get_project_context(arguments)
-        
+
+        # Get project path from environment or current directory
+        project_path = os.environ.get('PROJECT_PATH', os.getcwd())
+
         # Get migration manager
         from servers.services.migration_manager import MigrationManager
         migration_manager = MigrationManager(
             project_name=project_name,
+            project_path=project_path,
             neo4j_service=container.neo4j if container else None,
             qdrant_service=container.qdrant if container else None
         )

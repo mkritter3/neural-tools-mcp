@@ -304,24 +304,25 @@ class MigrationDiff:
 class MigrationManager:
     """Manages schema migrations for GraphRAG projects"""
     
-    def __init__(self, project_name: str, project_path: str = None):
+    def __init__(self, project_name: str, project_path: str = None,
+                 neo4j_service=None, qdrant_service=None):
         self.project_name = project_name
         self.project_path = Path(project_path or os.getcwd())
         self.migrations_dir = self.project_path / ".graphrag" / "migrations"
         self.state_file = self.project_path / ".graphrag" / "migration_state.json"
         self.rollback_dir = self.project_path / ".graphrag" / "rollback"
         self.schema_file = self.project_path / ".graphrag" / "schema.yaml"
-        
+
         # Ensure directories exist
         self.migrations_dir.mkdir(parents=True, exist_ok=True)
         self.rollback_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Load current state
         self.state = self._load_state()
-        
-        # Service connections (will be injected)
-        self.neo4j = None
-        self.qdrant = None
+
+        # Service connections
+        self.neo4j = neo4j_service
+        self.qdrant = qdrant_service
     
     def _load_state(self) -> MigrationState:
         """Load migration state from file"""
