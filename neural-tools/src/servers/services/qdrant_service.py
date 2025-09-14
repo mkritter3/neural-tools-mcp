@@ -252,7 +252,8 @@ class QdrantService:
                     # Production-grade settings
                     optimizers_config={
                         "default_segment_number": 8,
-                        "memmap_threshold": 25000
+                        "memmap_threshold": 25000,
+                        "indexing_threshold": 100  # Index after 100 points instead of default 10000
                     },
                     # Enable hybrid search
                     hnsw_config={
