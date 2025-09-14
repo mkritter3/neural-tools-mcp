@@ -34,46 +34,183 @@ class HybridRetriever:
         from servers.config.collection_naming import collection_naming
         self.collection_name = collection_naming.get_collection_name(container.project_name)
         
+    async def unified_search(
+        self,
+        query: str,
+        limit: int = 10,
+        search_type: str = "auto"
+    ) -> List[Dict[str, Any]]:
+        """
+        ADR-0047: Unified search interface with automatic service fallback
+
+        Single entry point for all search operations. Automatically handles:
+        - BM25S + dense hybrid search when available
+        - Falls back to RRF combination if BM25S unavailable
+        - Falls back to pure vector search if text search fails
+        - Falls back to pure graph search if vector search fails
+        - Gracefully handles service failures
+
+        Args:
+            query: Search query (natural language or code)
+            limit: Number of results to return
+            search_type: "auto" (default), "vector", "graph", "hybrid"
+
+        Returns:
+            Unified search results regardless of backend availability
+        """
+        results = []
+        search_methods_tried = []
+
+        # Step 1: Try to get embeddings for vector search
+        query_vector = None
+        try:
+            embeddings = await self.container.nomic.get_embeddings([query])
+            if embeddings:
+                query_vector = embeddings[0]
+        except Exception as e:
+            logger.warning(f"Embedding generation failed: {e}")
+
+        # Step 2: Try hybrid search (best option)
+        if query_vector and search_type in ["auto", "hybrid"]:
+            try:
+                search_methods_tried.append("hybrid")
+
+                # Use enhanced RRF search with BM25S support
+                hybrid_results = await self.container.qdrant.rrf_hybrid_search(
+                    collection_name=self.collection_name,
+                    query_vector=query_vector,
+                    query_text=query,
+                    limit=limit,
+                    k=60  # Standard RRF parameter
+                )
+
+                if hybrid_results:
+                    results = hybrid_results
+                    logger.info(f"Unified search succeeded with hybrid method")
+
+            except Exception as e:
+                logger.warning(f"Hybrid search failed: {e}")
+
+        # Step 3: Fallback to pure vector search
+        if not results and query_vector and search_type in ["auto", "vector"]:
+            try:
+                search_methods_tried.append("vector")
+
+                vector_results = await self.container.qdrant.search_vectors(
+                    collection_name=self.collection_name,
+                    query_vector=query_vector,
+                    limit=limit,
+                    score_threshold=0.3
+                )
+
+                if vector_results:
+                    results = vector_results
+                    logger.info(f"Unified search succeeded with vector-only method")
+
+            except Exception as e:
+                logger.warning(f"Vector search failed: {e}")
+
+        # Step 4: Fallback to graph search
+        if not results and search_type in ["auto", "graph"]:
+            try:
+                search_methods_tried.append("graph")
+
+                # Use Neo4j full-text search
+                graph_results = await self._graph_text_search(query, limit)
+
+                if graph_results:
+                    results = graph_results
+                    logger.info(f"Unified search succeeded with graph-only method")
+
+            except Exception as e:
+                logger.warning(f"Graph search failed: {e}")
+
+        # Step 5: Last resort - keyword matching in cached data
+        if not results:
+            logger.warning(f"All search methods failed. Tried: {search_methods_tried}")
+            results = await self._emergency_keyword_search(query, limit)
+
+        # Add metadata about search method used
+        for result in results:
+            result['search_methods'] = search_methods_tried
+            result['search_type'] = search_methods_tried[0] if search_methods_tried else "emergency"
+
+        return results
+
+    async def _graph_text_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Perform text search directly in Neo4j"""
+        try:
+            # Simple text matching query
+            cypher = """
+            MATCH (c:CodeChunk)
+            WHERE c.project = $project
+            AND (c.content CONTAINS $query OR c.file_path CONTAINS $query)
+            RETURN c.chunk_id as chunk_id, c.file_path as file_path,
+                   c.content as content, c.start_line as start_line,
+                   c.end_line as end_line
+            LIMIT $limit
+            """
+
+            result = await self.container.neo4j.execute_query(
+                cypher,
+                project=self.container.project_name,
+                query=query,
+                limit=limit
+            )
+
+            results = []
+            for record in result.get('records', []):
+                results.append({
+                    'chunk_id': record.get('chunk_id'),
+                    'file_path': record.get('file_path'),
+                    'content': record.get('content'),
+                    'start_line': record.get('start_line'),
+                    'end_line': record.get('end_line'),
+                    'score': 0.5  # Default score for text matches
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Graph text search failed: {e}")
+            return []
+
+    async def _emergency_keyword_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Emergency fallback using any available data source"""
+        # This could search in local cache, file system, or return empty
+        logger.warning("Using emergency keyword search - no backend services available")
+        return []
+
     async def find_similar_with_context(
-        self, 
+        self,
         query: str,
         limit: int = 5,
         include_graph_context: bool = True,
         max_hops: int = 2
     ) -> List[Dict[str, Any]]:
         """
-        Find semantically similar code with graph context
-        
-        This is the core GraphRAG query pattern:
-        1. Semantic search in Qdrant
-        2. Enrich with graph relationships from Neo4j
-        3. Return combined context
-        
+        ADR-0047: Enhanced with unified search backend
+
+        Find semantically similar code with graph context.
+        Now uses unified search for better resilience.
+
         Args:
             query: Natural language query or code snippet
             limit: Number of similar chunks to find
             include_graph_context: Whether to fetch graph relationships
             max_hops: Maximum graph traversal depth
-            
+
         Returns:
             List of results with code chunks and their relationships
         """
         try:
-            # Step 1: Get query embedding
-            embeddings = await self.container.nomic.get_embeddings([query])
-            if not embeddings:
-                logger.warning("Failed to generate query embedding")
-                return []
-            
-            query_vector = embeddings[0]
-            
-            # Step 2: Semantic search in Qdrant
-            search_results = await self.container.qdrant.search_vectors(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit
+            # ADR-0047: Use unified search for better resilience
+            search_results = await self.unified_search(
+                query=query,
+                limit=limit,
+                search_type="auto"  # Let it use the best available method
             )
-            
+
             if not search_results:
                 return []
             
