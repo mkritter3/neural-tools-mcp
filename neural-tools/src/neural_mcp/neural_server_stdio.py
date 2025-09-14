@@ -2567,7 +2567,7 @@ async def schema_diff_impl(arguments: dict) -> List[types.TextContent]:
         if container.neo4j:
             # Get actual node labels from Neo4j
             result = await container.neo4j.execute_query("CALL db.labels()")
-            actual_labels = set([r["label"] for r in result]) if result else set()
+            actual_labels = set([r["label"] for r in result.get("result", [])]) if result and result.get("status") == "success" else set()
             schema_labels = set(schema_manager.current_schema.node_types.keys())
             
             differences["neo4j"]["missing_node_types"] = list(schema_labels - actual_labels)
@@ -2575,7 +2575,7 @@ async def schema_diff_impl(arguments: dict) -> List[types.TextContent]:
             
             # Get actual relationship types
             result = await container.neo4j.execute_query("CALL db.relationshipTypes()")
-            actual_rels = set([r["relationshipType"] for r in result]) if result else set()
+            actual_rels = set([r["relationshipType"] for r in result.get("result", [])]) if result and result.get("status") == "success" else set()
             schema_rels = set(schema_manager.current_schema.relationship_types.keys())
             
             differences["neo4j"]["missing_relationships"] = list(schema_rels - actual_rels)
