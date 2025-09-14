@@ -721,18 +721,23 @@ semantic_code_search = unified_search
 graphrag_hybrid_search = unified_search
 ```
 
-## Performance Targets (Scaled for Millions of Files)
+## Performance Targets (Realistic Expectations from Grok 4 Analysis)
 
 | Metric | Current | Phase 1 | Phase 2 | Phase 3 | Phase 4 |
 |--------|---------|---------|---------|---------|---------|
-| Query Latency (P50) | ~300ms | 150ms | 100ms | 80ms | 50ms |
-| Query Latency (P95) | ~800ms | 400ms | 250ms | 200ms | 150ms |
-| Index Update (Single File) | 30s full | 100ms | 50ms | 30ms | 20ms |
-| Bulk Index (1000 files/sec) | 10/sec | 100/sec | 500/sec | 1000/sec | 2000/sec |
-| Memory per Million Vectors | 3GB | 750MB | 500MB | 400MB | 300MB |
-| Retrieval Recall@10 | 0.65 | 0.70 | 0.80 | 0.85 | 0.90 |
-| Concurrent Projects | 1 | 10 | 50 | 100 | 500 |
-| Service Failure Recovery | None | Manual | Auto (30s) | Auto (5s) | Auto (1s) |
+| Query Latency (P50) | ~300ms | 150ms | 100ms | 80ms | **50ms** |
+| Query Latency (P95) | ~800ms | 400ms | 250ms | 200ms | **100ms** |
+| Query Latency (P99) | ~1500ms | 600ms | 400ms | 300ms | **200ms** |
+| Index Update (Single File) | 30s full | **300ms** | 100ms | 50ms | 20ms |
+| Bulk Index (files/sec) | 10/sec | 100/sec | 500/sec | 1000/sec | **1000/sec** |
+| Memory per Million Vectors | 3GB | **750MB (4x)** | **600MB (5x)** | **500MB (6x)** | **375MB (8x)** |
+| Retrieval Recall@10 | 0.65 | 0.70 | 0.80 | 0.85 | **0.90** |
+| MRR (Mean Reciprocal Rank) | 0.5 | 0.6 | 0.65 | 0.70 | **>0.70** |
+| NDCG@10 | 0.45 | 0.50 | 0.55 | 0.60 | **>0.60** |
+| Cache Hit Rate | 60% | 75% | 85% | 90% | **95%** |
+| Concurrent Projects | 1 | 10 | 50 | 100 | **100+** |
+| Service Failure Recovery | None | Manual | Auto (30s) | Auto (5s) | **Auto (1s)** |
+| **Expected Speedup** | Baseline | **2-5x** | **5-10x** | **10-15x** | **15-20x** |
 
 ## Risk Mitigation
 
@@ -750,20 +755,60 @@ graphrag_hybrid_search = unified_search
 4. **Load Testing**: Validate at 10x current scale
 5. **Regression Testing**: Ensure no functionality lost
 
-## Success Criteria
+## L9 Testing Criteria & Exit Conditions (2025 Standards)
 
-- ✅ Query latency <100ms P50
-- ✅ Update time <1s per file
-- ✅ Memory usage reduced by 75%
-- ✅ Retrieval recall improved by 30%
-- ✅ Zero production incidents during rollout
+### Phase Exit Conditions
 
-## Alternative Approaches Considered
+**Phase 1 Complete When:**
+- ✅ Incremental indexing reduces update time by **100x** (30s → 300ms)
+- ✅ Basic quantization achieves **4x** memory reduction
+- ✅ All existing tests pass with **>90%** success rate
+- ✅ BM25S hybrid search operational
 
-1. **HyDE (Hypothetical Document Embeddings)**: Deferred due to added latency
-2. **Full Merkle Tree**: Overkill for current scale, timestamp-based sufficient
-3. **ColBERT/SPLADE**: Too complex for immediate needs
-4. **Migration to Pinecone/Weaviate**: Unnecessary given Qdrant capabilities
+**Phase 2 Complete When:**
+- ✅ Hierarchical indexing + quantization achieves **10x** query speedup
+- ✅ HyDE improves relevance by **2x** (MRR from 0.5 → 0.65)
+- ✅ System handles **10k vectors** smoothly
+- ✅ Directory-level summaries working
+
+**Phase 3 Complete When:**
+- ✅ Merkle tree tracking operational for change detection
+- ✅ Can handle **100k+ vectors** per project
+- ✅ Two-phase retrieval working (directory → file)
+- ✅ Cache hit rate **>85%**
+
+**L9 Production Ready When:**
+- ✅ Scales to **1M+ vectors** per project
+- ✅ **<100ms P95** latency at scale
+- ✅ **95%+ cache hit rate**
+- ✅ Full failover capability demonstrated
+- ✅ All L9 quality metrics met (see below)
+
+### L9 Quality Metrics (Must Meet All)
+
+**Retrieval Quality:**
+- MRR (Mean Reciprocal Rank) **> 0.7**
+- NDCG@10 **> 0.6**
+- Recall@10 **> 0.9**
+
+**Performance Benchmarks:**
+- P50 latency **< 50ms**
+- P95 latency **< 100ms**
+- P99 latency **< 200ms**
+- Throughput **> 100 QPS**
+
+**System Health:**
+- Memory usage **< 2GB per million vectors** (with quantization)
+- **Zero cross-project data leakage**
+- Graceful degradation on service failure
+- **100% backward compatibility**
+
+## Alternative Approaches Considered (Updated from Grok 4 Analysis)
+
+1. **ColBERT v3**: **DEFERRED** - Not plug-and-play with Qdrant, requires GPU and custom indexing. Only 10-20% improvement over dense vectors. Consider multi-vector representations as simpler alternative (80% of benefit).
+2. **SPLADE**: **DEFERRED** - Similar complexity to ColBERT without clear advantage for code search
+3. **Migration to Pinecone/Weaviate**: **REJECTED** - Qdrant has all necessary capabilities with v1.10+
+4. **Full GPU acceleration**: **DEFERRED** - Not needed until >10M vectors per project
 
 ## Implementation Timeline
 
@@ -784,7 +829,18 @@ graphrag_hybrid_search = unified_search
 
 ## Decision
 
-Proceed with phased implementation starting with vector quantization and timestamp-based incremental indexing, followed by quality improvements and foundation building.
+Proceed with phased implementation prioritizing quick compound gains:
 
-**Confidence:** 95%
-**Assumptions:** Current scale remains <10k vectors, read-heavy workload continues
+1. **Immediate**: Incremental indexing (100x DX improvement)
+2. **Quick Win**: Hierarchical + Quantization (realistic 15-20x combined speedup)
+3. **Quality**: HyDE + Semantic chunking (2-5x relevance boost)
+4. **Scale**: Merkle trees when approaching millions of files
+
+**Expected Overall Impact**: 15-20x performance improvement (not 100x as initially hoped)
+
+**Confidence:** 90% (Based on Grok 4 validation and industry benchmarks)
+**Assumptions:**
+- Qdrant v1.10+ with native BM25S support
+- Projects scale to 100k-1M vectors
+- Read-heavy workload (90% search, 10% index)
+- Claude already in the loop (HyDE costs nothing extra)
