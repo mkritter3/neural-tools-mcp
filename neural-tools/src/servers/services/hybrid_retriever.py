@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from typing import List, Dict, Optional, Any, Tuple
 from pathlib import Path
@@ -33,47 +34,253 @@ class HybridRetriever:
         # Use centralized collection naming - no _code suffix per ADR-0041
         from servers.config.collection_naming import collection_naming
         self.collection_name = collection_naming.get_collection_name(container.project_name)
-        
+
+        # ADR-0047 Phase 2: Initialize directory hierarchy service
+        self.directory_service = None
+        self._init_directory_service()
+
+    def _init_directory_service(self):
+        """Initialize directory hierarchy service if available"""
+        try:
+            from servers.services.directory_hierarchy_service import DirectoryHierarchyService
+            self.directory_service = DirectoryHierarchyService(
+                qdrant_service=self.container.qdrant,
+                neo4j_service=self.container.neo4j,
+                nomic_service=self.container.nomic
+            )
+            logger.info("ADR-0047 Phase 2: Directory hierarchy service initialized")
+        except Exception as e:
+            logger.warning(f"Directory hierarchy service not available: {e}")
+
+        # ADR-0047 Phase 3: Initialize HyDE query expander
+        try:
+            from servers.services.hyde_query_expander import HyDEQueryExpander
+            self.hyde_expander = HyDEQueryExpander(nomic_service=self.container.nomic)
+            logger.info("ADR-0047 Phase 3: HyDE query expander initialized")
+        except Exception as e:
+            logger.warning(f"HyDE query expander not available: {e}")
+            self.hyde_expander = None
+
+    async def unified_search(
+        self,
+        query: str,
+        limit: int = 10,
+        search_type: str = "auto",
+        use_hyde: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        ADR-0047: Unified search interface with automatic service fallback
+
+        Single entry point for all search operations. Automatically handles:
+        - BM25S + dense hybrid search when available
+        - Falls back to RRF combination if BM25S unavailable
+        - Falls back to pure vector search if text search fails
+        - Falls back to pure graph search if vector search fails
+        - Gracefully handles service failures
+
+        Args:
+            query: Search query (natural language or code)
+            limit: Number of results to return
+            search_type: "auto" (default), "vector", "graph", "hybrid"
+
+        Returns:
+            Unified search results regardless of backend availability
+        """
+        results = []
+        search_methods_tried = []
+
+        # ADR-0047 Phase 2: Try two-phase hierarchical search first (for large projects)
+        if self.directory_service and search_type in ["auto", "hierarchical"]:
+            try:
+                search_methods_tried.append("two-phase-hierarchical")
+                hierarchical_results = await self.directory_service.two_phase_search(query, limit)
+
+                if hierarchical_results:
+                    results = hierarchical_results
+                    logger.info("Unified search succeeded with two-phase hierarchical method")
+
+                    # Add metadata and return early if successful
+                    for result in results:
+                        result['search_methods'] = search_methods_tried
+                        result['search_type'] = "two-phase-hierarchical"
+                    return results
+
+            except Exception as e:
+                logger.warning(f"Two-phase hierarchical search failed: {e}")
+
+        # Step 1: Try to get embeddings for vector search (with optional HyDE expansion)
+        query_vector = None
+        hyde_metadata = {}
+
+        # ADR-0047 Phase 3: Use HyDE for query expansion if available and enabled
+        if use_hyde and self.hyde_expander:
+            try:
+                hyde_expansion = await self.hyde_expander.expand_query(query, expansion_count=3)
+                if hyde_expansion['combined_embedding']:
+                    query_vector = hyde_expansion['combined_embedding']
+                    hyde_metadata = {
+                        'hyde_used': True,
+                        'query_type': hyde_expansion['query_type'],
+                        'expansion_count': hyde_expansion['expansion_count']
+                    }
+                    logger.info(f"HyDE expanded query with {hyde_expansion['expansion_count']} synthetic documents")
+            except Exception as e:
+                logger.warning(f"HyDE expansion failed: {e}")
+
+        # Fallback to regular embedding if HyDE didn't work
+        if query_vector is None:
+            try:
+                embeddings = await self.container.nomic.get_embeddings([query])
+                if embeddings:
+                    query_vector = embeddings[0]
+                    hyde_metadata = {'hyde_used': False}
+            except Exception as e:
+                logger.warning(f"Embedding generation failed: {e}")
+
+        # Step 2: Try hybrid search (best option)
+        if query_vector and search_type in ["auto", "hybrid"]:
+            try:
+                search_methods_tried.append("hybrid")
+
+                # Use enhanced RRF search with BM25S support
+                hybrid_results = await self.container.qdrant.rrf_hybrid_search(
+                    collection_name=self.collection_name,
+                    query_vector=query_vector,
+                    query_text=query,
+                    limit=limit,
+                    k=60  # Standard RRF parameter
+                )
+
+                if hybrid_results:
+                    results = hybrid_results
+                    logger.info("Unified search succeeded with hybrid method")
+
+            except Exception as e:
+                logger.warning(f"Hybrid search failed: {e}")
+
+        # Step 3: Fallback to pure vector search
+        if not results and query_vector and search_type in ["auto", "vector"]:
+            try:
+                search_methods_tried.append("vector")
+
+                vector_results = await self.container.qdrant.search_vectors(
+                    collection_name=self.collection_name,
+                    query_vector=query_vector,
+                    limit=limit,
+                    score_threshold=0.3
+                )
+
+                if vector_results:
+                    results = vector_results
+                    logger.info("Unified search succeeded with vector-only method")
+
+            except Exception as e:
+                logger.warning(f"Vector search failed: {e}")
+
+        # Step 4: Fallback to graph search
+        if not results and search_type in ["auto", "graph"]:
+            try:
+                search_methods_tried.append("graph")
+
+                # Use Neo4j full-text search
+                graph_results = await self._graph_text_search(query, limit)
+
+                if graph_results:
+                    results = graph_results
+                    logger.info("Unified search succeeded with graph-only method")
+
+            except Exception as e:
+                logger.warning(f"Graph search failed: {e}")
+
+        # Step 5: Last resort - keyword matching in cached data
+        if not results:
+            logger.warning(f"All search methods failed. Tried: {search_methods_tried}")
+            results = await self._emergency_keyword_search(query, limit)
+
+        # Add metadata about search method used
+        for result in results:
+            result['search_methods'] = search_methods_tried
+            result['search_type'] = search_methods_tried[0] if search_methods_tried else "emergency"
+            # Add HyDE metadata if applicable
+            if hyde_metadata:
+                result.update(hyde_metadata)
+
+        return results
+
+    async def _graph_text_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Perform text search directly in Neo4j"""
+        try:
+            # Simple text matching query
+            cypher = """
+            MATCH (c:CodeChunk)
+            WHERE c.project = $project
+            AND (c.content CONTAINS $query OR c.file_path CONTAINS $query)
+            RETURN c.chunk_id as chunk_id, c.file_path as file_path,
+                   c.content as content, c.start_line as start_line,
+                   c.end_line as end_line
+            LIMIT $limit
+            """
+
+            result = await self.container.neo4j.execute_query(
+                cypher,
+                project=self.container.project_name,
+                query=query,
+                limit=limit
+            )
+
+            results = []
+            for record in result.get('records', []):
+                results.append({
+                    'chunk_id': record.get('chunk_id'),
+                    'file_path': record.get('file_path'),
+                    'content': record.get('content'),
+                    'start_line': record.get('start_line'),
+                    'end_line': record.get('end_line'),
+                    'score': 0.5  # Default score for text matches
+                })
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Graph text search failed: {e}")
+            return []
+
+    async def _emergency_keyword_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
+        """Emergency fallback using any available data source"""
+        # This could search in local cache, file system, or return empty
+        logger.warning("Using emergency keyword search - no backend services available")
+        return []
+
     async def find_similar_with_context(
-        self, 
+        self,
         query: str,
         limit: int = 5,
         include_graph_context: bool = True,
         max_hops: int = 2
     ) -> List[Dict[str, Any]]:
         """
-        Find semantically similar code with graph context
-        
-        This is the core GraphRAG query pattern:
-        1. Semantic search in Qdrant
-        2. Enrich with graph relationships from Neo4j
-        3. Return combined context
-        
+        ADR-0047: Enhanced with unified search backend
+
+        Find semantically similar code with graph context.
+        Now uses unified search for better resilience.
+
         Args:
             query: Natural language query or code snippet
             limit: Number of similar chunks to find
             include_graph_context: Whether to fetch graph relationships
             max_hops: Maximum graph traversal depth
-            
+
         Returns:
             List of results with code chunks and their relationships
         """
         try:
-            # Step 1: Get query embedding
-            embeddings = await self.container.nomic.get_embeddings([query])
-            if not embeddings:
-                logger.warning("Failed to generate query embedding")
-                return []
-            
-            query_vector = embeddings[0]
-            
-            # Step 2: Semantic search in Qdrant
-            search_results = await self.container.qdrant.search_vectors(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit
+            # ADR-0047: Use unified search for better resilience
+            search_results = await self.unified_search(
+                query=query,
+                limit=limit,
+                search_type="auto"  # Let it use the best available method
             )
-            
+
             if not search_results:
                 return []
             
@@ -552,25 +759,126 @@ class HybridRetriever:
     ) -> List[str]:
         """Generate recommendations based on impact analysis"""
         recommendations = []
-        
+
         if risk_level in ['high', 'critical']:
             recommendations.append(f"⚠️ High impact: {affected_count} files affected")
             recommendations.append("Consider creating a feature branch")
             recommendations.append("Add comprehensive tests before making changes")
-            
+
             if change_type == 'delete':
                 recommendations.append("Search for dynamic imports that might not be detected")
             elif change_type == 'refactor':
                 recommendations.append("Consider doing the refactor in smaller increments")
-        
+
         if risk_level == 'critical':
             recommendations.append("🚨 Critical impact - review with team before proceeding")
             recommendations.append("Consider creating a migration guide")
-        
+
         if affected_count > 0:
             recommendations.append(f"Run tests for all {affected_count} affected files")
-        
+
         return recommendations
+
+    # ADR-0047 Phase 2: Directory hierarchy and Merkle tree methods
+    async def build_project_hierarchy(self, root_path: str = None, max_depth: int = 5) -> Dict[str, Any]:
+        """
+        Build hierarchical directory structure for the project.
+        Enables efficient search across millions of files.
+
+        Args:
+            root_path: Root directory (defaults to current project root)
+            max_depth: Maximum depth to traverse
+
+        Returns:
+            Dictionary with hierarchy info and statistics
+        """
+        if not self.directory_service:
+            return {"error": "Directory hierarchy service not available"}
+
+        try:
+            # Use project root if not specified
+            if not root_path:
+                root_path = os.environ.get('PROJECT_PATH', '.')
+
+            # Build the hierarchy
+            hierarchy = await self.directory_service.build_directory_hierarchy(
+                root_path=root_path,
+                max_depth=max_depth
+            )
+
+            # Store in both databases
+            await self.directory_service.store_hierarchy_in_qdrant(hierarchy)
+            await self.directory_service.store_hierarchy_in_neo4j(hierarchy)
+
+            # Calculate statistics
+            total_dirs = len(hierarchy)
+            total_files = sum(d.file_count for d in hierarchy.values())
+            total_lines = sum(d.total_lines for d in hierarchy.values())
+            languages = set()
+            frameworks = set()
+
+            for summary in hierarchy.values():
+                languages.update(summary.languages)
+                frameworks.update(summary.frameworks)
+
+            return {
+                "status": "success",
+                "root_path": root_path,
+                "statistics": {
+                    "total_directories": total_dirs,
+                    "total_files": total_files,
+                    "total_lines": total_lines,
+                    "languages": sorted(list(languages)),
+                    "frameworks": sorted(list(frameworks)),
+                    "max_depth": max_depth
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to build project hierarchy: {e}")
+            return {"error": str(e)}
+
+    async def detect_project_changes(self, root_path: str = None) -> Dict[str, Any]:
+        """
+        Detect changes in project structure using Merkle tree comparison.
+        Efficiently identifies what needs re-indexing.
+
+        Args:
+            root_path: Root directory to check
+
+        Returns:
+            Dictionary with added, modified, and deleted directories
+        """
+        if not self.directory_service:
+            return {"error": "Directory hierarchy service not available"}
+
+        try:
+            if not root_path:
+                root_path = os.environ.get('PROJECT_PATH', '.')
+
+            # Detect changes
+            changes = await self.directory_service.detect_changes_with_merkle(root_path)
+
+            # Build current hierarchy for updates
+            if changes['added'] or changes['modified']:
+                hierarchy = await self.directory_service.build_directory_hierarchy(root_path)
+                await self.directory_service.update_changed_directories(changes, hierarchy)
+
+            return {
+                "status": "success",
+                "root_path": root_path,
+                "changes": changes,
+                "summary": {
+                    "added_count": len(changes['added']),
+                    "modified_count": len(changes['modified']),
+                    "deleted_count": len(changes['deleted']),
+                    "total_changes": sum(len(v) for v in changes.values())
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to detect project changes: {e}")
+            return {"error": str(e)}
 
 class CachedHybridRetriever:
     """

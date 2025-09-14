@@ -673,17 +673,17 @@ class IncrementalIndexer(FileSystemEventHandler):
             return 'healthy'
     
     def _chunk_content(self, content: str, file_path: str) -> List[Dict]:
-        """Battle-tested semantic chunking based on LlamaIndex patterns"""
+        """ADR-0047 Phase 3: AST-aware semantic chunking for optimal retrieval"""
         chunks = []
-        
+
         # Battle-tested parameters from LlamaIndex research
         CHUNK_SIZE = 512  # tokens (optimal for semantic search)
         CHUNK_OVERLAP = 50  # 10% overlap for context preservation
         MIN_CHUNK_SIZE = 100  # minimum viable chunk
-        
+
         # Estimate tokens (rough: ~4 chars per token)
         approx_tokens = len(content) // 4
-        
+
         if approx_tokens <= CHUNK_SIZE:
             # Single chunk for small content
             return [{
@@ -693,14 +693,44 @@ class IncrementalIndexer(FileSystemEventHandler):
                 'chunk_type': 'single',
                 'tokens_estimate': approx_tokens
             }]
-        
-        # Semantic chunking for code files
-        if file_path.endswith(('.py', '.js', '.ts', '.java', '.go', '.cpp', '.c', '.h')):
-            chunks = self._semantic_code_chunking(content, file_path, CHUNK_SIZE, CHUNK_OVERLAP)
+
+        # ADR-0047: Try AST-aware chunking first for code files
+        if file_path.endswith(('.py', '.js', '.ts', '.java', '.go', '.cpp', '.c', '.h', '.rs', '.kt', '.swift')):
+            try:
+                # Use AST-aware chunker if available
+                if not hasattr(self, '_ast_chunker'):
+                    from servers.services.ast_aware_chunker import ASTAwareChunker
+                    self._ast_chunker = ASTAwareChunker(
+                        max_chunk_size=100,  # ~400 tokens at 4 chars/token
+                        min_chunk_size=25    # ~100 tokens minimum
+                    )
+
+                # Get AST-based chunks
+                ast_chunks = self._ast_chunker.chunk_file(file_path, content)
+
+                # Convert to expected format
+                chunks = []
+                for ast_chunk in ast_chunks:
+                    chunks.append({
+                        'text': ast_chunk.content,
+                        'start_line': ast_chunk.start_line,
+                        'end_line': ast_chunk.end_line,
+                        'chunk_type': ast_chunk.chunk_type,
+                        'chunk_name': ast_chunk.name,
+                        'chunk_parent': ast_chunk.parent,
+                        'complexity': ast_chunk.complexity,
+                        'tokens_estimate': len(ast_chunk.content) // 4
+                    })
+
+                logger.debug(f"AST-chunked {file_path}: {len(chunks)} semantic chunks")
+
+            except Exception as e:
+                logger.warning(f"AST chunking failed for {file_path}: {e}, falling back to semantic chunking")
+                chunks = self._semantic_code_chunking(content, file_path, CHUNK_SIZE, CHUNK_OVERLAP)
         else:
             # Hierarchical chunking for documentation/text
             chunks = self._hierarchical_text_chunking(content, CHUNK_SIZE, CHUNK_OVERLAP)
-        
+
         # Ensure minimum chunk quality
         quality_chunks = []
         for chunk in chunks:
@@ -708,7 +738,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 chunk['file_path'] = file_path
                 chunk['chunk_id'] = f"{file_path}:{chunk['start_line']}-{chunk['end_line']}"
                 quality_chunks.append(chunk)
-        
+
         logger.debug(f"Chunked {file_path}: {len(quality_chunks)} chunks from {approx_tokens} tokens")
         return quality_chunks
     
