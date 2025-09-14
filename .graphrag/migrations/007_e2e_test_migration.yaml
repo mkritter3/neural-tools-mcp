@@ -1,0 +1,41 @@
+version: 7
+name: e2e_test_migration
+timestamp: '2025-09-13T17:19:21.671133'
+author: system
+description: E2E test migration
+up:
+- operation: create_node_type
+  params:
+    name: TestNodeE2E
+  description: ''
+- operation: create_relationship_type
+  params:
+    name: E2E_TEST_RELATION
+  description: ''
+- operation: create_collection
+  params:
+    name: code
+  description: ''
+- operation: create_collection
+  params:
+    name: docs
+  description: ''
+down:
+- operation: drop_node_type
+  params:
+    name: TestNodeE2E
+  description: ''
+- operation: drop_relationship_type
+  params:
+    name: E2E_TEST_RELATION
+  description: ''
+- operation: drop_collection
+  params:
+    name: code
+  description: ''
+- operation: drop_collection
+  params:
+    name: docs
+  description: ''
+dependencies: []
+checksum: 1e6f08ce60189908f215eadfe3e020d3a9bf0f04bc3a9fcd23b61f6e147e3e73

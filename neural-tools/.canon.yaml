@@ -1,0 +1,46 @@
+# Canonical Knowledge Configuration for L9 Neural GraphRAG MCP
+# Defines authoritative sources for different types of information
+
+primary:
+  - path: "CLAUDE.md"
+    description: "Complete system documentation and architecture"
+    weight: 1.0
+
+  - path: "README.md"
+    description: "Installation guide and user documentation"
+    weight: 0.95
+
+  - path: "docker-compose.yml"
+    description: "Service orchestration configuration"
+    weight: 0.9
+
+  - pattern: "docs/adr/*.md"
+    description: "Architecture Decision Records - authoritative design decisions"
+    weight: 0.95
+
+  - pattern: "neural-tools/src/neural_mcp/neural_server_stdio.py"
+    description: "Main MCP server implementation"
+    weight: 0.9
+
+secondary:
+  - pattern: "neural-tools/src/servers/services/*.py"
+    description: "Core service implementations"
+    weight: 0.7
+
+  - pattern: "scripts/*.sh"
+    description: "Deployment and setup scripts"
+    weight: 0.75
+
+reference:
+  - pattern: "neural-tools/tests/**/*.py"
+    description: "Test suite and validation examples"
+    weight: 0.4
+
+  - pattern: "*.json"
+    description: "Configuration files"
+    weight: 0.4
+
+experimental:
+  - pattern: "neural-tools/experiments/*.py"
+    description: "Experimental features and prototypes"
+    weight: 0.3

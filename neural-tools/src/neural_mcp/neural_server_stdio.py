@@ -2307,7 +2307,10 @@ async def migration_generate_impl(arguments: dict) -> List[types.TextContent]:
     """Generate a new migration from schema changes"""
     try:
         project_name, container, _ = await get_project_context(arguments)
-        
+
+        # Get project path from environment or current directory
+        project_path = os.environ.get('PROJECT_PATH', os.getcwd())
+
         # Get or create migration manager for project
         from servers.services.migration_manager import MigrationManager
         migration_manager = MigrationManager(
@@ -2332,6 +2335,10 @@ async def migration_generate_impl(arguments: dict) -> List[types.TextContent]:
         # Generate migration from current schema differences
         migration = await migration_manager.generate_migration(name, description)
         
+        # Construct the migration file path
+        migration_file = f"{migration.version:04d}_{migration.name}.yaml"
+        migration_file_path = f"{project_path}/.graphrag/migrations/{migration_file}"
+
         return [types.TextContent(
             type="text",
             text=json.dumps({
@@ -2341,10 +2348,10 @@ async def migration_generate_impl(arguments: dict) -> List[types.TextContent]:
                     "version": migration.version,
                     "name": migration.name,
                     "description": migration.description,
-                    "file": migration.file_path,
+                    "file": migration_file_path,
                     "operations": len(migration.up_operations)
                 },
-                "message": f"Generated migration {migration.version:04d}_{migration.name}.yaml"
+                "message": f"Generated migration {migration_file}"
             }, indent=2)
         )]
     except Exception as e:
@@ -2365,7 +2372,10 @@ async def migration_apply_impl(arguments: dict) -> List[types.TextContent]:
                     "message": "Services not initialized. Cannot apply migrations."
                 }, indent=2)
             )]
-        
+
+        # Get project path from environment or current directory
+        project_path = os.environ.get('PROJECT_PATH', os.getcwd())
+
         # Get migration manager
         from servers.services.migration_manager import MigrationManager
         migration_manager = MigrationManager(
@@ -2384,15 +2394,13 @@ async def migration_apply_impl(arguments: dict) -> List[types.TextContent]:
         return [types.TextContent(
             type="text",
             text=json.dumps({
-                "status": "success" if result.success else "failed",
+                "status": result.status,
                 "project": project_name,
                 "dry_run": dry_run,
-                "from_version": result.from_version,
-                "to_version": result.to_version,
+                "current_version": result.current_version,
                 "migrations_applied": result.migrations_applied,
-                "operations_executed": result.operations_executed,
                 "errors": result.errors,
-                "message": f"{'Would apply' if dry_run else 'Applied'} {len(result.migrations_applied)} migrations"
+                "message": result.message if result.message else f"{'Would apply' if dry_run else 'Applied'} {len(result.migrations_applied)} migrations"
             }, indent=2)
         )]
     except Exception as e:
@@ -2423,7 +2431,10 @@ async def migration_rollback_impl(arguments: dict) -> List[types.TextContent]:
                     "message": "target_version is required for rollback"
                 }, indent=2)
             )]
-        
+
+        # Get project path from environment or current directory
+        project_path = os.environ.get('PROJECT_PATH', os.getcwd())
+
         # Get migration manager
         from servers.services.migration_manager import MigrationManager
         migration_manager = MigrationManager(
@@ -2439,14 +2450,12 @@ async def migration_rollback_impl(arguments: dict) -> List[types.TextContent]:
         return [types.TextContent(
             type="text",
             text=json.dumps({
-                "status": "success" if result.success else "failed",
+                "status": result.status,
                 "project": project_name,
-                "from_version": result.from_version,
-                "to_version": result.to_version,
+                "current_version": result.current_version,
                 "migrations_rolled_back": result.migrations_applied,
-                "operations_executed": result.operations_executed,
                 "errors": result.errors,
-                "message": f"Rolled back to version {target_version}"
+                "message": result.message if result.message else f"Rolled back to version {target_version}"
             }, indent=2)
         )]
     except Exception as e:
@@ -2471,23 +2480,24 @@ async def migration_status_impl(arguments: dict) -> List[types.TextContent]:
             qdrant_service=container.qdrant if container else None
         )
         
-        # Get migration state
-        state = await migration_manager.get_migration_state()
+        # Get migration state using the status() method
+        status = await migration_manager.status()
+        state = migration_manager.state  # Access the state property directly
         pending = await migration_manager.get_pending_migrations()
-        
-        # Get history
+
+        # Get history from applied migrations
         history = []
         if container and container.neo4j:
-            history_records = await migration_manager.get_migration_history()
+            applied_migrations = await migration_manager.get_applied_migrations()
             history = [
                 {
-                    "version": h["version"],
-                    "name": h["name"],
-                    "applied_at": h["applied_at"],
-                    "direction": h["direction"],
-                    "success": h["success"]
+                    "version": m.version,
+                    "name": m.name,
+                    "applied_at": m.timestamp.isoformat(),
+                    "direction": "up",  # Applied migrations are always "up"
+                    "success": True  # If they're in applied list, they succeeded
                 }
-                for h in history_records[:5]  # Last 5 migrations
+                for m in applied_migrations[:5]  # Last 5 migrations
             ]
         
         return [types.TextContent(
@@ -2506,7 +2516,7 @@ async def migration_status_impl(arguments: dict) -> List[types.TextContent]:
                     for m in pending
                 ],
                 "recent_history": history,
-                "last_migration": state.last_migration_at.isoformat() if state.last_migration_at else None
+                "last_migration": state.last_applied.isoformat() if state.last_applied else None
             }, indent=2)
         )]
     except Exception as e:
@@ -2774,13 +2784,24 @@ Use `set_project_context(path="/path/to/project")`
 **To auto-detect current project:**
 Use `set_project_context()` without arguments"""
         
-        return [types.TextContent(type="text", text=output)]
-        
+        # Also return JSON data for programmatic access
+        return [types.TextContent(
+            type="text",
+            text=json.dumps({
+                "status": "success",
+                "projects": projects,
+                "text": output  # Include formatted text too
+            })
+        )]
+
     except Exception as e:
         logger.error(f"Error in list_projects: {e}")
         return [types.TextContent(
             type="text",
-            text=f"❌ Error listing projects: {str(e)}"
+            text=json.dumps({
+                "status": "error",
+                "message": str(e)
+            })
         )]
 
 
