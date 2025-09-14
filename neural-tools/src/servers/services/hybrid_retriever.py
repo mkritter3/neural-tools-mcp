@@ -97,7 +97,7 @@ class HybridRetriever:
 
                 if hierarchical_results:
                     results = hierarchical_results
-                    logger.info(f"Unified search succeeded with two-phase hierarchical method")
+                    logger.info("Unified search succeeded with two-phase hierarchical method")
 
                     # Add metadata and return early if successful
                     for result in results:
@@ -153,7 +153,7 @@ class HybridRetriever:
 
                 if hybrid_results:
                     results = hybrid_results
-                    logger.info(f"Unified search succeeded with hybrid method")
+                    logger.info("Unified search succeeded with hybrid method")
 
             except Exception as e:
                 logger.warning(f"Hybrid search failed: {e}")
@@ -172,7 +172,7 @@ class HybridRetriever:
 
                 if vector_results:
                     results = vector_results
-                    logger.info(f"Unified search succeeded with vector-only method")
+                    logger.info("Unified search succeeded with vector-only method")
 
             except Exception as e:
                 logger.warning(f"Vector search failed: {e}")
@@ -187,7 +187,7 @@ class HybridRetriever:
 
                 if graph_results:
                     results = graph_results
-                    logger.info(f"Unified search succeeded with graph-only method")
+                    logger.info("Unified search succeeded with graph-only method")
 
             except Exception as e:
                 logger.warning(f"Graph search failed: {e}")

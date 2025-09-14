@@ -6,7 +6,7 @@ Ensures chunks contain complete code units (functions, classes, etc.).
 """
 
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
@@ -477,7 +477,6 @@ class ASTAwareChunker:
 
     def _extract_by_regex(self, lines: List[str], pattern, chunk_type: str, language: str) -> List[CodeChunk]:
         """Extract code chunks using regex pattern"""
-        import re
         chunks = []
 
         for i, line in enumerate(lines):

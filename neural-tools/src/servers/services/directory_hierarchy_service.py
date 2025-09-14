@@ -5,14 +5,12 @@ Implements hierarchical organization with directory summaries for efficient mill
 Uses two-phase retrieval: directory summaries first, then file-level details.
 """
 
-import os
 import logging
 import json
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
-import asyncio
 from datetime import datetime
 
 logger = logging.getLogger(__name__)

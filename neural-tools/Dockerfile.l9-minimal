@@ -30,8 +30,8 @@ COPY config/ ./config/
 # Copy source directly for neural-tools-src path compatibility
 COPY src/ ./neural-tools-src/
 
-# Fix import paths for GraphRAG (hybrid_retriever needs to be accessible from servers/)
-RUN cp /app/src/services/hybrid_retriever.py /app/src/servers/services/
+# Fix import paths for GraphRAG (hybrid_retriever already in correct location)
+# RUN cp /app/src/services/hybrid_retriever.py /app/src/servers/services/
 
 # Ensure all service files are available in both locations for MCP server compatibility  
 RUN mkdir -p /app/neural-tools-src/servers/services/ && \

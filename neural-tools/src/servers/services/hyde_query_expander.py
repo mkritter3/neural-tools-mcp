@@ -6,8 +6,7 @@ Generates synthetic documents to expand queries and improve semantic search.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
-import asyncio
+from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
