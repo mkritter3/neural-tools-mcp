@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from typing import List, Dict, Optional, Any, Tuple
 from pathlib import Path
@@ -33,7 +34,24 @@ class HybridRetriever:
         # Use centralized collection naming - no _code suffix per ADR-0041
         from servers.config.collection_naming import collection_naming
         self.collection_name = collection_naming.get_collection_name(container.project_name)
-        
+
+        # ADR-0047 Phase 2: Initialize directory hierarchy service
+        self.directory_service = None
+        self._init_directory_service()
+
+    def _init_directory_service(self):
+        """Initialize directory hierarchy service if available"""
+        try:
+            from servers.services.directory_hierarchy_service import DirectoryHierarchyService
+            self.directory_service = DirectoryHierarchyService(
+                qdrant_service=self.container.qdrant,
+                neo4j_service=self.container.neo4j,
+                nomic_service=self.container.nomic
+            )
+            logger.info("ADR-0047 Phase 2: Directory hierarchy service initialized")
+        except Exception as e:
+            logger.warning(f"Directory hierarchy service not available: {e}")
+
     async def unified_search(
         self,
         query: str,
@@ -60,6 +78,25 @@ class HybridRetriever:
         """
         results = []
         search_methods_tried = []
+
+        # ADR-0047 Phase 2: Try two-phase hierarchical search first (for large projects)
+        if self.directory_service and search_type in ["auto", "hierarchical"]:
+            try:
+                search_methods_tried.append("two-phase-hierarchical")
+                hierarchical_results = await self.directory_service.two_phase_search(query, limit)
+
+                if hierarchical_results:
+                    results = hierarchical_results
+                    logger.info(f"Unified search succeeded with two-phase hierarchical method")
+
+                    # Add metadata and return early if successful
+                    for result in results:
+                        result['search_methods'] = search_methods_tried
+                        result['search_type'] = "two-phase-hierarchical"
+                    return results
+
+            except Exception as e:
+                logger.warning(f"Two-phase hierarchical search failed: {e}")
 
         # Step 1: Try to get embeddings for vector search
         query_vector = None
@@ -689,25 +726,126 @@ class HybridRetriever:
     ) -> List[str]:
         """Generate recommendations based on impact analysis"""
         recommendations = []
-        
+
         if risk_level in ['high', 'critical']:
             recommendations.append(f"⚠️ High impact: {affected_count} files affected")
             recommendations.append("Consider creating a feature branch")
             recommendations.append("Add comprehensive tests before making changes")
-            
+
             if change_type == 'delete':
                 recommendations.append("Search for dynamic imports that might not be detected")
             elif change_type == 'refactor':
                 recommendations.append("Consider doing the refactor in smaller increments")
-        
+
         if risk_level == 'critical':
             recommendations.append("🚨 Critical impact - review with team before proceeding")
             recommendations.append("Consider creating a migration guide")
-        
+
         if affected_count > 0:
             recommendations.append(f"Run tests for all {affected_count} affected files")
-        
+
         return recommendations
+
+    # ADR-0047 Phase 2: Directory hierarchy and Merkle tree methods
+    async def build_project_hierarchy(self, root_path: str = None, max_depth: int = 5) -> Dict[str, Any]:
+        """
+        Build hierarchical directory structure for the project.
+        Enables efficient search across millions of files.
+
+        Args:
+            root_path: Root directory (defaults to current project root)
+            max_depth: Maximum depth to traverse
+
+        Returns:
+            Dictionary with hierarchy info and statistics
+        """
+        if not self.directory_service:
+            return {"error": "Directory hierarchy service not available"}
+
+        try:
+            # Use project root if not specified
+            if not root_path:
+                root_path = os.environ.get('PROJECT_PATH', '.')
+
+            # Build the hierarchy
+            hierarchy = await self.directory_service.build_directory_hierarchy(
+                root_path=root_path,
+                max_depth=max_depth
+            )
+
+            # Store in both databases
+            await self.directory_service.store_hierarchy_in_qdrant(hierarchy)
+            await self.directory_service.store_hierarchy_in_neo4j(hierarchy)
+
+            # Calculate statistics
+            total_dirs = len(hierarchy)
+            total_files = sum(d.file_count for d in hierarchy.values())
+            total_lines = sum(d.total_lines for d in hierarchy.values())
+            languages = set()
+            frameworks = set()
+
+            for summary in hierarchy.values():
+                languages.update(summary.languages)
+                frameworks.update(summary.frameworks)
+
+            return {
+                "status": "success",
+                "root_path": root_path,
+                "statistics": {
+                    "total_directories": total_dirs,
+                    "total_files": total_files,
+                    "total_lines": total_lines,
+                    "languages": sorted(list(languages)),
+                    "frameworks": sorted(list(frameworks)),
+                    "max_depth": max_depth
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to build project hierarchy: {e}")
+            return {"error": str(e)}
+
+    async def detect_project_changes(self, root_path: str = None) -> Dict[str, Any]:
+        """
+        Detect changes in project structure using Merkle tree comparison.
+        Efficiently identifies what needs re-indexing.
+
+        Args:
+            root_path: Root directory to check
+
+        Returns:
+            Dictionary with added, modified, and deleted directories
+        """
+        if not self.directory_service:
+            return {"error": "Directory hierarchy service not available"}
+
+        try:
+            if not root_path:
+                root_path = os.environ.get('PROJECT_PATH', '.')
+
+            # Detect changes
+            changes = await self.directory_service.detect_changes_with_merkle(root_path)
+
+            # Build current hierarchy for updates
+            if changes['added'] or changes['modified']:
+                hierarchy = await self.directory_service.build_directory_hierarchy(root_path)
+                await self.directory_service.update_changed_directories(changes, hierarchy)
+
+            return {
+                "status": "success",
+                "root_path": root_path,
+                "changes": changes,
+                "summary": {
+                    "added_count": len(changes['added']),
+                    "modified_count": len(changes['modified']),
+                    "deleted_count": len(changes['deleted']),
+                    "total_changes": sum(len(v) for v in changes.values())
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to detect project changes: {e}")
+            return {"error": str(e)}
 
 class CachedHybridRetriever:
     """
