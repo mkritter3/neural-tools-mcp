@@ -52,11 +52,21 @@ class HybridRetriever:
         except Exception as e:
             logger.warning(f"Directory hierarchy service not available: {e}")
 
+        # ADR-0047 Phase 3: Initialize HyDE query expander
+        try:
+            from servers.services.hyde_query_expander import HyDEQueryExpander
+            self.hyde_expander = HyDEQueryExpander(nomic_service=self.container.nomic)
+            logger.info("ADR-0047 Phase 3: HyDE query expander initialized")
+        except Exception as e:
+            logger.warning(f"HyDE query expander not available: {e}")
+            self.hyde_expander = None
+
     async def unified_search(
         self,
         query: str,
         limit: int = 10,
-        search_type: str = "auto"
+        search_type: str = "auto",
+        use_hyde: bool = True
     ) -> List[Dict[str, Any]]:
         """
         ADR-0047: Unified search interface with automatic service fallback
@@ -98,14 +108,34 @@ class HybridRetriever:
             except Exception as e:
                 logger.warning(f"Two-phase hierarchical search failed: {e}")
 
-        # Step 1: Try to get embeddings for vector search
+        # Step 1: Try to get embeddings for vector search (with optional HyDE expansion)
         query_vector = None
-        try:
-            embeddings = await self.container.nomic.get_embeddings([query])
-            if embeddings:
-                query_vector = embeddings[0]
-        except Exception as e:
-            logger.warning(f"Embedding generation failed: {e}")
+        hyde_metadata = {}
+
+        # ADR-0047 Phase 3: Use HyDE for query expansion if available and enabled
+        if use_hyde and self.hyde_expander:
+            try:
+                hyde_expansion = await self.hyde_expander.expand_query(query, expansion_count=3)
+                if hyde_expansion['combined_embedding']:
+                    query_vector = hyde_expansion['combined_embedding']
+                    hyde_metadata = {
+                        'hyde_used': True,
+                        'query_type': hyde_expansion['query_type'],
+                        'expansion_count': hyde_expansion['expansion_count']
+                    }
+                    logger.info(f"HyDE expanded query with {hyde_expansion['expansion_count']} synthetic documents")
+            except Exception as e:
+                logger.warning(f"HyDE expansion failed: {e}")
+
+        # Fallback to regular embedding if HyDE didn't work
+        if query_vector is None:
+            try:
+                embeddings = await self.container.nomic.get_embeddings([query])
+                if embeddings:
+                    query_vector = embeddings[0]
+                    hyde_metadata = {'hyde_used': False}
+            except Exception as e:
+                logger.warning(f"Embedding generation failed: {e}")
 
         # Step 2: Try hybrid search (best option)
         if query_vector and search_type in ["auto", "hybrid"]:
@@ -171,6 +201,9 @@ class HybridRetriever:
         for result in results:
             result['search_methods'] = search_methods_tried
             result['search_type'] = search_methods_tried[0] if search_methods_tried else "emergency"
+            # Add HyDE metadata if applicable
+            if hyde_metadata:
+                result.update(hyde_metadata)
 
         return results
 
