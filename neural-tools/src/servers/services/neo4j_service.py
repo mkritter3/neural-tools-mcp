@@ -273,6 +273,10 @@ class Neo4jService:
         except Exception as e:
             logger.warning(f"Could not create constraints: {e}")
     
+    async def execute_query(self, cypher_query: str, parameters: Optional[Dict] = None) -> Dict[str, Any]:
+        """Execute query using Neo4j 5.x+ standard naming (ADR-0046). Delegates to execute_cypher."""
+        return await self.execute_cypher(cypher_query, parameters)
+
     async def execute_cypher(self, cypher_query: str, parameters: Optional[Dict] = None) -> Dict[str, Any]:
         """Execute Cypher query with service validation, project isolation (ADR-0029) and intelligent caching"""
         if not self.initialized or not self.client:
