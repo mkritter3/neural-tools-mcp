@@ -80,7 +80,7 @@ class IndexerOrchestrator:
             self.docker_client.ping()
 
             # ADR-0044: Initialize container discovery service
-            from servers.services.container_discovery import ContainerDiscoveryService
+            from src.servers.services.container_discovery import ContainerDiscoveryService
             self.discovery_service = ContainerDiscoveryService(self.docker_client)
 
             logger.info("IndexerOrchestrator initialized with container discovery")

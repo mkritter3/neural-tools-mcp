@@ -154,7 +154,7 @@ class ContainerDiscoveryService:
                 ports={'8080/tcp': new_port},
                 environment={
                     'PROJECT_NAME': project_name,
-                    'PROJECT_PATH': str(context_manager.current_project_path),
+                    'PROJECT_PATH': '/workspace',  # ADR-0048: Always use container path
                     # ADR-0037 compliant environment variables
                     'NEO4J_URI': 'bolt://host.docker.internal:47687',
                     'NEO4J_PASSWORD': 'graphrag-password',
