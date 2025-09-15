@@ -157,7 +157,33 @@ class IndexerOrchestrator:
             # Fallback to original logic if no discovery service
             logger.warning("⚠️ No discovery service, using legacy container creation")
 
-            # Check if already running
+            # ADR-0048: Idempotent container management - remove any existing indexer first
+            try:
+                existing_containers = self.docker_client.containers.list(
+                    all=True,  # Include stopped containers
+                    filters={'name': f'indexer-{project_name}'}
+                )
+                for container in existing_containers:
+                    logger.info(f"[ADR-0048] Removing existing indexer for idempotency: {container.id[:12]}")
+                    try:
+                        # Graceful stop first if running
+                        if container.status == 'running':
+                            container.stop(timeout=10)
+                    except:
+                        pass  # Container might already be stopped
+                    container.remove(force=True)
+                    # Clean up tracking if present
+                    if project_name in self.active_indexers:
+                        port = self.active_indexers[project_name].get('port')
+                        if port:
+                            self._release_port(port)
+                        del self.active_indexers[project_name]
+            except docker.errors.NotFound:
+                pass  # No existing container
+            except Exception as e:
+                logger.warning(f"[ADR-0048] Error during cleanup: {e}")
+
+            # Check if already running (this should now always be false due to cleanup above)
             if project_name in self.active_indexers:
                 self.active_indexers[project_name]['last_activity'] = datetime.now()
                 container_id = self.active_indexers[project_name]['container_id']
@@ -200,7 +226,7 @@ class IndexerOrchestrator:
                     name=f'indexer-{project_name}',
                     environment={
                         'PROJECT_NAME': project_name,
-                        'PROJECT_PATH': '/workspace',
+                        'PROJECT_PATH': '/workspace',  # ADR-0048: ALWAYS use container path, never host path
                         # Use host.docker.internal for container->host communication
                         'NEO4J_URI': 'bolt://host.docker.internal:47687',
                         'NEO4J_USERNAME': 'neo4j',
