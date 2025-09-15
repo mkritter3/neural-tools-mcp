@@ -59,7 +59,7 @@ services:
       start_period: 30s
 
   qdrant:
-    image: qdrant/qdrant:latest  # v1.15.1+ for client compatibility
+    image: qdrant/qdrant:v1.15.1  # Pinned version for stability
     ports:
       - "46333:6333"
       - "46334:6334"
@@ -146,7 +146,7 @@ services:
 
   # Gemma 2B Metadata Tagging Service
   gemma-tagger:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.3.6  # Pinned version for stability
     container_name: neural-gemma-tagger
     volumes:
       - gemma_models:/root/.ollama
@@ -173,7 +173,7 @@ services:
 
   # Optional: Monitoring stack
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.48.0  # Pinned version for stability
     ports:
       - "49091:9090"
     volumes:
@@ -186,7 +186,7 @@ services:
       - '--web.console.templates=/etc/prometheus/consoles'
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.2.0  # Pinned version for stability
     ports:
       - "43001:3000"
     volumes:

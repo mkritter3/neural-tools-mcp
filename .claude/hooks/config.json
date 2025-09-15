@@ -1,0 +1,9 @@
+{
+    "require_confidence": true,
+    "require_assumptions": true,
+    "hedge_regex": "\\b(i think|maybe|it seems|i feel|as an ai)\\b",
+    "needs_citation_triggers": [
+    "ceo", "price", "version", "release", "benchmark", "law", "election",
+    "api change", "deprecation", "breaking change", "security cve", "advisory"
+    ]
+    }
