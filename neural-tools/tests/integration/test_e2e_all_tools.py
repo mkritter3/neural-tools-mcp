@@ -2,12 +2,15 @@
 """
 End-to-End Test Suite for ALL 22 Neural Tools
 Tests via actual subprocess JSON-RPC communication (L9 Standards)
+Includes ADR-0048 container path validation
 """
 
 import asyncio
 import pytest
 import os
 import sys
+import docker
+import tempfile
 from pathlib import Path
 
 # Add helpers to path
@@ -407,3 +410,101 @@ class TestAllToolsE2E:
             # but not corrupted state
             assert all(not isinstance(r, Exception) for r in results), \
                 "Race condition caused exceptions"
+
+    @pytest.mark.asyncio
+    async def test_adr0048_container_path_resolution(self):
+        """
+        Test ADR-0048: Verify indexer containers use correct PROJECT_PATH=/workspace.
+        This test validates the critical fix that prevents "PROJECT_PATH does not exist" errors.
+        """
+        async with mcp_server_session(timeout=TIMEOUT) as helper:
+            # First, ensure we can get project context
+            result = await helper.call_tool("project_understanding", {"scope": "summary"})
+            assert "project_name" in result or "summary" in result, \
+                "Should get project understanding"
+
+            # Create a test project directory
+            with tempfile.TemporaryDirectory(prefix="adr0048_e2e_") as temp_dir:
+                test_file = Path(temp_dir) / "test.py"
+                test_file.write_text("# ADR-0048 validation test file\nprint('hello')")
+
+                # Set project context to our test directory
+                context_result = await helper.call_tool(
+                    "set_project_context",
+                    {"path": temp_dir}
+                )
+
+                # Verify context was set
+                assert "project" in context_result or "success" in context_result, \
+                    "Failed to set project context"
+
+                # Now check if any indexer containers are created with correct paths
+                try:
+                    docker_client = docker.from_env()
+
+                    # List any indexer containers
+                    indexer_containers = docker_client.containers.list(
+                        all=True,
+                        filters={'name': 'indexer-'}
+                    )
+
+                    for container in indexer_containers:
+                        # Check environment variables
+                        env_vars = container.attrs['Config']['Env']
+                        project_path = None
+
+                        for env in env_vars:
+                            if env.startswith('PROJECT_PATH='):
+                                project_path = env.split('=', 1)[1]
+                                break
+
+                        # ADR-0048 validation: PROJECT_PATH must be /workspace
+                        if project_path:
+                            assert project_path == '/workspace', \
+                                f"ADR-0048 VIOLATION: Container {container.name} has " \
+                                f"PROJECT_PATH={project_path}, expected /workspace"
+
+                            # Also verify volume mount exists
+                            mounts = container.attrs.get('Mounts', [])
+                            workspace_mount = any(
+                                m['Destination'] == '/workspace' for m in mounts
+                            )
+                            assert workspace_mount, \
+                                f"Container {container.name} missing /workspace mount"
+
+                except docker.errors.DockerException:
+                    # Docker not available in test environment, skip validation
+                    pytest.skip("Docker not available for ADR-0048 validation")
+
+    @pytest.mark.asyncio
+    async def test_adr0048_idempotent_container_management(self):
+        """
+        Test ADR-0048: Verify idempotent container management.
+        Ensures that setting project context multiple times doesn't create duplicate containers.
+        """
+        async with mcp_server_session(timeout=TIMEOUT) as helper:
+            with tempfile.TemporaryDirectory(prefix="adr0048_idempotent_") as temp_dir:
+                # Set project context twice
+                await helper.call_tool("set_project_context", {"path": temp_dir})
+                await asyncio.sleep(1)  # Brief pause
+                await helper.call_tool("set_project_context", {"path": temp_dir})
+
+                try:
+                    docker_client = docker.from_env()
+
+                    # Extract project name from temp dir
+                    project_name = Path(temp_dir).name
+
+                    # Check for duplicate containers
+                    containers = docker_client.containers.list(
+                        all=True,
+                        filters={'name': f'indexer-{project_name}'}
+                    )
+
+                    # ADR-0048: Should have at most 1 container per project
+                    assert len(containers) <= 1, \
+                        f"ADR-0048 VIOLATION: Found {len(containers)} containers " \
+                        f"for project {project_name}, expected at most 1"
+
+                except docker.errors.DockerException:
+                    pytest.skip("Docker not available for idempotency test")
