@@ -193,11 +193,16 @@ class IndexerRunner:
             sys.path.insert(0, '/app/src')
             from servers.services.indexer_service import IncrementalIndexer
             from servers.services.service_container import ServiceContainer
-            
+            from servers.services.project_context_manager import ProjectContextManager
+
             logger.info(f"Starting neural indexer for project: {project_name} at {project_path}")
 
-            # Initialize service container with real services - MUST pass project name!
-            container = ServiceContainer(project_name)
+            # Initialize context manager for ADR-0044
+            context_manager = ProjectContextManager()
+            await context_manager.set_project(project_path)
+
+            # Initialize service container with context manager - ADR-0044 compliant
+            container = ServiceContainer(context_manager=context_manager)
 
             # Create and configure indexer with proper parameters
             self.indexer = IncrementalIndexer(
