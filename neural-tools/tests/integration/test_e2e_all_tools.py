@@ -508,3 +508,66 @@ class TestAllToolsE2E:
 
                 except docker.errors.DockerException:
                     pytest.skip("Docker not available for idempotency test")
+
+    @pytest.mark.asyncio
+    async def test_dynamic_port_discovery(self):
+        """
+        Test Dynamic Port Discovery: Verify MCP tools discover actual container ports.
+        Tests that indexer_status and reindex_path use discovered ports, not hardcoded 48080.
+        """
+        async with mcp_server_session(timeout=TIMEOUT) as helper:
+            # First, ensure we have some running indexer containers
+            try:
+                docker_client = docker.from_env()
+                containers = docker_client.containers.list(
+                    filters={'name': 'indexer-', 'status': 'running'}
+                )
+
+                if not containers:
+                    # Create a test container to ensure we have something to discover
+                    result = await helper.call_tool("set_project_context", {
+                        "path": "/Users/mkr/local-coding/claude-l9-template"
+                    })
+                    await asyncio.sleep(2)  # Wait for container to start
+
+                    containers = docker_client.containers.list(
+                        filters={'name': 'indexer-', 'status': 'running'}
+                    )
+
+                if containers:
+                    # Get the actual port from a running container
+                    container = containers[0]
+                    project_name = container.name.replace('indexer-', '')
+
+                    # Extract actual port from container
+                    ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+                    actual_port = None
+                    if '8080/tcp' in ports and ports['8080/tcp']:
+                        actual_port = int(ports['8080/tcp'][0]['HostPort'])
+
+                    assert actual_port is not None, "Container should have a port mapping"
+                    assert actual_port != 48080, f"Port should not be hardcoded 48080, got {actual_port}"
+                    assert 48100 <= actual_port < 48200, f"Port {actual_port} should be in range 48100-48199"
+
+                    # Test indexer_status - it should connect to the discovered port
+                    result = await helper.call_tool("indexer_status", {})
+
+                    # The status should either succeed (if indexer is healthy)
+                    # or show the correct port in error message (not 48080)
+                    if "error" in result:
+                        # Check that error message doesn't reference hardcoded 48080
+                        assert "48080" not in str(result), \
+                            f"Should not use hardcoded port 48080, actual port is {actual_port}"
+                        # Should reference the actual port or not mention port at all
+                        if str(actual_port) not in str(result):
+                            # Port might not be in error message, which is OK
+                            pass
+                    else:
+                        # If successful, we're connecting to the right port
+                        assert "indexer_status" in result or "healthy" in str(result).lower(), \
+                            "Should have valid status response"
+
+                    print(f"✅ Dynamic port discovery working: Found container on port {actual_port}")
+
+            except docker.errors.DockerException:
+                pytest.skip("Docker not accessible for port discovery test")

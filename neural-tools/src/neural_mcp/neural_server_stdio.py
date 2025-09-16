@@ -1870,11 +1870,69 @@ async def neural_tools_help_impl() -> List[types.TextContent]:
 async def indexer_status_impl() -> List[types.TextContent]:
     """Get neural indexer sidecar status and metrics via HTTP API"""
     import httpx
-    
+
     try:
+        # Get current project context to find the right indexer port
+        if PROJECT_CONTEXT is None:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "indexer_status": "error",
+                    "error": "PROJECT_CONTEXT not initialized",
+                    "sidecar_connection": "unknown",
+                    "note": "MCP server may not be fully initialized"
+                }, indent=2)
+            )]
+
+        project_context = await PROJECT_CONTEXT.get_current_project()
+        project_name = project_context['project']
+
+        # Get service container for this project
+        container = await state.get_service_container(project_name)
+
+        # Get the port for this project's indexer
+        indexer_port = None
+        if hasattr(container, 'indexer_orchestrator') and container.indexer_orchestrator:
+            indexer_port = container.indexer_orchestrator.get_indexer_port(project_name)
+            if indexer_port:
+                logger.debug(f"Using discovered port {indexer_port} for {project_name} indexer")
+            else:
+                # Try discovery through orchestrator's discovery service
+                if hasattr(container.indexer_orchestrator, 'discovery_service') and container.indexer_orchestrator.discovery_service:
+                    discovered = await container.indexer_orchestrator.discovery_service.discover_project_container(project_name)
+                    if discovered and discovered.get('port'):
+                        indexer_port = discovered['port']
+                        logger.debug(f"Discovered indexer for {project_name} on port {indexer_port}")
+
+        if not indexer_port:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "indexer_status": "no_container",
+                    "error": f"No indexer container found for project {project_name}",
+                    "sidecar_connection": "not_found",
+                    "note": "Run 'set_project_context' or 'reindex_path' to start indexer"
+                }, indent=2)
+            )]
+
+        # Wait for indexer to be ready (container might have just started)
+        logger.debug(f"Waiting for indexer on port {indexer_port} to be ready...")
+        is_ready = await _wait_for_indexer_ready(indexer_port, timeout=10)
+
+        if not is_ready:
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "indexer_status": "starting",
+                    "error": f"Indexer on port {indexer_port} not ready after 10s",
+                    "sidecar_connection": "timeout",
+                    "note": "Container may still be starting up"
+                }, indent=2)
+            )]
+
         async with httpx.AsyncClient(timeout=5.0) as client:
-            # Try to connect to indexer sidecar on localhost:48080
-            response = await client.get("http://localhost:48080/status")
+            # Connect to indexer sidecar on discovered port
+            response = await client.get(f"http://localhost:{indexer_port}/status")
             
             if response.status_code == 200:
                 status_data = response.json()
@@ -1910,17 +1968,21 @@ async def indexer_status_impl() -> List[types.TextContent]:
             type="text",
             text=json.dumps({
                 "indexer_status": "disconnected",
-                "error": "Could not connect to indexer sidecar on localhost:48080",
+                "error": f"Could not connect to indexer sidecar on localhost:{indexer_port}",
                 "sidecar_connection": "failed",
                 "note": "Indexer sidecar may not be running in container mode"
             }, indent=2)
         )]
     except Exception as e:
+        import traceback
+        error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
+        logger.error(f"Indexer status error: {error_msg}\n{traceback.format_exc()}")
         return [types.TextContent(
             type="text",
             text=json.dumps({
                 "indexer_status": "error",
-                "error": str(e),
+                "error": error_msg,
+                "error_type": type(e).__name__,
                 "sidecar_connection": "unknown"
             }, indent=2)
         )]
@@ -1972,12 +2034,20 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
         container_id = await container.ensure_indexer_running(project_path)
         
         # Get the port for this project's indexer
+        indexer_port = None
         if hasattr(container, 'indexer_orchestrator') and container.indexer_orchestrator:
             indexer_port = container.indexer_orchestrator.get_indexer_port(project_name)
-        else:
-            # Fallback to default port if orchestrator not available
-            indexer_port = 48080
-            
+            if indexer_port:
+                logger.info(f"📍 Found indexer for {project_name} on port {indexer_port}")
+            else:
+                # Try discovery through orchestrator's discovery service
+                if hasattr(container.indexer_orchestrator, 'discovery_service') and container.indexer_orchestrator.discovery_service:
+                    logger.warning(f"⚠️ No port in active_indexers for {project_name}, attempting discovery...")
+                    discovered = await container.indexer_orchestrator.discovery_service.discover_project_container(project_name)
+                    if discovered and discovered.get('port'):
+                        indexer_port = discovered['port']
+                        logger.info(f"🔍 Discovered indexer for {project_name} on port {indexer_port}")
+
         if not indexer_port:
             return [types.TextContent(
                 type="text",

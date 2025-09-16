@@ -53,27 +53,49 @@ class ContainerDiscoveryService:
         try:
             containers = self.docker.containers.list(all=True)
 
+            # First try exact match
+            exact_match = None
+            partial_matches = []
+
             for container in containers:
-                # Match by name pattern
                 container_name = container.name
-                if f"indexer-{project_name}" in container_name or container_name == f"indexer-{project_name}":
-                    logger.info(f"🐳 Found existing container: {container_name}")
+                if container_name == f"indexer-{project_name}":
+                    exact_match = container
+                    break  # Exact match is best, stop here
+                elif f"indexer-{project_name}" in container_name:
+                    partial_matches.append(container)
 
-                    # Get port mapping
-                    ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
-                    host_port = None
+            # Use exact match if found, otherwise warn about partial matches
+            if exact_match:
+                container = exact_match
+                container_name = container.name
+                logger.info(f"🐳 Found existing container (exact match): {container_name}")
+            elif partial_matches:
+                # Log warning about ambiguous matches
+                logger.warning(f"⚠️ Found {len(partial_matches)} partial matches for indexer-{project_name}: {[c.name for c in partial_matches]}")
+                # Skip partial matches to avoid confusion
+                return None
+            else:
+                # No matches found
+                return None
 
-                    # Look for 8080/tcp mapping
-                    if '8080/tcp' in ports and ports['8080/tcp']:
-                        host_port = int(ports['8080/tcp'][0]['HostPort'])
+            # Now process the found container
+            if container:
+                # Get port mapping
+                ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+                host_port = None
 
-                    # Also check HostConfig for port bindings
-                    if not host_port:
-                        port_bindings = container.attrs.get('HostConfig', {}).get('PortBindings', {})
-                        if '8080/tcp' in port_bindings and port_bindings['8080/tcp']:
-                            host_port = int(port_bindings['8080/tcp'][0]['HostPort'])
+                # Look for 8080/tcp mapping
+                if '8080/tcp' in ports and ports['8080/tcp']:
+                    host_port = int(ports['8080/tcp'][0]['HostPort'])
 
-                    if host_port:
+                # Also check HostConfig for port bindings
+                if not host_port:
+                    port_bindings = container.attrs.get('HostConfig', {}).get('PortBindings', {})
+                    if '8080/tcp' in port_bindings and port_bindings['8080/tcp']:
+                        host_port = int(port_bindings['8080/tcp'][0]['HostPort'])
+
+                if host_port:
                         logger.info(f"✅ Container {container_name} is on port {host_port}, status: {container.status}")
                         return {
                             'container': container,
@@ -82,8 +104,9 @@ class ContainerDiscoveryService:
                             'port': host_port,
                             'status': container.status
                         }
-                    else:
-                        logger.warning(f"⚠️ Container {container_name} found but no port mapping")
+                else:
+                    logger.warning(f"⚠️ Container {container_name} found but no port mapping")
+                    return None
 
         except Exception as e:
             logger.error(f"❌ Container discovery failed: {e}")
