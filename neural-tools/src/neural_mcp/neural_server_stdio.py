@@ -614,16 +614,44 @@ logger.get_instance_id = lambda: state.instance_id if state else "unknown"
 async def get_project_context(arguments: Dict[str, Any]):
     """
     Get project context with ADR-0033 dynamic detection.
+    Enhanced with ADR-0052 safe lazy initialization.
     Falls back to DEFAULT_PROJECT_NAME if detection fails.
     """
     global PROJECT_CONTEXT
 
-    # Ensure PROJECT_CONTEXT is initialized (should be done in lifespan)
+    # ADR-0052: Safe lazy initialization - happens AFTER Claude handshake
     if PROJECT_CONTEXT is None:
-        logger.warning("⚠️ PROJECT_CONTEXT not initialized yet, initializing now")
-        PROJECT_CONTEXT = await get_project_context_manager()
+        logger.info("🔄 [ADR-0052] Lazy initialization of PROJECT_CONTEXT")
+        from servers.services.project_context_manager import ProjectContextManager
+        PROJECT_CONTEXT = ProjectContextManager()
         if hasattr(state, 'instance_id'):
             PROJECT_CONTEXT.set_instance_id(state.instance_id)
+
+        # Use the directory captured at startup (already exists at line 565)
+        if INITIAL_WORKING_DIRECTORY and '/.claude/mcp-servers/' not in str(INITIAL_WORKING_DIRECTORY):
+            # Valid project directory from launch
+            project_path = Path(INITIAL_WORKING_DIRECTORY)
+            project_name = project_path.name
+            await PROJECT_CONTEXT.set_project(project_path, project_name)
+            logger.info(f"✅ [ADR-0052] Auto-initialized from launch dir: {INITIAL_WORKING_DIRECTORY}")
+
+            # Auto-initialize schema if not present
+            try:
+                container = await state.get_service_container(project_name)
+                if hasattr(container, 'schema_manager'):
+                    schema_mgr = container.schema_manager
+                    if not await schema_mgr.has_schema():
+                        await schema_mgr.auto_init()
+                        logger.info(f"✅ [ADR-0052] Auto-initialized schema for {project_name}")
+            except Exception as e:
+                logger.warning(f"⚠️ [ADR-0052] Could not auto-init schema: {e}")
+        else:
+            # Fall back to auto-detection for global installs
+            detected = await PROJECT_CONTEXT.detect_project()
+            if detected:
+                logger.info(f"✅ [ADR-0052] Auto-detected project: {detected.get('project')}")
+            else:
+                logger.warning("⚠️ [ADR-0052] Could not auto-detect project")
 
     # Check if project explicitly provided in arguments
     if 'project' in arguments and arguments['project']:
@@ -1868,23 +1896,27 @@ async def neural_tools_help_impl() -> List[types.TextContent]:
         return [types.TextContent(type="text", text=json.dumps({"status": "error", "message": str(e)}))]
 
 async def indexer_status_impl() -> List[types.TextContent]:
-    """Get neural indexer sidecar status and metrics via HTTP API"""
+    """
+    Get neural indexer sidecar status and metrics via HTTP API.
+    Enhanced with ADR-0052 automatic initialization.
+    """
     import httpx
 
     try:
-        # Get current project context to find the right indexer port
-        if PROJECT_CONTEXT is None:
+        # ADR-0052: Use get_project_context for safe lazy initialization
+        project_context = await get_project_context({})
+
+        if 'error' in project_context:
             return [types.TextContent(
                 type="text",
                 text=json.dumps({
                     "indexer_status": "error",
-                    "error": "PROJECT_CONTEXT not initialized",
+                    "error": f"Failed to initialize project context: {project_context['error']}",
                     "sidecar_connection": "unknown",
-                    "note": "MCP server may not be fully initialized"
+                    "suggestion": "Try set_project_context with explicit path"
                 }, indent=2)
             )]
 
-        project_context = await PROJECT_CONTEXT.get_current_project()
         project_name = project_context['project']
 
         # Get service container for this project
@@ -2011,18 +2043,34 @@ async def _wait_for_indexer_ready(port: int, timeout: int = 30) -> bool:
 
 
 async def reindex_path_impl(path: str) -> List[types.TextContent]:
-    """Trigger reindexing of a specific path via project-specific indexer container"""
+    """
+    Trigger reindexing of a specific path via project-specific indexer container.
+    Enhanced with ADR-0052 automatic initialization.
+    """
     import httpx
-    
+
     if not path:
         return [types.TextContent(
             type="text",
             text=json.dumps({"error": "Path is required for reindexing"}, indent=2)
         )]
-    
+
     try:
-        # Get current project context
-        project_context = await PROJECT_CONTEXT.get_current_project()
+        # ADR-0052: Use get_project_context for safe lazy initialization
+        # This will auto-initialize PROJECT_CONTEXT if needed
+        project_context = await get_project_context({})
+
+        if 'error' in project_context:
+            # Failed to initialize project context
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error",
+                    "error": f"Failed to initialize project context: {project_context['error']}",
+                    "suggestion": "Try set_project_context with explicit path"
+                }, indent=2)
+            )]
+
         project_name = project_context['project']
         project_path = project_context['path']
         
@@ -2719,8 +2767,9 @@ def cleanup_resources():
 
 async def set_project_context_impl(arguments: dict) -> List[types.TextContent]:
     """
-    Handle manual project context switch with full lifecycle management
-    Implements ADR-0043: Project Context Lifecycle Management
+    Handle manual project context switch with full lifecycle management.
+    Implements ADR-0043: Project Context Lifecycle Management.
+    Enhanced with ADR-0052 safe lazy initialization.
 
     Args:
         arguments: Dict with optional 'path' key
@@ -2731,6 +2780,14 @@ async def set_project_context_impl(arguments: dict) -> List[types.TextContent]:
     global PROJECT_CONTEXT, INITIAL_WORKING_DIRECTORY
 
     try:
+        # ADR-0052: Ensure PROJECT_CONTEXT exists before using it
+        if PROJECT_CONTEXT is None:
+            logger.info("🔄 [ADR-0052] Initializing PROJECT_CONTEXT in set_project_context")
+            from servers.services.project_context_manager import ProjectContextManager
+            PROJECT_CONTEXT = ProjectContextManager()
+            if hasattr(state, 'instance_id'):
+                PROJECT_CONTEXT.set_instance_id(state.instance_id)
+
         path = arguments.get('path')
         if not path:
             # Use the INITIAL working directory captured at MCP initialization
@@ -2789,13 +2846,22 @@ async def list_projects_impl(arguments: dict) -> List[types.TextContent]:
     """
     List all known projects and their status.
     Shows which project is currently active.
-    
+    Enhanced with ADR-0052 safe lazy initialization.
+
     Returns:
         List of projects with paths and activity information
     """
     global PROJECT_CONTEXT
-    
+
     try:
+        # ADR-0052: Ensure PROJECT_CONTEXT exists before using it
+        if PROJECT_CONTEXT is None:
+            logger.info("🔄 [ADR-0052] Initializing PROJECT_CONTEXT in list_projects")
+            from servers.services.project_context_manager import ProjectContextManager
+            PROJECT_CONTEXT = ProjectContextManager()
+            if hasattr(state, 'instance_id'):
+                PROJECT_CONTEXT.set_instance_id(state.instance_id)
+
         projects = await PROJECT_CONTEXT.list_projects()
         
         if not projects:
