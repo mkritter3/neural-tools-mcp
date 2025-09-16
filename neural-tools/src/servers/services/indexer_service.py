@@ -1391,51 +1391,68 @@ class IncrementalIndexer(FileSystemEventHandler):
             return 'code'
     
     async def _update_neo4j_chunks(self, file_path: str, relative_path: Path, chunk_ids: List[Dict], symbols_data: Optional[List[Dict]] = None):
-        """Create CodeChunk nodes in Neo4j with Qdrant cross-references and symbol information"""
+        """
+        Create Chunk nodes in Neo4j with Qdrant cross-references
+        ADR-0050: Fixed to create proper Chunk nodes with File→HAS_CHUNK→Chunk relationships
+        """
         try:
             # Batch create/update chunk nodes
-            for chunk_info in chunk_ids:
+            for idx, chunk_info in enumerate(chunk_ids):
                 # Use centralized collection management
                 collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-                
+
+                # ADR-0050: Create Chunk nodes (not CodeChunk) with proper relationships
                 cypher = """
-                MERGE (c:CodeChunk {id: $chunk_id, project: $project})
-                SET c.qdrant_id = $qdrant_id,
-                    c.file_path = $file_path,
+                MERGE (c:Chunk {chunk_id: $chunk_id, project: $project})
+                SET c.content = $content,
                     c.start_line = $start_line,
                     c.end_line = $end_line,
-                    c.type = $chunk_type,
-                    c.content = $content,
+                    c.chunk_type = $chunk_type,
+                    c.file_path = $file_path,
+                    c.qdrant_id = $qdrant_id,
                     c.collection_name = $collection_name,
-                    c.indexed_at = datetime()
+                    c.embedding_status = 'completed',
+                    c.indexed_at = datetime(),
+                    c.sequence = $sequence
                 WITH c
-                MERGE (f:File {path: $file_path, project: $project})
-                MERGE (c)-[:PART_OF]->(f)
+                MATCH (f:File {path: $file_path, project: $project})
+                MERGE (f)-[r:HAS_CHUNK {sequence: $sequence}]->(c)
+                RETURN c.chunk_id as created_id
                 """
-                
+
                 # Debug: Log content being stored
                 content_to_store = chunk_info.get('content', '')
-                logger.debug(f"Storing chunk with content length: {len(content_to_store)}, first 50 chars: {content_to_store[:50]}")
-                
+                logger.debug(f"Storing chunk {chunk_info['id']} with content length: {len(content_to_store)}")
+
+                # ADR-0050: Use chunk_id consistently across both databases
                 result = await self.container.neo4j.execute_cypher(cypher, {
-                    'chunk_id': chunk_info['id'],
-                    'qdrant_id': chunk_info['qdrant_id'],
+                    'chunk_id': chunk_info['id'],  # This should be the same 64-char hex ID used in Qdrant
+                    'qdrant_id': chunk_info.get('qdrant_id', chunk_info['id']),  # Fallback to same ID
                     'file_path': str(relative_path),
-                    'start_line': chunk_info['start_line'],
-                    'end_line': chunk_info['end_line'],
-                    'chunk_type': chunk_info['chunk_type'],
-                    'content': content_to_store,  # Include content in parameters
-                    'collection_name': collection_name,  # Add collection name parameter
-                    'project': self.project_name  # Use indexer's project_name, not container's
+                    'start_line': chunk_info.get('start_line', 0),
+                    'end_line': chunk_info.get('end_line', 0),
+                    'chunk_type': chunk_info.get('chunk_type', 'code'),
+                    'content': content_to_store,
+                    'collection_name': collection_name,
+                    'sequence': idx,  # Add sequence number for ordered chunks
+                    'project': self.project_name
                 })
 
-                # Check if query executed successfully
-                logger.info(f"Neo4j execute result for chunk {chunk_info['id']}: {result}")
+                # ADR-0050: Check write success and fail fast if not
                 if result.get('status') != 'success':
-                    logger.error(f"Failed to update chunk in Neo4j: {result.get('message', 'Unknown error')}")
-                    raise ValueError(f"Neo4j chunk update failed: {result.get('message')}")
-            
-            logger.debug(f"Created/updated {len(chunk_ids)} chunk nodes in Neo4j")
+                    error_msg = result.get('message', 'Unknown error')
+                    logger.error(f"Failed to create Chunk node in Neo4j: {error_msg}")
+                    self.metrics['service_failures']['neo4j'] += 1
+                    raise ValueError(f"Neo4j Chunk creation failed: {error_msg}")
+
+                # Verify the chunk was created
+                if result.get('data') and len(result['data']) > 0:
+                    created_id = result['data'][0].get('created_id')
+                    logger.debug(f"Successfully created Chunk node: {created_id}")
+                else:
+                    logger.warning(f"Chunk node may not have been created properly for {chunk_info['id']}")
+
+            logger.info(f"✅ Created/updated {len(chunk_ids)} Chunk nodes in Neo4j with HAS_CHUNK relationships")
             
             # Create symbol nodes if we have symbol data
             if symbols_data and not self.degraded_mode['neo4j']:
@@ -1531,13 +1548,14 @@ class IncrementalIndexer(FileSystemEventHandler):
             # First, get chunk IDs from Neo4j to ensure complete removal
             chunk_ids_to_remove = []
             if not self.degraded_mode['neo4j']:
-                # Get all chunks for this file
+                # ADR-0050: Get all Chunk nodes for this file using correct relationship
                 cypher = """
-                MATCH (c:CodeChunk)-[:PART_OF]->(f:File {path: $path})
-                RETURN c.qdrant_id AS qdrant_id, c.id AS chunk_id
+                MATCH (f:File {path: $path, project: $project})-[:HAS_CHUNK]->(c:Chunk)
+                RETURN c.qdrant_id AS qdrant_id, c.chunk_id AS chunk_id
                 """
                 result = await self.container.neo4j.execute_cypher(cypher, {
-                    'path': str(relative_path)
+                    'path': str(relative_path),
+                    'project': self.project_name
                 })
                 
                 if result:
