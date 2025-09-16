@@ -351,16 +351,50 @@ graph LR
 
 ## Implementation Checklist
 
-- [ ] Stop current indexer to prevent further desync
-- [ ] Add Chunk node creation logic to indexer
-- [ ] Add File→HAS_CHUNK→Chunk relationship creation
-- [ ] Implement status checking for Neo4j writes
-- [ ] Create and run backfill script for existing data
-- [ ] Add SyncValidator class for monitoring
-- [ ] Integrate validation into CI/CD pipeline
-- [ ] Deploy fixed indexer with monitoring
-- [ ] Document chunk ID strategy in CLAUDE.md
-- [ ] Set up alerts for sync rate < 95%
+- [x] Stop current indexer to prevent further desync
+- [x] Add Chunk node creation logic to indexer
+- [x] Add File→HAS_CHUNK→Chunk relationship creation
+- [x] Implement status checking for Neo4j writes
+- [x] Create and run backfill script for existing data
+- [x] Add SyncValidator class for monitoring
+- [x] Integrate validation into CI/CD pipeline
+- [x] Deploy fixed indexer with monitoring
+- [x] Document chunk ID strategy in CLAUDE.md
+- [x] Set up alerts for sync rate < 95%
+- [x] Add multi-directory access tests
+- [x] Verify multi-project isolation
+- [x] Validate network-based access from any location
+
+## Multi-Directory & Multi-Project Support
+
+### Network-Based Architecture
+The system uses network ports (not filesystem paths) for all database access:
+
+- **Neo4j**: Port 47687 (bolt://localhost:47687)
+- **Qdrant**: Port 46333 (http://localhost:46333)
+- **Global Registry**: ~/.graphrag/projects.json
+
+This enables access from any directory without requiring a common parent path.
+
+### Multi-Project Isolation
+Multiple projects coexist in shared databases using logical partitioning:
+
+```cypher
+-- All nodes have project property for isolation
+MATCH (n) WHERE n.project = 'project-a' RETURN n
+```
+
+### E2E Test Coverage
+The `test_multi_directory_access.py` suite validates:
+
+1. **Access from any directory** - /tmp, ~/, random paths
+2. **Project isolation** - Zero cross-project relationships
+3. **Data consistency** - Same results from any location
+4. **Service container** - Initializes correctly anywhere
+5. **GraphRAG search** - Works from any directory
+6. **Project registry** - Global discovery from anywhere
+7. **Multiple projects** - Proper coexistence
+8. **Sync validation** - Per-project sync rates
 
 ## Metrics to Monitor
 
@@ -371,6 +405,8 @@ graph LR
 | Files without Chunks | 0 | >5 |
 | Neo4j Write Failures | <0.1% | >1% |
 | Indexing Latency | <100ms | >500ms |
+| Cross-Project Violations | 0 | >0 |
+| Directory Access Failures | 0 | >0 |
 
 ## References
 
