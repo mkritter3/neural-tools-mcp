@@ -22,14 +22,59 @@ Implement dynamic port discovery for indexer containers with proper startup sync
 ### Implementation Details
 
 #### 1. Dynamic Port Discovery Chain
+
 ```python
 # Priority order for port discovery:
 1. orchestrator.get_indexer_port(project_name)     # Check cached active_indexers
 2. discovery_service.discover_project_container()    # Scan Docker containers
 3. Return error (no fallback to 48080)              # Fail clearly if not found
+
+# Note: Successful discovery via discovery_service should populate the cache
+# for subsequent requests (cache-on-miss strategy)
+```
+
+#### Port Discovery Flow Sequence
+
+```mermaid
+sequenceDiagram
+    participant MCP as MCP Tool
+    participant Orch as IndexerOrchestrator
+    participant Cache as active_indexers cache
+    participant Disc as ContainerDiscoveryService
+    participant Docker as Docker API
+    participant Indexer as Indexer Container
+
+    MCP->>Orch: get_indexer_port(project)
+    Orch->>Cache: Check cache
+
+    alt Cache Hit
+        Cache-->>Orch: Return port
+        Orch-->>MCP: Return port
+    else Cache Miss
+        Orch->>Disc: discover_project_container(project)
+        Disc->>Docker: List containers
+        Docker-->>Disc: Container list
+        Disc->>Disc: Find exact match "indexer-{project}"
+        Disc-->>Orch: Return container info with port
+        Orch->>Cache: Populate cache
+        Orch-->>MCP: Return port
+    end
+
+    MCP->>MCP: _wait_for_indexer_ready(port)
+    loop Health Check (max 10s)
+        MCP->>Indexer: GET http://localhost:{port}/health
+        alt Ready
+            Indexer-->>MCP: 200 OK
+            MCP->>MCP: Proceed with connection
+        else Not Ready
+            Indexer-->>MCP: Connection refused
+            MCP->>MCP: Sleep 1s and retry
+        end
+    end
 ```
 
 #### 2. Container Startup Wait
+
 ```python
 # Wait for container to be ready before connecting
 is_ready = await _wait_for_indexer_ready(indexer_port, timeout=10)
@@ -37,7 +82,14 @@ if not is_ready:
     return "Container starting" error
 ```
 
+**Readiness Check Mechanism:**
+- Performs HTTP GET to `http://localhost:{port}/health`
+- Retries every 1 second for up to 10 seconds
+- Considers container ready when receiving HTTP 200 response
+- This defines the contract: indexer containers MUST expose a `/health` endpoint
+
 #### 3. Exact Container Name Matching
+
 ```python
 # Prevent "api" from matching "api-v2"
 if container.name == f"indexer-{project_name}":  # Exact match only
@@ -62,6 +114,7 @@ elif f"indexer-{project_name}" in container.name:
 
 3. **Added container readiness check**:
    - `_wait_for_indexer_ready()` waits up to 10s
+   - Uses HTTP health check on `/health` endpoint
    - Prevents `ReadError` from containers still starting
 
 4. **Fixed container name matching**:
@@ -79,19 +132,23 @@ elif f"indexer-{project_name}" in container.name:
    - `IndexerOrchestrator._allocate_port()` uses local `self.allocated_ports` set
    - `ContainerDiscoveryService` uses `context_manager.container_registry`
    - **Risk**: Same port could be allocated twice, causing collisions
+   - **Impact**: Second container attempting to bind to the port will fail to start, resulting in a non-functional indexer and confusing "bind: address already in use" error in Docker logs. This appears as a transient startup failure and is difficult to debug.
 
 2. **Stale Cache Problem** (MEDIUM RISK)
    - `active_indexers` cache doesn't validate container health
    - Container could be stopped externally but still in cache
    - **Risk**: Returns invalid ports for stopped containers
+   - **Impact**: Connection attempts will fail with "connection refused", but the system will not attempt discovery since cache indicates the port is valid
 
 3. **Distributed Logic** (LOW RISK)
    - Port discovery logic duplicated in each MCP tool
    - Should be centralized in orchestrator
+   - **Impact**: Maintenance burden and potential for inconsistent behavior
 
 ## Future Work (TODO)
 
 ### Phase 1: Fix Critical Issues
+
 1. **Unify Port Allocation**
    - Remove `_allocate_port()` from `IndexerOrchestrator`
    - Use only `ContainerDiscoveryService` for all port management
@@ -107,21 +164,60 @@ elif f"indexer-{project_name}" in container.name:
            else:
                del self.active_indexers[project_name]  # Invalidate stale entry
 
-       # Fall back to discovery...
+       # Fall back to discovery and populate cache
+       discovered = await self.discovery_service.discover_project_container(project_name)
+       if discovered and discovered.get('port'):
+           self.active_indexers[project_name] = {
+               'container_id': discovered['container_id'],
+               'port': discovered['port'],
+               'last_activity': datetime.now()
+           }
+           return discovered['port']
+
+       return None
    ```
 
 ### Phase 2: Improve Architecture
+
 1. **Centralize Port Discovery**
    - Move all logic to `IndexerOrchestrator.get_valid_port()`
    - MCP tools make single call instead of implementing fallback chain
 
 2. **Add Port Registry Persistence**
-   - Store port allocations in Redis or file
-   - Survive MCP server restarts
+
+   **Trade-off Analysis:**
+   - **File-based**:
+     - Pros: No new infrastructure dependencies, simple to implement
+     - Cons: Prone to race conditions in multi-process environment unless file locking is carefully managed
+     - Use when: Single MCP server process
+
+   - **Redis-based**:
+     - Pros: Atomic operations handle concurrency gracefully, scalable, supports distributed MCP servers
+     - Cons: Adds Redis as a service dependency
+     - Use when: Multiple MCP processes or distributed deployment
+
+   **Recommendation**: Start with file-based for simplicity, migrate to Redis if scaling requires it
 
 3. **Implement Port Recycling**
-   - Track when containers stop
-   - Return ports to available pool
+
+   **Implementation Strategy:**
+   - Subscribe to Docker event stream for container lifecycle events
+   - Listen for `die` or `destroy` events for indexer containers
+   - On container stop event, remove port from registry and return to available pool
+   - More efficient than periodic polling
+
+   ```python
+   # Example implementation
+   async def monitor_container_lifecycle(self):
+       for event in self.docker_client.events(
+           filters={'label': 'service=indexer'},
+           decode=True
+       ):
+           if event['Action'] in ['die', 'destroy']:
+               container_name = event['Actor']['Attributes']['name']
+               project_name = container_name.replace('indexer-', '')
+               self._release_port_for_project(project_name)
+   ```
 
 ## Testing
 
