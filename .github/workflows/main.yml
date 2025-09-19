@@ -71,7 +71,17 @@ jobs:
     with:
       sync-rate-threshold: 95
 
-  # ==================== STAGE 5: DOCKER E2E ====================
+  # ==================== STAGE 5: SELF-HEALING TESTS (ADR-054) ====================
+  self-healing-tests:
+    name: 🔧 Self-Healing & Observability Tests
+    if: ${{ !inputs.skip-tests }}
+    needs: [sync-validation]
+    uses: ./.github/workflows/modules/self-healing-tests.yml
+    with:
+      python-version: '3.11'
+      node-version: '18'
+
+  # ==================== STAGE 6: DOCKER E2E ====================
   docker-e2e:
     name: 🐳 Docker E2E
     if: ${{ !inputs.skip-tests }}
@@ -80,14 +90,14 @@ jobs:
     with:
       test-timeout: 300
 
-  # ==================== STAGE 6: ADR VALIDATION ====================
+  # ==================== STAGE 7: ADR VALIDATION ====================
   adr-validation:
     name: 📋 ADR Validation
     if: ${{ !inputs.skip-tests }}
     needs: [unit-tests, integration-tests]
     uses: ./.github/workflows/modules/adr-validation.yml
     with:
-      adr-list: '["0037", "0043", "0044", "0050", "0052", "0053"]'
+      adr-list: '["0037", "0043", "0044", "0050", "0052", "0053", "0054"]'
 
   # ==================== GATE: ALL TESTS MUST PASS ====================
   validation-gate:
@@ -98,6 +108,7 @@ jobs:
       - unit-tests
       - integration-tests
       - sync-validation
+      - self-healing-tests
       - docker-e2e
       - adr-validation
     if: always()
@@ -110,6 +121,7 @@ jobs:
              [[ "${{ needs.unit-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.integration-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.sync-validation.result }}" == "failure" ]] || \
+             [[ "${{ needs.self-healing-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.docker-e2e.result }}" == "failure" ]] || \
              [[ "${{ needs.adr-validation.result }}" == "failure" ]]; then
             echo "❌ One or more validation checks failed"
