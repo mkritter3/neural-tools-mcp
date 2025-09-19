@@ -96,7 +96,7 @@ Pipeline Stages:
 ### 5. GitHub Actions Workflow
 
 ```yaml
-# .github/workflows/neural-tools-ci.yml
+# .github/workflows/main.yml (modular orchestrator)
 on:
   push:
     paths: ['neural-tools/**', 'docs/adr/**']
