@@ -36,7 +36,7 @@ class ServiceContainer:
         """
         # ADR-0044: Use injected context manager if provided
         if context_manager:
-            from servers.services.project_context_manager import ProjectContextManager
+            from .project_context_manager import ProjectContextManager
             if not isinstance(context_manager, ProjectContextManager):
                 raise TypeError("context_manager must be a ProjectContextManager instance")
             self.context_manager = context_manager
@@ -59,7 +59,7 @@ class ServiceContainer:
         self.initialized = False  # Track if container is fully initialized
         
         # Circuit breakers for resilient connections (ADR 0018 Phase 4)
-        from servers.services.connection_circuit_breaker import ServiceCircuitBreakerManager
+        from .connection_circuit_breaker import ServiceCircuitBreakerManager
         self.circuit_breakers = ServiceCircuitBreakerManager()
         
         # Service instances expected by MCP server protocol
