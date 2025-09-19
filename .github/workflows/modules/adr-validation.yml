@@ -1,0 +1,91 @@
+name: ADR Validation
+# Validates implementation against Architecture Decision Records
+
+on:
+  workflow_call:
+    inputs:
+      adr-list:
+        description: 'ADRs to validate (JSON array)'
+        type: string
+        default: '["0037", "0043", "0044", "0050", "0052", "0053"]'
+    outputs:
+      validated:
+        description: 'Number of ADRs validated'
+        value: ${{ jobs.validate.outputs.count }}
+      status:
+        description: 'Validation status'
+        value: ${{ jobs.validate.outputs.status }}
+
+jobs:
+  validate:
+    name: ADR-${{ matrix.adr }} Validation
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        adr: ${{ fromJson(inputs.adr-list) }}
+    outputs:
+      count: ${{ steps.summary.outputs.count }}
+      status: ${{ steps.summary.outputs.status }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: neural-tools
+        run: |
+          pip install -r config/requirements-indexer-lean.txt
+          pip install pytest
+
+      - name: Validate ADR-${{ matrix.adr }}
+        id: validate
+        working-directory: neural-tools
+        run: |
+          TEST_FILE="tests/validation/test_adr_${{ matrix.adr }}.py"
+
+          if [ -f "$TEST_FILE" ]; then
+            echo "Running validation for ADR-${{ matrix.adr }}"
+            if python "$TEST_FILE"; then
+              echo "✅ ADR-${{ matrix.adr }} validation passed"
+              echo "adr_${{ matrix.adr }}=pass" >> $GITHUB_ENV
+            else
+              echo "❌ ADR-${{ matrix.adr }} validation failed"
+              echo "adr_${{ matrix.adr }}=fail" >> $GITHUB_ENV
+            fi
+          else
+            echo "⏭️ ADR-${{ matrix.adr }} validation test not found"
+            echo "adr_${{ matrix.adr }}=skip" >> $GITHUB_ENV
+          fi
+
+      - name: Summarize results
+        id: summary
+        if: strategy.job-index == 0  # Run only once
+        run: |
+          # Count validated ADRs
+          VALIDATED_COUNT=0
+          FAILED_COUNT=0
+
+          for adr in ${{ join(fromJson(inputs.adr-list), ' ') }}; do
+            STATUS_VAR="adr_${adr}"
+            STATUS="${!STATUS_VAR:-skip}"
+
+            if [[ "$STATUS" == "pass" ]]; then
+              ((VALIDATED_COUNT++))
+            elif [[ "$STATUS" == "fail" ]]; then
+              ((FAILED_COUNT++))
+            fi
+          done
+
+          echo "count=$VALIDATED_COUNT" >> $GITHUB_OUTPUT
+
+          if [[ $FAILED_COUNT -eq 0 ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ All ADR validations passed"
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "❌ $FAILED_COUNT ADR validation(s) failed"
+          fi

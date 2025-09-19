@@ -1,0 +1,72 @@
+name: Test Matrix Configuration
+# Selective test execution based on file changes
+
+on:
+  workflow_call:
+    outputs:
+      run-lint:
+        description: 'Should run lint checks'
+        value: ${{ jobs.detect-changes.outputs.run-lint }}
+      run-unit:
+        description: 'Should run unit tests'
+        value: ${{ jobs.detect-changes.outputs.run-unit }}
+      run-integration:
+        description: 'Should run integration tests'
+        value: ${{ jobs.detect-changes.outputs.run-integration }}
+      run-docker:
+        description: 'Should run Docker tests'
+        value: ${{ jobs.detect-changes.outputs.run-docker }}
+      run-adr:
+        description: 'Should run ADR validation'
+        value: ${{ jobs.detect-changes.outputs.run-adr }}
+
+jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      run-lint: ${{ steps.changes.outputs.code }}
+      run-unit: ${{ steps.changes.outputs.code }}
+      run-integration: ${{ steps.changes.outputs.services }}
+      run-docker: ${{ steps.changes.outputs.docker }}
+      run-adr: ${{ steps.changes.outputs.adr }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            code:
+              - 'neural-tools/**/*.py'
+              - 'scripts/**/*.py'
+            services:
+              - 'neural-tools/src/servers/services/**'
+              - 'docker-compose*.yml'
+            docker:
+              - 'docker/**'
+              - 'Dockerfile*'
+              - 'docker-compose*.yml'
+            adr:
+              - 'docs/adr/**'
+              - 'neural-tools/src/servers/services/sync_manager.py'
+              - 'neural-tools/src/servers/services/project_context_manager.py'
+            docs:
+              - '**/*.md'
+              - 'docs/**'
+
+      - name: Set test matrix
+        run: |
+          echo "### Test Matrix" >> $GITHUB_STEP_SUMMARY
+          echo "Based on changed files:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Will Run |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint | ${{ steps.changes.outputs.code == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ steps.changes.outputs.code == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Integration | ${{ steps.changes.outputs.services == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker E2E | ${{ steps.changes.outputs.docker == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ADR Validation | ${{ steps.changes.outputs.adr == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY

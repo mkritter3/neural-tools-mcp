@@ -1,0 +1,99 @@
+name: Unit Tests
+# Reusable workflow for unit testing
+
+on:
+  workflow_call:
+    inputs:
+      python-versions:
+        description: 'Python versions to test (JSON array)'
+        type: string
+        default: '["3.10", "3.11", "3.12"]'
+      working-directory:
+        description: 'Working directory'
+        type: string
+        default: 'neural-tools'
+      coverage-threshold:
+        description: 'Minimum coverage percentage'
+        type: number
+        default: 80
+    outputs:
+      coverage:
+        description: 'Test coverage percentage'
+        value: ${{ jobs.test.outputs.coverage }}
+      status:
+        description: 'Test status'
+        value: ${{ jobs.test.outputs.status }}
+
+jobs:
+  test:
+    name: Unit Tests - Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ${{ fromJson(inputs.python-versions) }}
+    outputs:
+      coverage: ${{ steps.coverage.outputs.percentage }}
+      status: ${{ steps.result.outputs.status }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          pip install -r config/requirements-indexer-lean.txt
+          pip install pytest pytest-asyncio pytest-cov pytest-timeout
+
+      - name: Run unit tests
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          python -m pytest tests/unit/ \
+            -v \
+            --cov=src \
+            --cov-report=xml \
+            --cov-report=term \
+            --timeout=60 \
+            --tb=short
+
+      - name: Extract coverage percentage
+        id: coverage
+        if: matrix.python-version == '3.11'
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          coverage_percent=$(python -m coverage report --format=total)
+          echo "percentage=$coverage_percent" >> $GITHUB_OUTPUT
+          echo "Coverage: ${coverage_percent}%"
+
+      - name: Check coverage threshold
+        id: result
+        if: matrix.python-version == '3.11'
+        run: |
+          if (( $(echo "${{ steps.coverage.outputs.percentage }} >= ${{ inputs.coverage-threshold }}" | bc -l) )); then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ Coverage ${steps.coverage.outputs.percentage}% meets threshold"
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "❌ Coverage ${steps.coverage.outputs.percentage}% below threshold"
+            exit 1
+          fi
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./${{ inputs.working-directory }}/coverage.xml
+          fail_ci_if_error: false
+          verbose: true

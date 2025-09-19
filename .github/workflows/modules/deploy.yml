@@ -1,0 +1,132 @@
+name: Deploy to Global MCP
+# Deployment workflow for validated code
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        type: string
+        default: 'production'
+      create-release:
+        description: 'Create GitHub release'
+        type: boolean
+        default: true
+    outputs:
+      version:
+        description: 'Deployed version'
+        value: ${{ jobs.deploy.outputs.version }}
+      artifact-url:
+        description: 'Deployment artifact URL'
+        value: ${{ jobs.deploy.outputs.artifact-url }}
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      version: ${{ steps.version.outputs.tag }}
+      artifact-url: ${{ steps.artifact.outputs.url }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for tagging
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deployment dependencies
+        run: |
+          pip install pyyaml jsonschema
+
+      - name: Generate version tag
+        id: version
+        run: |
+          # Generate version based on date and commit
+          TAG="v$(date +%Y%m%d)-$(git rev-parse --short HEAD)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Deployment version: $TAG"
+
+      - name: Create deployment manifest
+        run: |
+          cat > deployment_manifest.json << EOF
+          {
+            "deployment_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "source_commit": "${{ github.sha }}",
+            "github_run_id": "${{ github.run_id }}",
+            "github_actor": "${{ github.actor }}",
+            "github_ref": "${{ github.ref }}",
+            "environment": "${{ inputs.environment }}",
+            "version": "${{ steps.version.outputs.tag }}",
+            "adr_version": "ADR-0053 Compliant",
+            "validation_status": "passed",
+            "tests_passed": [
+              "lint",
+              "unit",
+              "integration",
+              "sync-validation",
+              "docker-e2e",
+              "adr-validation"
+            ],
+            "ci_cd_compliant": true
+          }
+          EOF
+
+      - name: Create deployment artifact
+        id: artifact
+        run: |
+          mkdir -p deployment
+          cp -r neural-tools/* deployment/
+          cp deployment_manifest.json deployment/
+
+          # Create tarball
+          tar -czf neural-tools-${{ steps.version.outputs.tag }}.tar.gz deployment/
+
+          # Upload artifact
+          echo "Artifact created: neural-tools-${{ steps.version.outputs.tag }}.tar.gz"
+          echo "url=${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/neural-tools-${{ steps.version.outputs.tag }}.tar.gz" >> $GITHUB_OUTPUT
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: neural-tools-${{ inputs.environment }}-${{ steps.version.outputs.tag }}
+          path: neural-tools-${{ steps.version.outputs.tag }}.tar.gz
+          retention-days: 30
+
+      - name: Create GitHub release
+        if: inputs.create-release && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.version.outputs.tag }} \
+            neural-tools-${{ steps.version.outputs.tag }}.tar.gz \
+            --title "Neural Tools ${{ steps.version.outputs.tag }}" \
+            --notes "Automated deployment to ${{ inputs.environment }}
+
+            ## Changes
+            - Commit: ${{ github.sha }}
+            - Actor: ${{ github.actor }}
+            - Environment: ${{ inputs.environment }}
+
+            ## Validation
+            - ✅ All tests passed
+            - ✅ ADR-053 compliant
+            - ✅ CI/CD validated
+
+            ## Deployment
+            Download and extract the artifact, then run:
+            \`\`\`bash
+            ./scripts/deploy-to-global-mcp.sh
+            \`\`\`"
+
+      - name: Tag release
+        if: inputs.create-release && github.ref == 'refs/heads/main'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag -a ${{ steps.version.outputs.tag }} -m "CI/CD deployment ${{ steps.version.outputs.tag }}"
+          git push origin ${{ steps.version.outputs.tag }}

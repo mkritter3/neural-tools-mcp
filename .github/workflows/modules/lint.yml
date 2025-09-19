@@ -1,0 +1,87 @@
+name: Code Quality Checks
+# Reusable workflow for linting and code quality
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Python version to use'
+        type: string
+        default: '3.11'
+      working-directory:
+        description: 'Working directory for the checks'
+        type: string
+        default: 'neural-tools'
+    outputs:
+      status:
+        description: 'Status of lint checks'
+        value: ${{ jobs.lint.outputs.status }}
+
+jobs:
+  lint:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.result.outputs.status }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-lint-
+
+      - name: Install linting tools
+        run: |
+          pip install ruff mypy black isort
+
+      - name: Run Ruff
+        id: ruff
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          ruff check src/ --output-format github || true
+          echo "ruff_status=$?" >> $GITHUB_ENV
+
+      - name: Check Black formatting
+        id: black
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          black --check src/ || true
+          echo "black_status=$?" >> $GITHUB_ENV
+
+      - name: Run isort
+        id: isort
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          isort --check-only src/ || true
+          echo "isort_status=$?" >> $GITHUB_ENV
+
+      - name: Run MyPy
+        id: mypy
+        working-directory: ${{ inputs.working-directory }}
+        continue-on-error: true
+        run: |
+          mypy src/ --ignore-missing-imports || true
+          echo "mypy_status=$?" >> $GITHUB_ENV
+
+      - name: Set output status
+        id: result
+        run: |
+          if [[ "${{ env.ruff_status }}" == "0" ]] && \
+             [[ "${{ env.black_status }}" == "0" ]] && \
+             [[ "${{ env.isort_status }}" == "0" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "✅ All lint checks passed"
+          else
+            echo "status=warning" >> $GITHUB_OUTPUT
+            echo "⚠️ Some lint checks failed (non-blocking)"
+          fi

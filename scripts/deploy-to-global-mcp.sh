@@ -47,20 +47,20 @@ check_github_actions() {
     # Get the latest workflow run status
     echo -e "${BLUE}Fetching latest CI/CD run status...${NC}"
 
-    # Get latest workflow run for main branch
+    # Get latest workflow run for main branch (try new modular workflow first)
     LATEST_RUN=$(gh run list \
-        --workflow="neural-tools-comprehensive-ci.yml" \
+        --workflow="main.yml" \
         --branch=main \
         --limit=1 \
         --json status,conclusion,headSha,createdAt \
         2>/dev/null || echo "")
 
     if [ -z "$LATEST_RUN" ]; then
-        echo -e "${YELLOW}⚠️  No CI/CD runs found. Checking other workflows...${NC}"
+        echo -e "${YELLOW}⚠️  No runs found for main.yml. Checking legacy workflows...${NC}"
 
-        # Try the original workflow
+        # Try the comprehensive workflow (legacy)
         LATEST_RUN=$(gh run list \
-            --workflow="neural-tools-ci.yml" \
+            --workflow="neural-tools-comprehensive-ci.yml" \
             --branch=main \
             --limit=1 \
             --json status,conclusion,headSha,createdAt \
@@ -273,7 +273,10 @@ echo ""
 
 if command -v gh &> /dev/null; then
     echo -e "${BLUE}📈 View CI/CD history:${NC}"
-    echo "gh run list --workflow=neural-tools-comprehensive-ci.yml"
+    echo "gh run list --workflow=main.yml"
+    echo ""
+    echo -e "${BLUE}🚀 Trigger CI/CD manually:${NC}"
+    echo "gh workflow run main.yml"
     echo ""
 fi
 

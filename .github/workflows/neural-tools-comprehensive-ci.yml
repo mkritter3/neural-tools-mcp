@@ -1,4 +1,6 @@
-name: Neural Tools Comprehensive CI/CD Pipeline
+name: [DEPRECATED] Neural Tools Comprehensive CI/CD Pipeline
+# DEPRECATED: Use main.yml with modular workflows instead
+# This monolithic workflow is kept for backward compatibility only
 # Updated to include ADR-053 WriteSynchronizationManager tests
 # and all validations from deploy-to-global-mcp.sh
 

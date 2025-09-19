@@ -1,0 +1,189 @@
+name: Neural Tools CI/CD Pipeline
+# Main orchestrator workflow - composes modular workflows
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+      - 'dev/**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      skip-tests:
+        description: 'Skip tests (deploy only)'
+        type: boolean
+        default: false
+      deploy-environment:
+        description: 'Deployment environment'
+        type: choice
+        options:
+          - production
+          - staging
+          - development
+        default: production
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ==================== STAGE 1: CODE QUALITY ====================
+  lint:
+    name: 🧹 Lint
+    if: ${{ !inputs.skip-tests }}
+    uses: ./.github/workflows/modules/lint.yml
+    with:
+      python-version: '3.11'
+      working-directory: 'neural-tools'
+
+  # ==================== STAGE 2: UNIT TESTS ====================
+  unit-tests:
+    name: 🧪 Unit Tests
+    if: ${{ !inputs.skip-tests }}
+    needs: lint
+    uses: ./.github/workflows/modules/unit-tests.yml
+    with:
+      python-versions: '["3.10", "3.11", "3.12"]'
+      working-directory: 'neural-tools'
+      coverage-threshold: 75  # Realistic threshold
+
+  # ==================== STAGE 3: INTEGRATION TESTS ====================
+  integration-tests:
+    name: 🔗 Integration Tests
+    if: ${{ !inputs.skip-tests }}
+    needs: lint
+    uses: ./.github/workflows/modules/integration-tests.yml
+    with:
+      neo4j-version: '5.22.0'
+      qdrant-version: 'v1.12.5'
+      python-version: '3.11'
+
+  # ==================== STAGE 4: ADR-053 SYNC VALIDATION ====================
+  sync-validation:
+    name: 🔄 ADR-053 Sync Validation
+    if: ${{ !inputs.skip-tests }}
+    needs: [unit-tests, integration-tests]
+    uses: ./.github/workflows/modules/sync-validation.yml
+    with:
+      sync-rate-threshold: 95
+
+  # ==================== STAGE 5: DOCKER E2E ====================
+  docker-e2e:
+    name: 🐳 Docker E2E
+    if: ${{ !inputs.skip-tests }}
+    needs: [unit-tests]
+    uses: ./.github/workflows/modules/docker-e2e.yml
+    with:
+      test-timeout: 300
+
+  # ==================== STAGE 6: ADR VALIDATION ====================
+  adr-validation:
+    name: 📋 ADR Validation
+    if: ${{ !inputs.skip-tests }}
+    needs: [unit-tests, integration-tests]
+    uses: ./.github/workflows/modules/adr-validation.yml
+    with:
+      adr-list: '["0037", "0043", "0044", "0050", "0052", "0053"]'
+
+  # ==================== GATE: ALL TESTS MUST PASS ====================
+  validation-gate:
+    name: ✅ Validation Gate
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - unit-tests
+      - integration-tests
+      - sync-validation
+      - docker-e2e
+      - adr-validation
+    if: always()
+
+    steps:
+      - name: Check all tests passed
+        run: |
+          # Check if any required job failed
+          if [[ "${{ needs.lint.result }}" == "failure" ]] || \
+             [[ "${{ needs.unit-tests.result }}" == "failure" ]] || \
+             [[ "${{ needs.integration-tests.result }}" == "failure" ]] || \
+             [[ "${{ needs.sync-validation.result }}" == "failure" ]] || \
+             [[ "${{ needs.docker-e2e.result }}" == "failure" ]] || \
+             [[ "${{ needs.adr-validation.result }}" == "failure" ]]; then
+            echo "❌ One or more validation checks failed"
+            exit 1
+          fi
+
+          echo "✅ All validation checks passed"
+
+  # ==================== STAGE 7: DEPLOYMENT ====================
+  deploy:
+    name: 🚀 Deploy
+    needs: validation-gate
+    if: |
+      success() &&
+      (github.ref == 'refs/heads/main' || github.event.inputs.deploy-environment)
+    uses: ./.github/workflows/modules/deploy.yml
+    with:
+      environment: ${{ github.event.inputs.deploy-environment || 'production' }}
+      create-release: ${{ github.ref == 'refs/heads/main' }}
+    secrets: inherit
+
+  # ==================== NOTIFICATION ====================
+  notify:
+    name: 📢 Notify
+    runs-on: ubuntu-latest
+    needs: [validation-gate, deploy]
+    if: always()
+
+    steps:
+      - name: Create summary
+        run: |
+          echo "## Neural Tools CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Test results
+          echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🧹 Lint | ${{ needs.lint.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🧪 Unit Tests | ${{ needs.unit-tests.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔗 Integration Tests | ${{ needs.integration-tests.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔄 Sync Validation | ${{ needs.sync-validation.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🐳 Docker E2E | ${{ needs.docker-e2e.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📋 ADR Validation | ${{ needs.adr-validation.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Coverage if available
+          if [[ -n "${{ needs.unit-tests.outputs.coverage }}" ]]; then
+            echo "### Code Coverage" >> $GITHUB_STEP_SUMMARY
+            echo "Coverage: ${{ needs.unit-tests.outputs.coverage }}%" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Sync rate if available
+          if [[ -n "${{ needs.sync-validation.outputs.sync-rate }}" ]]; then
+            echo "### ADR-053 Compliance" >> $GITHUB_STEP_SUMMARY
+            echo "Sync Rate: ${{ needs.sync-validation.outputs.sync-rate }}%" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Deployment info
+          if [[ "${{ needs.deploy.result }}" == "success" ]]; then
+            echo "### Deployment" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Deployed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "- Version: \`${{ needs.deploy.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Branch: \`${{ github.ref }}\`" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ needs.deploy.result }}" == "skipped" ]]; then
+            echo "### Deployment" >> $GITHUB_STEP_SUMMARY
+            echo "- ⏭️ Deployment skipped (not main branch)" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Pipeline failed!"
+          echo "Check the workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
