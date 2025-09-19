@@ -275,7 +275,7 @@ class SyncValidator:
 
 #### 4. CI/CD Integration
 
-Add to test suite:
+Integrated into modular workflow (`.github/workflows/modules/sync-validation.yml`):
 
 ```python
 # tests/test_graphrag_sync.py
@@ -357,7 +357,7 @@ graph LR
 - [x] Implement status checking for Neo4j writes
 - [x] Create and run backfill script for existing data
 - [x] Add SyncValidator class for monitoring
-- [x] Integrate validation into CI/CD pipeline
+- [x] Integrate validation into CI/CD pipeline (sync-validation.yml module)
 - [x] Deploy fixed indexer with monitoring
 - [x] Document chunk ID strategy in CLAUDE.md
 - [x] Set up alerts for sync rate < 95%

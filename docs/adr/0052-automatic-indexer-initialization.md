@@ -1,6 +1,6 @@
 # ADR-052: Automatic Indexer Initialization
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: September 15, 2025
 **Author**: L9 Engineering Team
 
@@ -179,24 +179,24 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
 ## Implementation Plan
 
 ### Phase 1: Quick Win (1-2 hours)
-- [ ] Add auto-initialization to `reindex_path_impl`
-- [ ] Improve error messages with actionable suggestions
-- [ ] Add logging for debugging initialization flow
+- [x] Add auto-initialization to `reindex_path_impl`
+- [x] Improve error messages with actionable suggestions
+- [x] Add logging for debugging initialization flow
 
 ### Phase 2: MCP Startup Integration (2-4 hours)
-- [ ] Capture launch directory in `server_lifespan`
-- [ ] Initialize PROJECT_CONTEXT at startup
-- [ ] Auto-detect and cache project from launch directory
-- [ ] Pre-initialize schema if project detected
+- [x] Capture launch directory in `server_lifespan`
+- [x] Initialize PROJECT_CONTEXT at startup
+- [x] Auto-detect and cache project from launch directory
+- [x] Pre-initialize schema if project detected
 
 ### Phase 3: Refactor Global State (1 day)
-- [ ] Replace global PROJECT_CONTEXT with dependency injection
-- [ ] Pass context explicitly through function parameters
-- [ ] Add proper async context management
+- [x] Replace global PROJECT_CONTEXT with dependency injection
+- [x] Pass context explicitly through function parameters
+- [x] Add proper async context management
 - [ ] Improve testability with context mocking
 
 ### Phase 4: Enhanced Auto-Detection (2 days)
-- [ ] Implement parent directory traversal for project roots
+- [x] Implement parent directory traversal for project roots
 - [ ] Add support for monorepo detection
 - [ ] Cache successful detections in ~/.graphrag/
 - [ ] Support multiple project contexts in same session
