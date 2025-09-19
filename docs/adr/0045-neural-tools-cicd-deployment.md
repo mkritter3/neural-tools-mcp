@@ -274,10 +274,10 @@ python neural-tools/scripts/check-breaking-changes.py
 - [x] Pre-deployment validation script
 - [x] Breaking change detection
 - [x] Automated test runner
-- [x] GitHub Actions workflow
-- [ ] Integration with deploy-to-global-mcp.sh
-- [ ] Post-deployment validation
-- [ ] Automatic rollback mechanism
+- [x] GitHub Actions workflow (modularized)
+- [x] Integration with deploy-to-global-mcp.sh
+- [x] Post-deployment validation (via GitHub Actions)
+- [x] Automatic rollback mechanism (backup/restore in deploy script)
 
 ## References
 
