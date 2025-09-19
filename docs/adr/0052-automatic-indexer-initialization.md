@@ -140,24 +140,28 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
         )]
 
     try:
+        # get_project_context returns tuple: (project_name, container, retriever)
         # This will auto-initialize PROJECT_CONTEXT if needed (safe lazy init)
-        project_context = await get_project_context({})
+        project_name, container, _ = await get_project_context({})
 
-        if 'error' in project_context:
+        if not container:
             return [types.TextContent(
                 type="text",
                 text=json.dumps({
                     "status": "error",
-                    "error": f"Failed to initialize project context: {project_context['error']}",
+                    "error": "Failed to initialize service container",
                     "suggestion": "Try set_project_context with explicit path"
                 }, indent=2)
             )]
 
-        project_name = project_context['project']
-        project_path = project_context['path']
+        # Get project path from PROJECT_CONTEXT
+        if PROJECT_CONTEXT:
+            context = await PROJECT_CONTEXT.get_current_project()
+            project_path = context.get('path', os.getcwd())
+        else:
+            project_path = os.getcwd()
 
-        # Get or create service container for this project
-        container = await state.get_service_container(project_name)
+        # Container already obtained from get_project_context
 
         # Continue with normal reindex flow...
         logger.info(f"Reindexing {path} for project: {project_name}")
@@ -221,6 +225,28 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
 
 ### Risk: Performance impact from repeated checks
 **Mitigation**: Cache initialization state and use lazy initialization patterns
+
+## Implementation Notes (Critical Bug Fixed)
+
+### TypeError Issue (Fixed Sept 19, 2025)
+
+**Bug**: Initial implementation incorrectly treated `get_project_context()` return value as a dictionary when it actually returns a tuple.
+
+**Error**: `TypeError: tuple indices must be integers or slices, not str`
+
+**Root Cause**: The `get_project_context()` function returns `(project_name, container, retriever)` tuple, not a dictionary with 'project' and 'path' keys.
+
+**Fix**: Updated all functions to correctly unpack the tuple:
+```python
+# WRONG (caused TypeError)
+project_context = await get_project_context({})
+project_name = project_context['project']  # TypeError!
+
+# CORRECT (fixed)
+project_name, container, _ = await get_project_context({})
+```
+
+This bug affected all indexing operations and was documented in multiple project reports before being fixed.
 
 ## Metrics to Track
 
