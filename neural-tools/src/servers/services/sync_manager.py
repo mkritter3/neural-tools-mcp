@@ -2,12 +2,14 @@
 """
 WriteSynchronizationManager - Ensures atomic writes to Neo4j and Qdrant
 Implements ADR-053 for production-grade synchronization
+Enhanced with ADR-054 event sourcing for observability
 """
 
 import asyncio
 import hashlib
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
@@ -16,6 +18,8 @@ from enum import Enum
 from neo4j import AsyncGraphDatabase
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, UpdateStatus
+
+from .event_store import SyncEventStore, SyncEventType, create_event_store
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,16 @@ class WriteSynchronizationManager:
             'qdrant_only': 0
         }
 
+        # Initialize event store for audit trail
+        self.event_store = create_event_store("sqlite")
+        self._event_store_initialized = False
+
+    async def _ensure_event_store_initialized(self):
+        """Ensure event store is initialized"""
+        if not self._event_store_initialized:
+            await self.event_store.initialize()
+            self._event_store_initialized = True
+
     @staticmethod
     def generate_chunk_id(content: str) -> Tuple[int, str]:
         """Generate Qdrant-compatible integer ID and hex hash
@@ -84,10 +98,26 @@ class WriteSynchronizationManager:
                          collection_name: Optional[str] = None,
                          payload: Optional[Dict] = None) -> Tuple[bool, int, str]:
         """
-        Write chunk atomically to both databases
+        Write chunk atomically to both databases with event logging
         Returns: (success, chunk_id, chunk_hash)
         """
         chunk_id, chunk_hash = self.generate_chunk_id(content)
+
+        # Generate correlation ID for tracking related events
+        correlation_id = str(uuid.uuid4())
+
+        # Ensure event store is initialized
+        await self._ensure_event_store_initialized()
+
+        # Log write started event
+        await self.event_store.log_event(
+            event_type=SyncEventType.WRITE_STARTED,
+            project=self.project_name,
+            correlation_id=correlation_id,
+            neo4j_id=chunk_hash,
+            qdrant_id=chunk_id,
+            file_path=metadata.get('file_path') if metadata else None
+        )
 
         # Create sync operation record
         operation = SyncOperation(
@@ -100,6 +130,8 @@ class WriteSynchronizationManager:
         self.pending_operations[chunk_id] = operation
         self.metrics['total_writes'] += 1
 
+        start_time = datetime.now()
+
         try:
             # Phase 1: Write to Neo4j with transaction
             neo4j_success = await self._write_to_neo4j(operation)
@@ -107,9 +139,31 @@ class WriteSynchronizationManager:
             if not neo4j_success:
                 operation.neo4j_status = SyncStatus.FAILED
                 await self._handle_failure(operation, "Neo4j write failed")
+
+                # Log write failure
+                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                await self.event_store.log_event(
+                    event_type=SyncEventType.WRITE_FAILED,
+                    project=self.project_name,
+                    correlation_id=correlation_id,
+                    neo4j_id=chunk_hash,
+                    qdrant_id=chunk_id,
+                    error="Neo4j write failed",
+                    duration_ms=duration_ms
+                )
+
                 return False, chunk_id, chunk_hash
 
             operation.neo4j_status = SyncStatus.SYNCED
+
+            # Log Neo4j success
+            await self.event_store.log_event(
+                event_type=SyncEventType.NEO4J_WRITTEN,
+                project=self.project_name,
+                correlation_id=correlation_id,
+                neo4j_id=chunk_hash,
+                qdrant_id=chunk_id
+            )
 
             # Phase 2: Write to Qdrant
             qdrant_success = await self._write_to_qdrant(
@@ -118,14 +172,76 @@ class WriteSynchronizationManager:
 
             if not qdrant_success:
                 operation.qdrant_status = SyncStatus.FAILED
+
+                # Log rollback started
+                await self.event_store.log_event(
+                    event_type=SyncEventType.ROLLBACK_STARTED,
+                    project=self.project_name,
+                    correlation_id=correlation_id,
+                    neo4j_id=chunk_hash,
+                    qdrant_id=chunk_id
+                )
+
                 # Rollback Neo4j if Qdrant fails
-                await self._rollback_neo4j(chunk_id)
+                rollback_success = await self._rollback_neo4j(chunk_id)
+
+                if rollback_success:
+                    await self.event_store.log_event(
+                        event_type=SyncEventType.ROLLBACK_COMPLETED,
+                        project=self.project_name,
+                        correlation_id=correlation_id,
+                        neo4j_id=chunk_hash,
+                        qdrant_id=chunk_id
+                    )
+                else:
+                    await self.event_store.log_event(
+                        event_type=SyncEventType.ROLLBACK_FAILED,
+                        project=self.project_name,
+                        correlation_id=correlation_id,
+                        neo4j_id=chunk_hash,
+                        qdrant_id=chunk_id,
+                        error="Failed to rollback Neo4j after Qdrant failure"
+                    )
+
                 await self._handle_failure(operation, "Qdrant write failed, rolled back Neo4j")
+
+                # Log overall write failure
+                duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                await self.event_store.log_event(
+                    event_type=SyncEventType.WRITE_FAILED,
+                    project=self.project_name,
+                    correlation_id=correlation_id,
+                    neo4j_id=chunk_hash,
+                    qdrant_id=chunk_id,
+                    error="Qdrant write failed",
+                    duration_ms=duration_ms
+                )
+
                 return False, chunk_id, chunk_hash
 
             operation.qdrant_status = SyncStatus.SYNCED
 
-            # Both succeeded
+            # Log Qdrant success
+            await self.event_store.log_event(
+                event_type=SyncEventType.QDRANT_WRITTEN,
+                project=self.project_name,
+                correlation_id=correlation_id,
+                neo4j_id=chunk_hash,
+                qdrant_id=chunk_id
+            )
+
+            # Both succeeded - log completion
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            await self.event_store.log_event(
+                event_type=SyncEventType.WRITE_COMPLETED,
+                project=self.project_name,
+                correlation_id=correlation_id,
+                neo4j_id=chunk_hash,
+                qdrant_id=chunk_id,
+                status="success",
+                duration_ms=duration_ms
+            )
+
             self.metrics['successful_syncs'] += 1
             del self.pending_operations[chunk_id]
 
@@ -136,6 +252,19 @@ class WriteSynchronizationManager:
             logger.error(f"❌ Sync failed for chunk {chunk_id}: {e}")
             operation.error = str(e)
             await self._handle_failure(operation, str(e))
+
+            # Log unexpected failure
+            duration_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            await self.event_store.log_event(
+                event_type=SyncEventType.WRITE_FAILED,
+                project=self.project_name,
+                correlation_id=correlation_id,
+                neo4j_id=chunk_hash,
+                qdrant_id=chunk_id,
+                error=str(e),
+                duration_ms=duration_ms
+            )
+
             return False, chunk_id, chunk_hash
 
     async def _write_to_neo4j(self, operation: SyncOperation) -> bool:

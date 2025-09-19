@@ -1,5 +1,6 @@
 """
 L9 2025 Circuit Breaker for Graceful Service Degradation
+Implements ADR-054 for self-healing operations with safety limits
 Prevents cascade failures and enables fallback mechanisms
 """
 
@@ -171,6 +172,78 @@ class ServiceFallbackManager:
             logger.info(f"🔄 Manually reset circuit breaker for {service_name}")
             return True
         return False
+
+
+# L9 2025: Self-Healing Circuit Breakers (ADR-054)
+
+class SelfHealingCircuitBreaker(CircuitBreaker):
+    """
+    Specialized circuit breaker for self-healing operations.
+    Prevents reconciliation loops with additional safety mechanisms.
+    """
+
+    def __init__(
+        self,
+        service_name: str,
+        failure_threshold: int = 3,  # Per ADR-054: Open after 3 failures
+        recovery_timeout: int = 60,  # Per ADR-054: 60 second recovery
+        max_repair_rate: int = 100,  # Per ADR-054: 100 repairs/minute
+        expected_exception: type = Exception
+    ):
+        super().__init__(service_name, failure_threshold, recovery_timeout, expected_exception)
+        self.max_repair_rate = max_repair_rate
+        self.repair_count = 0
+        self.repair_window_start = time.time()
+        self.consecutive_loop_detections = 0
+
+    async def call_with_rate_limit(self, func: Callable, *args, **kwargs):
+        """Execute with both circuit breaker and rate limiting"""
+
+        # Check rate limit
+        current_time = time.time()
+        if current_time - self.repair_window_start >= 60:
+            # Reset window
+            self.repair_count = 0
+            self.repair_window_start = current_time
+
+        if self.repair_count >= self.max_repair_rate:
+            logger.warning(
+                f"Rate limit exceeded for {self.service_name}: "
+                f"{self.repair_count}/{self.max_repair_rate} repairs/min"
+            )
+            raise Exception(f"Rate limit exceeded: max {self.max_repair_rate} repairs/minute")
+
+        # Execute with circuit breaker
+        try:
+            result = await self.call(func, *args, **kwargs)
+            self.repair_count += 1
+            return result
+        except Exception as e:
+            # Check for reconciliation loop pattern
+            if self._is_reconciliation_loop(e):
+                self.consecutive_loop_detections += 1
+                if self.consecutive_loop_detections >= 2:
+                    logger.error(
+                        f"🚨 Reconciliation loop detected in {self.service_name}! "
+                        f"Opening circuit immediately."
+                    )
+                    self.state = CircuitState.OPEN
+                    self.last_failure_time = time.time()
+            else:
+                self.consecutive_loop_detections = 0
+            raise e
+
+    def _is_reconciliation_loop(self, error: Exception) -> bool:
+        """Detect if error indicates a reconciliation loop"""
+        error_msg = str(error).lower()
+        loop_indicators = [
+            "already repaired",
+            "duplicate repair",
+            "repair in progress",
+            "concurrent repair",
+            "idempotency key exists"
+        ]
+        return any(indicator in error_msg for indicator in loop_indicators)
 
 
 # L9 2025: Fallback Functions for Neural GraphRAG Services
