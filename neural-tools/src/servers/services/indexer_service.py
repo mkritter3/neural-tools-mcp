@@ -27,6 +27,7 @@ sys.path.insert(0, str(services_dir))
 
 from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
+from sync_manager import WriteSynchronizationManager
 # ADR-0040: Import centralized collection naming
 sys.path.insert(0, str(services_dir.parent))  # Add parent for config directory
 
@@ -181,6 +182,9 @@ class IncrementalIndexer(FileSystemEventHandler):
         # Service container for accessing Neo4j, Qdrant, Nomic
         self.container = container
         self.services_initialized = False
+
+        # Initialize WriteSynchronizationManager for atomic writes (ADR-053)
+        self.sync_manager = None  # Will be initialized when services are initialized
         
         # Store event loop for cross-thread task submission (Python 2025 asyncio standard)
         try:
@@ -342,6 +346,17 @@ class IncrementalIndexer(FileSystemEventHandler):
                     logger.warning("Nomic unavailable - continuing without semantic embeddings")
                     self.degraded_mode['nomic'] = True
                 
+                # Initialize WriteSynchronizationManager if both Neo4j and Qdrant are available (ADR-053)
+                if not self.degraded_mode['neo4j'] and not self.degraded_mode['qdrant']:
+                    self.sync_manager = WriteSynchronizationManager(
+                        neo4j_service=self.container.neo4j,
+                        qdrant_service=self.container.qdrant,
+                        project_name=self.project_name
+                    )
+                    logger.info("WriteSynchronizationManager initialized for atomic writes (ADR-053)")
+                else:
+                    logger.warning("WriteSynchronizationManager not initialized - running without atomic sync")
+
                 self.services_initialized = True
                 logger.info(f"Services initialized: {'healthy' if result else 'degraded'}")
                 return True
@@ -1068,18 +1083,60 @@ class IncrementalIndexer(FileSystemEventHandler):
                     'content': chunk['text']  # Add content to be stored in Neo4j
                 })
             
-            # Upsert to Qdrant using proper collection management
-            collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-            await self.container.qdrant.upsert_points(collection_name, points)
-            
-            # Update Neo4j with chunk references (if available)
-            logger.info(f"Neo4j update check: degraded={self.degraded_mode['neo4j']}, chunks={len(neo4j_chunk_ids)}")
-            if not self.degraded_mode['neo4j'] and neo4j_chunk_ids:
-                logger.info(f"Calling _update_neo4j_chunks for {file_path} with {len(neo4j_chunk_ids)} chunks")
-                await self._update_neo4j_chunks(file_path, relative_path, neo4j_chunk_ids, symbols_data)
-                self.metrics['cross_references_created'] += len(neo4j_chunk_ids)
+            # Use WriteSynchronizationManager for atomic writes if available (ADR-053)
+            if self.sync_manager:
+                # Atomic write to both Neo4j and Qdrant
+                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
+                success_count = 0
+                for point, neo4j_data in zip(points, neo4j_chunk_ids):
+                    # Prepare metadata for Neo4j
+                    neo4j_metadata = {
+                        'file_path': str(relative_path),
+                        'full_path': file_path,
+                        'start_line': neo4j_data['start_line'],
+                        'end_line': neo4j_data['end_line'],
+                        'chunk_type': neo4j_data['chunk_type'],
+                        'qdrant_id': neo4j_data['qdrant_id'],
+                        'project': self.project_name,
+                        'indexed_at': datetime.now().isoformat()
+                    }
+
+                    # Write atomically to both databases
+                    success, chunk_id, chunk_hash = await self.sync_manager.write_chunk(
+                        content=neo4j_data['content'],
+                        metadata=neo4j_metadata,
+                        vector=point['vector'],
+                        collection_name=collection_name,
+                        payload=point['payload']
+                    )
+
+                    if success:
+                        success_count += 1
+                    else:
+                        logger.warning(f"Failed to sync chunk {chunk_hash} for {file_path}")
+
+                logger.info(f"Successfully synchronized {success_count}/{len(points)} chunks for {file_path}")
+                self.metrics['cross_references_created'] += success_count
+
+                # Create file-to-chunk relationships in Neo4j if symbols available
+                if symbols_data and success_count > 0:
+                    await self._create_file_chunk_relationships(file_path, relative_path, neo4j_chunk_ids)
             else:
-                logger.warning(f"Skipping Neo4j update: degraded={self.degraded_mode['neo4j']}, has_chunks={bool(neo4j_chunk_ids)}")
+                # Fallback to original non-atomic writes
+                logger.warning("WriteSynchronizationManager not available - using non-atomic writes")
+
+                # Upsert to Qdrant using proper collection management
+                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
+                await self.container.qdrant.upsert_points(collection_name, points)
+
+                # Update Neo4j with chunk references (if available)
+                logger.info(f"Neo4j update check: degraded={self.degraded_mode['neo4j']}, chunks={len(neo4j_chunk_ids)}")
+                if not self.degraded_mode['neo4j'] and neo4j_chunk_ids:
+                    logger.info(f"Calling _update_neo4j_chunks for {file_path} with {len(neo4j_chunk_ids)} chunks")
+                    await self._update_neo4j_chunks(file_path, relative_path, neo4j_chunk_ids, symbols_data)
+                    self.metrics['cross_references_created'] += len(neo4j_chunk_ids)
+                else:
+                    logger.warning(f"Skipping Neo4j update: degraded={self.degraded_mode['neo4j']}, has_chunks={bool(neo4j_chunk_ids)}")
             
         except Exception as e:
             error_category = self._categorize_error(e, file_path)
@@ -1506,7 +1563,39 @@ class IncrementalIndexer(FileSystemEventHandler):
             logger.error(f"Failed to update Neo4j chunks ({error_category}): {e}")
             self._handle_error_metrics(error_category)
             # Don't mark as degraded for chunk updates - file node is more important
-    
+
+    async def _create_file_chunk_relationships(self, file_path: str, relative_path: Path, chunk_ids: List[Dict]):
+        """Create relationships between File nodes and Chunk nodes in Neo4j after sync manager writes"""
+        try:
+            # Create or update the File node
+            file_cypher = """
+            MERGE (f:File {path: $path, project: $project})
+            SET f.updated_at = datetime()
+            RETURN f
+            """
+            await self.container.neo4j.execute_write(file_cypher, {
+                'path': str(relative_path),
+                'project': self.project_name
+            })
+
+            # Create HAS_CHUNK relationships
+            for chunk_info in chunk_ids:
+                rel_cypher = """
+                MATCH (f:File {path: $path, project: $project})
+                MATCH (c:Chunk {chunk_id: $chunk_id, project: $project})
+                MERGE (f)-[:HAS_CHUNK]->(c)
+                """
+                await self.container.neo4j.execute_write(rel_cypher, {
+                    'path': str(relative_path),
+                    'chunk_id': chunk_info['id'],  # This is the chunk_hash
+                    'project': self.project_name
+                })
+
+            logger.info(f"Created File->HAS_CHUNK relationships for {len(chunk_ids)} chunks")
+
+        except Exception as e:
+            logger.error(f"Failed to create file-chunk relationships: {e}")
+
     def _extract_imports(self, content: str, file_type: str) -> List[str]:
         """Extract import statements (simplified)"""
         imports = []

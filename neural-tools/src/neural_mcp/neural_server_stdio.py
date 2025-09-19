@@ -664,20 +664,20 @@ async def get_project_context(arguments: Dict[str, Any]):
             # Project not found, fall back to auto-detection
             logger.warning(f"⚠️ Could not switch to project '{project_name}': {e}. Falling back to auto-detection.")
             context = await PROJECT_CONTEXT.get_current_project()
-            project_name = context['project']
+            project_name = context.get('project', DEFAULT_PROJECT_NAME) if context else DEFAULT_PROJECT_NAME
         except Exception as e:
             # Any other error, fall back to auto-detection
             logger.error(f"❌ Error switching to project '{project_name}': {e}. Falling back to auto-detection.")
             context = await PROJECT_CONTEXT.get_current_project()
-            project_name = context['project']
+            project_name = context.get('project', DEFAULT_PROJECT_NAME) if context else DEFAULT_PROJECT_NAME
     else:
         # Use dynamic detection
         context = await PROJECT_CONTEXT.get_current_project()
-        project_name = context['project']
-        
+        project_name = context.get('project', DEFAULT_PROJECT_NAME) if context else DEFAULT_PROJECT_NAME
+
         # Log detection for debugging
-        method = context.get('method', 'unknown')
-        confidence = context.get('confidence', 0)
+        method = context.get('method', 'unknown') if context else 'unknown'
+        confidence = context.get('confidence', 0) if context else 0
         if confidence < 0.7:
             logger.warning(f"⚠️ Low confidence project detection: {project_name} (method: {method}, confidence: {confidence:.0%})")
         else:
@@ -2072,7 +2072,12 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
         # Get project path from PROJECT_CONTEXT
         if PROJECT_CONTEXT:
             context = await PROJECT_CONTEXT.get_current_project()
-            project_path = context.get('path', os.getcwd())
+            # Handle case where context might be None or not a dict
+            if context and isinstance(context, dict):
+                project_path = context.get('path', os.getcwd())
+            else:
+                logger.warning(f"⚠️ PROJECT_CONTEXT returned invalid context: {type(context)}")
+                project_path = os.getcwd()
         else:
             project_path = os.getcwd()
         
