@@ -1904,20 +1904,19 @@ async def indexer_status_impl() -> List[types.TextContent]:
 
     try:
         # ADR-0052: Use get_project_context for safe lazy initialization
-        project_context = await get_project_context({})
+        # Returns tuple: (project_name, container, retriever)
+        project_name, container, _ = await get_project_context({})
 
-        if 'error' in project_context:
+        if not container:
             return [types.TextContent(
                 type="text",
                 text=json.dumps({
                     "indexer_status": "error",
-                    "error": f"Failed to initialize project context: {project_context['error']}",
+                    "error": "Failed to initialize service container",
                     "sidecar_connection": "unknown",
                     "suggestion": "Try set_project_context with explicit path"
                 }, indent=2)
             )]
-
-        project_name = project_context['project']
 
         # Get service container for this project
         container = await state.get_service_container(project_name)
@@ -2057,22 +2056,25 @@ async def reindex_path_impl(path: str) -> List[types.TextContent]:
 
     try:
         # ADR-0052: Use get_project_context for safe lazy initialization
-        # This will auto-initialize PROJECT_CONTEXT if needed
-        project_context = await get_project_context({})
+        # Returns tuple: (project_name, container, retriever)
+        project_name, container, _ = await get_project_context({})
 
-        if 'error' in project_context:
-            # Failed to initialize project context
+        if not container:
             return [types.TextContent(
                 type="text",
                 text=json.dumps({
                     "status": "error",
-                    "error": f"Failed to initialize project context: {project_context['error']}",
+                    "error": "Failed to initialize service container",
                     "suggestion": "Try set_project_context with explicit path"
                 }, indent=2)
             )]
 
-        project_name = project_context['project']
-        project_path = project_context['path']
+        # Get project path from PROJECT_CONTEXT
+        if PROJECT_CONTEXT:
+            context = await PROJECT_CONTEXT.get_current_project()
+            project_path = context.get('path', os.getcwd())
+        else:
+            project_path = os.getcwd()
         
         # Get or create service container for this project
         container = await state.get_service_container(project_name)
