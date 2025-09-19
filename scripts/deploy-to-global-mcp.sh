@@ -280,4 +280,4 @@ if command -v gh &> /dev/null; then
     echo ""
 fi
 
-echo -e "${GREEN}🎯 L9 Engineering: CI/CD-compliant deployment complete!${NC}
+echo -e "${GREEN}🎯 L9 Engineering: CI/CD-compliant deployment complete!${NC}"
