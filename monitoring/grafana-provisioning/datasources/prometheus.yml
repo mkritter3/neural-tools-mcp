@@ -1,0 +1,37 @@
+# Grafana Datasource Configuration
+# Automatically provisions Prometheus as a datasource
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: "15s"
+      queryTimeout: "60s"
+      httpMethod: GET
+    editable: true
+
+  # Optional: Neo4j datasource if plugin is installed
+  - name: Neo4j
+    type: neo4j-datasource
+    access: proxy
+    url: bolt://host.docker.internal:47687
+    secureJsonData:
+      password: "graphrag-password"
+    jsonData:
+      user: "neo4j"
+      database: "neo4j"
+    editable: true
+
+  # Optional: Redis datasource if plugin is installed
+  - name: Redis-Cache
+    type: redis-datasource
+    access: proxy
+    url: redis://host.docker.internal:46379
+    jsonData:
+      client: "standalone"
+    editable: true
