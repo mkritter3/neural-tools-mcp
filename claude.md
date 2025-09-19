@@ -899,10 +899,14 @@ python3 scripts/run_l9_validation.py
 
 4. **Deploy to global MCP when ready**:
    ```bash
-   # Run L9 deployment script (creates backup, validates, deploys)
+   # Run L9 deployment script (uses GitHub Actions CI/CD validation)
    ./scripts/deploy-to-global-mcp.sh
-   
-   # This copies your fixes to /Users/mkr/.claude/mcp-servers/neural-tools/
+
+   # This script:
+   # - Checks GitHub Actions workflow status (if available)
+   # - Falls back to local validation if needed
+   # - Creates automatic backup
+   # - Deploys to /Users/mkr/.claude/mcp-servers/neural-tools/
    ```
 
 5. **Use production configuration**:
