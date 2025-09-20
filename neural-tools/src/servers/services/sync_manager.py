@@ -19,7 +19,7 @@ from neo4j import AsyncGraphDatabase
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, UpdateStatus
 
-from event_store import SyncEventStore, SyncEventType, create_event_store
+from servers.services.event_store import SyncEventStore, SyncEventType, create_event_store
 
 logger = logging.getLogger(__name__)
 

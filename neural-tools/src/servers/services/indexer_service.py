@@ -27,7 +27,7 @@ sys.path.insert(0, str(services_dir))
 
 from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
-from sync_manager import WriteSynchronizationManager
+from servers.services.sync_manager import WriteSynchronizationManager
 # ADR-0040: Import centralized collection naming
 sys.path.insert(0, str(services_dir.parent))  # Add parent for config directory
 
