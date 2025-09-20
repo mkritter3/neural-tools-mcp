@@ -13,6 +13,7 @@ import logging
 
 # Add neural-tools to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "neural-tools"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "neural-tools" / "src"))
 
 from src.servers.services.service_container import ServiceContainer
 from src.servers.services.project_context_manager import ProjectContextManager
