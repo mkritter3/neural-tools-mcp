@@ -19,6 +19,9 @@ on:
       run-adr:
         description: 'Should run ADR validation'
         value: ${{ jobs.detect-changes.outputs.run-adr }}
+      run-regression:
+        description: 'Should run regression tests'
+        value: ${{ jobs.detect-changes.outputs.run-regression }}
 
 jobs:
   detect-changes:
@@ -30,6 +33,7 @@ jobs:
       run-integration: ${{ steps.changes.outputs.services }}
       run-docker: ${{ steps.changes.outputs.docker }}
       run-adr: ${{ steps.changes.outputs.adr }}
+      run-regression: ${{ steps.changes.outputs.regression }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +58,12 @@ jobs:
               - 'docs/adr/**'
               - 'neural-tools/src/servers/services/sync_manager.py'
               - 'neural-tools/src/servers/services/project_context_manager.py'
+            regression:
+              - 'neural-tools/src/neural_mcp/neural_server_stdio.py'
+              - 'neural-tools/src/servers/services/service_container.py'
+              - 'neural-tools/src/servers/services/indexer_service.py'
+              - 'neural-tools/src/servers/services/project_context_manager.py'
+              - 'scripts/test-indexer-fix-*.py'
             docs:
               - '**/*.md'
               - 'docs/**'
@@ -70,3 +80,4 @@ jobs:
           echo "| Integration | ${{ steps.changes.outputs.services == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Docker E2E | ${{ steps.changes.outputs.docker == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ADR Validation | ${{ steps.changes.outputs.adr == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Regression Tests | ${{ steps.changes.outputs.regression == 'true' && '✅' || '⏭️' }} |" >> $GITHUB_STEP_SUMMARY

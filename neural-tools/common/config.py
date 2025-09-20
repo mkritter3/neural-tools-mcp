@@ -20,7 +20,8 @@ class NeuralConfig:
         # Project configuration
         self.PROJECT_NAME = os.environ.get("PROJECT_NAME", "default")
         self.PROJECT_DIR = Path(os.environ.get("PROJECT_DIR", "/app/project"))
-        self.COLLECTION_PREFIX = f"project_{self.PROJECT_NAME}_"
+        # ADR-0057: Fixed collection naming to use hyphens (project-name format)
+        self.COLLECTION_PREFIX = f"project-{self.PROJECT_NAME}"
         
         # Service endpoints
         self.QDRANT_HOST = os.environ.get("QDRANT_HOST", "neural-data-storage")

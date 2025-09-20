@@ -99,16 +99,25 @@ jobs:
     with:
       python-version: '3.11'
 
-  # ==================== STAGE 4: ADR-053 SYNC VALIDATION ====================
+  # ==================== STAGE 4: CRITICAL REGRESSION TESTS ====================
+  regression-tests:
+    name: 🔥 Critical Regression Tests
+    if: ${{ !inputs.skip-tests }}
+    needs: [unit-tests, integration-tests]
+    uses: ./.github/workflows/modules/regression-tests.yml
+    with:
+      python-version: '3.11'
+
+  # ==================== STAGE 5: ADR-053 SYNC VALIDATION ====================
   sync-validation:
     name: 🔄 ADR-053 Sync Validation
     if: ${{ !inputs.skip-tests }}
-    needs: [unit-tests, integration-tests]
+    needs: [unit-tests, integration-tests, regression-tests]
     uses: ./.github/workflows/modules/sync-validation.yml
     with:
       sync-rate-threshold: 95
 
-  # ==================== STAGE 5: SELF-HEALING TESTS (ADR-054) ====================
+  # ==================== STAGE 6: SELF-HEALING TESTS (ADR-054) ====================
   self-healing-tests:
     name: 🔧 Self-Healing & Observability Tests
     if: ${{ !inputs.skip-tests }}
@@ -118,7 +127,7 @@ jobs:
       python-version: '3.11'
       node-version: '18'
 
-  # ==================== STAGE 6: DOCKER E2E ====================
+  # ==================== STAGE 7: DOCKER E2E ====================
   docker-e2e:
     name: 🐳 Docker E2E
     if: ${{ !inputs.skip-tests }}
@@ -127,14 +136,14 @@ jobs:
     with:
       test-timeout: 300
 
-  # ==================== STAGE 7: ADR VALIDATION ====================
+  # ==================== STAGE 8: ADR VALIDATION ====================
   adr-validation:
     name: 📋 ADR Validation
     if: ${{ !inputs.skip-tests }}
     needs: [unit-tests, integration-tests]
     uses: ./.github/workflows/modules/adr-validation.yml
     with:
-      adr-list: '["0037", "0043", "0044", "0050", "0052", "0053", "0054"]'
+      adr-list: '["0029", "0037", "0043", "0044", "0050", "0052", "0053", "0054", "0057", "0058"]'
 
   # ==================== GATE: ALL TESTS MUST PASS ====================
   validation-gate:
@@ -145,6 +154,7 @@ jobs:
       - unit-tests
       - integration-tests
       - naming-consistency
+      - regression-tests
       - sync-validation
       - self-healing-tests
       - docker-e2e
@@ -159,6 +169,7 @@ jobs:
              [[ "${{ needs.unit-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.integration-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.naming-consistency.result }}" == "failure" ]] || \
+             [[ "${{ needs.regression-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.sync-validation.result }}" == "failure" ]] || \
              [[ "${{ needs.self-healing-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.docker-e2e.result }}" == "failure" ]] || \
@@ -169,7 +180,7 @@ jobs:
 
           echo "✅ All validation checks passed"
 
-  # ==================== STAGE 7: DEPLOYMENT ====================
+  # ==================== STAGE 9: DEPLOYMENT ====================
   deploy:
     name: 🚀 Deploy
     needs: validation-gate
@@ -203,6 +214,7 @@ jobs:
           echo "| 🧪 Unit Tests | ${{ needs.unit-tests.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🔗 Integration Tests | ${{ needs.integration-tests.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🔍 Naming Consistency | ${{ needs.naming-consistency.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔥 Regression Tests | ${{ needs.regression-tests.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🔄 Sync Validation | ${{ needs.sync-validation.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🐳 Docker E2E | ${{ needs.docker-e2e.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 📋 ADR Validation | ${{ needs.adr-validation.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY

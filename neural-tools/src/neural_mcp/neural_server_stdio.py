@@ -635,16 +635,9 @@ async def get_project_context(arguments: Dict[str, Any]):
             await PROJECT_CONTEXT.set_project(project_path, project_name)
             logger.info(f"✅ [ADR-0052] Auto-initialized from launch dir: {INITIAL_WORKING_DIRECTORY}")
 
-            # Auto-initialize schema if not present
-            try:
-                container = await state.get_service_container(project_name)
-                if hasattr(container, 'schema_manager'):
-                    schema_mgr = container.schema_manager
-                    if not await schema_mgr.has_schema():
-                        await schema_mgr.auto_init()
-                        logger.info(f"✅ [ADR-0052] Auto-initialized schema for {project_name}")
-            except Exception as e:
-                logger.warning(f"⚠️ [ADR-0052] Could not auto-init schema: {e}")
+            # ADR-0058: Schema initialization moved out of PROJECT_CONTEXT init
+            # to avoid circular dependency. Schema will be initialized lazily
+            # when the container is first created with proper context.
         else:
             # Fall back to auto-detection for global installs
             detected = await PROJECT_CONTEXT.detect_project()

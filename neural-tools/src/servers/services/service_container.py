@@ -35,11 +35,13 @@ class ServiceContainer:
             project_name: Optional project name override (deprecated, use context_manager)
         """
         # ADR-0044: Use injected context manager if provided
+        # ADR-0058: Restored isinstance check with absolute imports to prevent module identity issues
         if context_manager:
-            # Skip isinstance check - causes module identity issues
-            # from servers.services.project_context_manager import ProjectContextManager
-            # if not isinstance(context_manager, ProjectContextManager):
-            #     raise TypeError("context_manager must be a ProjectContextManager instance")
+            # Use absolute import to avoid module identity issues with sys.path manipulation
+            from servers.services.project_context_manager import ProjectContextManager
+            if not isinstance(context_manager, ProjectContextManager):
+                logger.error(f"❌ context_manager type mismatch: got {type(context_manager).__module__}.{type(context_manager).__name__}")
+                raise TypeError(f"context_manager must be a ProjectContextManager instance, got {type(context_manager)}")
             self.context_manager = context_manager
             self.project_name = context_manager.current_project or "default"
             self.project_path = context_manager.current_project_path

@@ -49,7 +49,8 @@ def register_core_tools(mcp: FastMCP, container=None):
             
             try:
                 collection_names = await qdrant_client.get_collections()
-                collection_prefix = f"project_{PROJECT_NAME}_"
+                # ADR-0057: Fixed collection naming to use hyphens (project-name format)
+                collection_prefix = f"project-{PROJECT_NAME}"
                 project_collections = [name for name in collection_names if name.startswith(collection_prefix)]
                 
                 understanding["indexed_categories"] = [
@@ -188,7 +189,8 @@ def register_core_tools(mcp: FastMCP, container=None):
             embeddings = await nomic_client.get_embeddings([query])
             query_vector = embeddings[0]
             
-            collection_name = f"project_{PROJECT_NAME}_code"
+            # ADR-0057: Fixed collection naming to use hyphens (project-name format)
+            collection_name = f"project-{PROJECT_NAME}"
             
             if search_type == "semantic":
                 # Pure vector search
@@ -369,7 +371,9 @@ def register_core_tools(mcp: FastMCP, container=None):
             if not qdrant_client:
                 return {"status": "error", "message": "Qdrant service not initialized"}
             
-            collection_name = f"project_{PROJECT_NAME}_style_patterns"
+            # ADR-0057: Fixed collection naming to use hyphens (project-name format)
+            # Note: This is a specialized collection for style patterns, not the main collection
+            collection_name = f"project-{PROJECT_NAME}-style-patterns"
             
             if action == "learn":
                 if not code_sample:

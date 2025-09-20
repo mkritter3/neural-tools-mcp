@@ -249,10 +249,22 @@ class IncrementalIndexer(FileSystemEventHandler):
         self.last_batch_time = time.time()
         
         # File patterns configuration
+        # ADR-0058: Added missing file extensions for comprehensive language support
         self.watch_patterns = {
+            # Core languages
             '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go',
             '.rs', '.cpp', '.c', '.h', '.hpp', '.cs', '.rb', '.php',
-            '.md', '.yaml', '.yml', '.json', '.toml', '.txt', '.sql'
+            # Mobile development
+            '.dart', '.swift', '.kt', '.m',
+            # Web frameworks
+            '.vue', '.svelte', '.astro',
+            # Additional languages
+            '.scala', '.r', '.jl', '.perl', '.lua',
+            # Config and data
+            '.md', '.yaml', '.yml', '.json', '.toml', '.txt', '.sql',
+            '.xml', '.ini', '.env', '.graphql', '.prisma',
+            # Documentation
+            '.rst', '.adoc'
         }
         
         self.ignore_patterns = {

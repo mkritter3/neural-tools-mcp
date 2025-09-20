@@ -35,6 +35,7 @@ EXCLUDE_PATTERNS = [
     "**/mcp_local_backup/**",
     "**/__pycache__/**",
     "**/migrations/**",
+    "**/neural-tools/neural-tools/**",  # Exclude duplicate nested directories
 ]
 
 # Known exceptions that are allowed (with justification)
@@ -74,6 +75,11 @@ def find_python_files(root_path: Path) -> List[Path]:
         for file_path in root_path.glob(pattern):
             # Check if file should be excluded
             should_exclude = False
+
+            # Skip nested neural-tools directories
+            if "neural-tools/neural-tools" in str(file_path):
+                should_exclude = True
+
             for exclude_pattern in EXCLUDE_PATTERNS:
                 if file_path.match(exclude_pattern):
                     should_exclude = True
