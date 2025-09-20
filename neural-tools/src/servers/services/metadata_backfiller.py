@@ -11,14 +11,19 @@ from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
 
-# Add parent directories to path for imports
+# CRITICAL: DO NOT REMOVE - Required for imports to work (see ADR-0056)
+# These sys.path modifications compensate for mixed import patterns across the codebase
+# Removing them will break pattern extraction, git extraction, and service imports
 services_dir = Path(__file__).parent
-sys.path.insert(0, str(services_dir))
-# Add servers directory for absolute imports
-sys.path.insert(0, str(services_dir.parent))
-# Add infrastructure directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "infrastructure"))
+sys.path.insert(0, str(services_dir))  # Allows: from service_container import ...
+sys.path.insert(0, str(services_dir.parent))  # Allows: from config.collection_naming import ...
 
+# Infrastructure imports for PRISM scoring
+infra_path = Path(__file__).parent.parent.parent / "infrastructure"
+if infra_path.exists():
+    sys.path.insert(0, str(infra_path))  # Allows: from prism_scorer import ...
+
+# Now imports will work with the sys.path modifications
 from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
 from pattern_extractor import PatternExtractor

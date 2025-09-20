@@ -8,12 +8,17 @@ Updated per ADR-0041 to delegate to CollectionNamingManager
 import os
 import sys
 import logging
+from pathlib import Path
 from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from enum import Enum
 
+# CRITICAL: DO NOT REMOVE - Required for imports to work (see ADR-0056)
+# This compensates for cross-package imports between services/ and config/
+services_dir = Path(__file__).parent
+sys.path.insert(0, str(services_dir.parent))  # Allows: from config.collection_naming import ...
+
 # ADR-0041: Import centralized collection naming
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config.collection_naming import collection_naming
 
 logger = logging.getLogger(__name__)

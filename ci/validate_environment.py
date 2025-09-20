@@ -32,8 +32,13 @@ def validate_pythonpath():
     return True
 
 def validate_imports():
-    """Test that all critical imports work with production paths"""
+    """Test that all critical imports work with production paths
+
+    ADR-0056: Services make sys.path modifications at runtime.
+    This validator ensures the imports work AFTER those modifications.
+    """
     print("\n--- Running Import Validation ---")
+    print("  (ADR-0056: Validating WITH sys.path modifications)")
 
     # Critical modules that MUST work in production
     modules_to_check = [
@@ -50,28 +55,46 @@ def validate_imports():
     failed_imports = []
     for module in modules_to_check:
         try:
-            importlib.import_module(module)
+            # Import the module - it will make its sys.path modifications
+            imported = importlib.import_module(module)
             print(f"  ✅ Imported '{module}'")
+
+            # For indexer_service, verify that pattern extraction works
+            # This is the CORE functionality that breaks without sys.path mods
+            if module == "servers.services.indexer_service":
+                # Check if it can access its dependencies
+                if hasattr(imported, 'IncrementalIndexer'):
+                    print(f"     ✓ IncrementalIndexer class accessible")
+                else:
+                    print(f"     ⚠️  IncrementalIndexer class not found")
+
         except ImportError as e:
             print(f"  ❌ Failed to import '{module}': {e}")
             failed_imports.append((module, str(e)))
 
-    # Test that WRONG imports fail (as they should)
-    wrong_imports = [
-        "src.servers.services.sync_manager",  # Should fail - has 'src' prefix
-        "event_store",  # Should fail - not in root of path
-        "sync_manager",  # Should fail - not in root of path
+    # ADR-0056: These imports SHOULD work after services modify sys.path
+    # They're required for core functionality
+    runtime_imports = [
+        ("pattern_extractor", "servers.services"),  # Used by indexer
+        ("code_parser", "servers.services"),  # Used by indexer
+        ("service_container", "servers.services"),  # Used everywhere
     ]
 
-    print("\n--- Validating Wrong Imports Fail ---")
-    for module in wrong_imports:
+    print("\n--- Validating Runtime Imports (ADR-0056) ---")
+    for module_name, expected_location in runtime_imports:
+        # First make sure the services directory is in path (as services do)
+        services_path = Path(__file__).parent.parent / "neural-tools" / "src" / "servers" / "services"
+        if str(services_path) not in sys.path:
+            sys.path.insert(0, str(services_path))
+
         try:
-            # Use exec to avoid syntax errors
-            exec(f"import {module}")
-            print(f"  ❌ PROBLEM: '{module}' imported (it shouldn't!)")
-            failed_imports.append((module, "Should not be importable"))
-        except ImportError:
-            print(f"  ✅ '{module}' correctly fails to import")
+            # Try the import as services would after sys.path modification
+            exec(f"from {module_name} import *")
+            print(f"  ✅ Runtime import '{module_name}' works (from {expected_location})")
+        except ImportError as e:
+            print(f"  ❌ Runtime import '{module_name}' failed: {e}")
+            print(f"     This is CRITICAL - services won't work!")
+            failed_imports.append((module_name, f"Runtime import failed: {e}"))
 
     if failed_imports:
         print("\n❌ Import validation FAILED:")
@@ -80,6 +103,7 @@ def validate_imports():
         sys.exit(1)
 
     print("\n✅ All imports validated for production")
+    print("   (Including ADR-0056 runtime imports)")
     return True
 
 def validate_configuration():

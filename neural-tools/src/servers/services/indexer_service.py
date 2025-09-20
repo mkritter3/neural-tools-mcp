@@ -21,15 +21,18 @@ from watchdog.events import FileSystemEventHandler
 from threading import Timer, Lock
 from qdrant_client import models
 
-# Add services directory to path for imports
+# CRITICAL: DO NOT REMOVE - Required for imports to work (see ADR-0056)
+# These sys.path modifications compensate for mixed import patterns across the codebase
+# Removing them will break pattern extraction, code parsing, and service imports
 services_dir = Path(__file__).parent
-sys.path.insert(0, str(services_dir))
+sys.path.insert(0, str(services_dir))  # Enables: from service_container import ...
 
 from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
 from servers.services.sync_manager import WriteSynchronizationManager
-# ADR-0040: Import centralized collection naming
-sys.path.insert(0, str(services_dir.parent))  # Add parent for config directory
+
+# CRITICAL: DO NOT REMOVE - Required for config imports (see ADR-0056)
+sys.path.insert(0, str(services_dir.parent))  # Enables: from config.collection_naming import ...
 
 # Configure logging to stderr for Docker
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
@@ -56,7 +59,7 @@ except ImportError as e:
 
 # Import PRISM scorer if available
 try:
-    # Try to import from infrastructure directory
+    # CRITICAL: DO NOT REMOVE - Required for PRISM scorer import (see ADR-0056)
     sys.path.insert(0, str(Path(__file__).parent.parent.parent / "infrastructure"))
     from prism_scorer import PrismScorer
     PRISM_SCORING_ENABLED = True
