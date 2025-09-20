@@ -54,6 +54,64 @@ The inconsistency was introduced when different developers implemented different
 - **Debugging Difficulty**: Inconsistent status makes troubleshooting harder
 - **False Alarms**: Users think indexing failed when it actually worked
 
+## Validation Approach
+
+### Automated Testing Strategy
+
+We implement a three-tier validation strategy to prevent future naming inconsistencies:
+
+#### 1. Comprehensive Test (`test_collection_naming_consistency.py`)
+- **Scope**: Scans ALL Python files in neural-tools/src
+- **Detects**: Any deviation from `project-{name}` pattern
+- **Smart Exceptions**: Allows legitimate differences (multitenancy, schema-specific naming)
+- **Purpose**: Catches naming issues early in development
+
+#### 2. Critical Test (`test_critical_collection_naming.py`)
+- **Scope**: Only tests files that directly create/query Qdrant collections
+- **Targets**:
+  - `neural_server_stdio.py` (MCP status reporting)
+  - `sync_manager.py` (write synchronization)
+  - `drift_monitor.py` (drift monitoring)
+  - `qdrant_service.py` (main Qdrant service)
+  - `indexer_service.py` (main indexing service)
+  - `collection_config.py` (collection configuration)
+- **Purpose**: Ensures critical services use correct naming
+
+#### 3. CI/CD Integration
+- **Workflow**: `.github/workflows/modules/naming-consistency.yml`
+- **Runs On**: Every push and pull request
+- **Stage**: Between lint and integration tests (Stage 3.5)
+- **Gate**: Blocks deployment if naming issues detected
+
+### Exception Management
+
+The following patterns are explicitly allowed as they serve specific architectural needs:
+
+| Pattern | Purpose | Example Files |
+|---------|---------|---------------|
+| `tenant_{id}_project_{name}_{type}` | Multi-tenant isolation | multitenancy.py |
+| `project_{name}_code` | Schema-specific typed collections | schema_manager.py |
+| `project_{name}_embeddings` | Specialized pipeline collections | async_preprocessing_pipeline.py |
+| `project_` detection patterns | Migration validation logic | pipeline_validation.py |
+
+### Enforcement Workflow
+
+```mermaid
+graph TD
+    A[Developer makes changes] --> B[Local tests run]
+    B --> C{Naming correct?}
+    C -->|No| D[Tests fail locally]
+    D --> E[Developer fixes naming]
+    E --> B
+    C -->|Yes| F[Push to GitHub]
+    F --> G[CI/CD runs naming-consistency]
+    G --> H{All checks pass?}
+    H -->|No| I[PR blocked]
+    I --> E
+    H -->|Yes| J[Continue to next stage]
+    J --> K[Deployment allowed]
+```
+
 ## Implementation
 
 ### Fix Location
@@ -118,9 +176,13 @@ We should also audit all other collection name references to ensure consistency:
 
 ## Implementation Checklist
 
-- [ ] Fix neural_system_status collection detection
-- [ ] Search for other instances of collection naming
-- [ ] Add comment documenting the standard
+- [x] Fix neural_system_status collection detection
+- [x] Search for other instances of collection naming
+- [x] Add comment documenting the standard (ADR-0057 comments added)
+- [x] Create comprehensive validation test
+- [x] Create critical services validation test
+- [x] Add tests to CI/CD pipeline
+- [x] Document validation approach
 - [ ] Test with multiple projects
 - [ ] Verify project_understanding and neural_system_status agree
 - [ ] Update any documentation that shows collection names

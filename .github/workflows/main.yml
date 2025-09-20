@@ -90,6 +90,15 @@ jobs:
       qdrant-version: 'v1.12.5'
       python-version: '3.11'
 
+  # ==================== STAGE 3.5: NAMING CONSISTENCY ====================
+  naming-consistency:
+    name: 🔍 Naming Consistency (ADR-057)
+    if: ${{ !inputs.skip-tests }}
+    needs: lint
+    uses: ./.github/workflows/modules/naming-consistency.yml
+    with:
+      python-version: '3.11'
+
   # ==================== STAGE 4: ADR-053 SYNC VALIDATION ====================
   sync-validation:
     name: 🔄 ADR-053 Sync Validation
@@ -135,6 +144,7 @@ jobs:
       - lint
       - unit-tests
       - integration-tests
+      - naming-consistency
       - sync-validation
       - self-healing-tests
       - docker-e2e
@@ -148,6 +158,7 @@ jobs:
           if [[ "${{ needs.lint.result }}" == "failure" ]] || \
              [[ "${{ needs.unit-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.integration-tests.result }}" == "failure" ]] || \
+             [[ "${{ needs.naming-consistency.result }}" == "failure" ]] || \
              [[ "${{ needs.sync-validation.result }}" == "failure" ]] || \
              [[ "${{ needs.self-healing-tests.result }}" == "failure" ]] || \
              [[ "${{ needs.docker-e2e.result }}" == "failure" ]] || \
@@ -191,6 +202,7 @@ jobs:
           echo "| 🧹 Lint | ${{ needs.lint.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🧪 Unit Tests | ${{ needs.unit-tests.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🔗 Integration Tests | ${{ needs.integration-tests.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔍 Naming Consistency | ${{ needs.naming-consistency.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🔄 Sync Validation | ${{ needs.sync-validation.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🐳 Docker E2E | ${{ needs.docker-e2e.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 📋 ADR Validation | ${{ needs.adr-validation.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY

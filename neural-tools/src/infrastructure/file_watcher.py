@@ -28,7 +28,8 @@ class NeuralIndexer(FileSystemEventHandler):
                  embedding_service_url: str = "http://localhost:8081", project_name: str = "default"):
         self.project_path = Path(project_path)
         self.project_name = project_name
-        self.collection_prefix = f"project_{project_name}_"
+        # ADR-0057: Fixed collection naming to use hyphens (project-name format)
+        self.collection_prefix = f"project-{project_name}"
         
         # Qdrant client
         self.qdrant = QdrantClient(host=qdrant_host, port=qdrant_port)

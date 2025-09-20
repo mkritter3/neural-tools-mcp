@@ -29,7 +29,8 @@ class SelectiveIndexer:
         """
         self.container = container
         self.project_name = project_name
-        self.collection_prefix = f"project_{project_name}_"
+        # ADR-0057: Fixed collection naming to use hyphens (project-name format)
+        self.collection_prefix = f"project-{project_name}"
         
         # Cache for selective reprocessing
         self.chunk_cache: Dict[str, List[Dict[str, Any]]] = {}

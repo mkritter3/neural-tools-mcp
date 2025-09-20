@@ -1,0 +1,67 @@
+name: Collection Naming Consistency Check
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Python version to use'
+        type: string
+        default: '3.11'
+
+jobs:
+  naming-consistency:
+    name: 🔍 Check Naming Conventions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Run Collection Naming Consistency Test
+        run: |
+          echo "🔍 Checking collection naming consistency (ADR-0057)..."
+          python3 neural-tools/tests/test_collection_naming_consistency.py
+
+      - name: Check Other Naming Conventions
+        run: |
+          echo "📝 Checking for other naming patterns..."
+
+          # Check for consistent project variable naming
+          echo "Checking for 'PROJECT_NAME' vs 'project_name' consistency..."
+
+          # Count occurrences
+          PROJECT_NAME_COUNT=$(grep -r "PROJECT_NAME" neural-tools/src --include="*.py" | wc -l)
+          project_name_count=$(grep -r "[^A-Z]project_name[^A-Z]" neural-tools/src --include="*.py" | wc -l)
+
+          echo "  PROJECT_NAME (constant): $PROJECT_NAME_COUNT occurrences"
+          echo "  project_name (variable): $project_name_count occurrences"
+
+          # Check for mixed usage in same file (potential issue)
+          echo ""
+          echo "Files with both PROJECT_NAME and project_name (potential inconsistency):"
+          for file in $(find neural-tools/src -name "*.py"); do
+            if grep -q "PROJECT_NAME" "$file" && grep -q "[^A-Z]project_name[^A-Z]" "$file"; then
+              echo "  - $file"
+            fi
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "========================================="
+          echo "Naming Consistency Check Complete"
+          echo "========================================="
+          echo ""
+          echo "Standard formats per ADR-0057:"
+          echo "  ✓ Collection names: project-{name}"
+          echo "  ✓ No underscores in collection prefix"
+          echo "  ✓ No trailing underscores"
+          echo ""
+          echo "If this check fails, fix the naming inconsistencies"
+          echo "to maintain code quality and prevent bugs."
