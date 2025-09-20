@@ -1682,9 +1682,10 @@ async def neural_system_status_impl() -> List[types.TextContent]:
                 # Get ALL collections first
                 all_collections = await container.qdrant.get_collections()
                 # Filter to show only collections for the current project (ADR-0032)
-                project_prefix = f"project_{project_name}_"
+                # ADR-0057: Fixed collection naming to use hyphens (project-name format)
+                project_prefix = f"project-{project_name}"
                 project_collections = [c for c in all_collections if c.startswith(project_prefix)]
-                
+
                 status["services"]["qdrant"]["collections"] = project_collections
                 status["services"]["qdrant"]["collection_count"] = len(project_collections)
                 status["services"]["qdrant"]["project_scope"] = project_name

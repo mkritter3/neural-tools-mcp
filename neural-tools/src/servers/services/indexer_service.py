@@ -179,8 +179,8 @@ class IncrementalIndexer(FileSystemEventHandler):
         self.project_path = Path(project_path)
         self.project_name = project_name
         self.collection_manager = get_collection_manager(project_name)
-        # Keep legacy collection_prefix for backward compatibility
-        self.collection_prefix = f"project_{project_name}_"
+        # ADR-0057: Fixed collection naming to use hyphens (project-name format)
+        self.collection_prefix = f"project-{project_name}"
         
         # Service container for accessing Neo4j, Qdrant, Nomic
         self.container = container
