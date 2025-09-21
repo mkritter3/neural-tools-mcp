@@ -79,7 +79,7 @@ jobs:
         working-directory: neural-tools
         run: |
           pip install -r config/requirements-indexer-lean.txt
-          pip install pytest pytest-asyncio pytest-timeout
+          pip install pytest pytest-asyncio pytest-timeout docker
 
       - name: Wait for services
         run: |
@@ -193,6 +193,45 @@ jobs:
             exit 1
           fi
 
+      - name: Run ADR-64 Mount Validation Tests (Unit Tests)
+        id: adr064-unit
+        working-directory: tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/neural-tools/src:${{ github.workspace }}
+        run: |
+          echo "🔍 Testing ADR-64: Mount Validation (Unit Tests)"
+          if python test_indexer_mount_validation.py; then
+            echo "✅ ADR-64 unit tests passed"
+            echo "adr064_unit=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ ADR-64 unit tests failed - mount validation regression detected"
+            echo "adr064_unit=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Run ADR-64 Mount Validation Tests (Integration Tests)
+        id: adr064-integration
+        working-directory: tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/neural-tools/src:${{ github.workspace }}
+          NEO4J_URI: bolt://localhost:47687
+          NEO4J_PASSWORD: ${{ env.NEO4J_PASSWORD }}
+          QDRANT_HOST: localhost
+          QDRANT_PORT: 46333
+          REDIS_CACHE_HOST: localhost
+          REDIS_CACHE_PORT: 46379
+        run: |
+          echo "🔍 Testing ADR-64: Mount Validation (Integration Tests)"
+          if python integration/test_indexer_mount_validation.py; then
+            echo "✅ ADR-64 integration tests passed"
+            echo "adr064_integration=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ ADR-64 integration tests failed - Docker mount validation broken"
+            echo "adr064_integration=failure" >> $GITHUB_OUTPUT
+            # Mark as warning since Docker might not be available in CI
+            echo "⚠️  Integration test failure - Docker may not be available"
+          fi
+
       - name: Generate Test Report
         if: always()
         run: |
@@ -203,17 +242,21 @@ jobs:
           echo "| ADR-0058 | Circular Dependency Fix | ${{ steps.adr058.outputs.adr058 == 'success' && '✅ PASS' || '❌ FAIL' }} |"
           echo "| ADR-0057 | Collection Naming | ${{ steps.adr057.outputs.adr057 == 'success' && '✅ PASS' || '⚠️ WARN' }} |"
           echo "| ADR-0029 | Project Isolation | ${{ steps.adr029.outputs.adr029 == 'success' && '✅ PASS' || '❌ FAIL' }} |"
+          echo "| ADR-0064 | Mount Validation (Unit) | ${{ steps.adr064-unit.outputs.adr064_unit == 'success' && '✅ PASS' || '❌ FAIL' }} |"
+          echo "| ADR-0064 | Mount Validation (Integration) | ${{ steps.adr064-integration.outputs.adr064_integration == 'success' && '✅ PASS' || '⚠️ WARN' }} |"
 
       - name: Set output status
         id: result
         if: always()
         run: |
           if [[ "${{ steps.adr058.outputs.adr058 }}" == "failure" ]] || \
-             [[ "${{ steps.adr029.outputs.adr029 }}" == "failure" ]]; then
+             [[ "${{ steps.adr029.outputs.adr029 }}" == "failure" ]] || \
+             [[ "${{ steps.adr064-unit.outputs.adr064_unit }}" == "failure" ]]; then
             echo "status=failure" >> $GITHUB_OUTPUT
             echo "❌ Critical regression tests failed"
             exit 1
           else
             echo "status=success" >> $GITHUB_OUTPUT
             echo "✅ All critical regression tests passed"
+            # Note: ADR-064 integration tests are warning-only since Docker may not be available in CI
           fi

@@ -17,11 +17,64 @@ import asyncio
 import docker
 import os
 import logging
-from typing import Dict, Optional, Any
+import hashlib
+import time
+import secrets
+import redis.asyncio as redis
+from redis.exceptions import LockError
+from typing import Dict, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def is_container_reusable(
+    container_attrs: dict,
+    requested_path: str,
+    required_env_vars: Optional[Dict[str, str]] = None
+) -> bool:
+    """
+    Pure function to validate if a container can be reused.
+    ADR-0063: Critical validation to prevent mount path regression.
+
+    Args:
+        container_attrs: The attrs dictionary from a Docker container
+        requested_path: The requested mount path
+        required_env_vars: Environment variables that must match (e.g., {'NEO4J_PASSWORD': 'value'})
+
+    Returns:
+        bool: True if container can be reused, False otherwise
+    """
+    # 1. Validate Mount Path
+    mounts = container_attrs.get('Mounts', [])
+    abs_requested_path = os.path.abspath(requested_path)
+
+    mount_valid = any(
+        m.get('Source') == abs_requested_path and
+        m.get('Destination') == '/workspace'
+        for m in mounts
+    )
+
+    if not mount_valid:
+        return False
+
+    # 2. Validate Environment Variables (if required)
+    if required_env_vars:
+        env_vars = container_attrs.get('Config', {}).get('Env', [])
+        env_dict = {}
+
+        for env_str in env_vars:
+            if '=' in env_str:
+                key, value = env_str.split('=', 1)
+                env_dict[key] = value
+
+        # Check all required env vars match
+        for key, expected_value in required_env_vars.items():
+            if env_dict.get(key) != expected_value:
+                return False
+
+    return True
 
 
 class IndexerOrchestrator:
@@ -29,6 +82,7 @@ class IndexerOrchestrator:
     Dedicated orchestrator for indexer container lifecycle management
     Implements ADR-0030 multi-container architecture
     Updated with ADR-0044 for dependency injection and container discovery
+    Updated with ADR-0060 for Graceful Ephemeral Containers pattern
     """
 
     def __init__(self, context_manager=None, max_concurrent: int = 8):
@@ -45,7 +99,11 @@ class IndexerOrchestrator:
         self.discovery_service = None  # Will be initialized with docker client
         self.active_indexers: Dict[str, dict] = {}  # project -> {container_id, last_activity, port}
         self.max_concurrent = max_concurrent
-        
+
+        # ADR-0060: Redis clients for distributed locking and caching
+        self.redis_client = None
+        self.redis_cache = None
+
         # Port allocation for indexer HTTP APIs
         self.port_base = 48100  # Start from 48100 for project indexers
         self.allocated_ports = set()  # Track allocated ports
@@ -57,8 +115,9 @@ class IndexerOrchestrator:
             'cpu_period': 100000
         }
         
-        # Idle timeout - containers stop after 1 hour of inactivity
-        self.idle_timeout = timedelta(hours=1)
+        # ADR-0060: Updated garbage collection - 7 days for stopped containers
+        self.gc_stopped_age = timedelta(days=7)  # How old stopped containers must be
+        self.gc_idle_timeout = timedelta(hours=1)  # Still stop containers after 1 hour idle
         self._cleanup_task = None
         self._lock = asyncio.Lock()  # Thread safety for container operations
         
@@ -72,25 +131,84 @@ class IndexerOrchestrator:
         
     async def initialize(self):
         """
-        Initialize Docker client and start background tasks
+        Initialize Docker client, Redis connections, and start background tasks
+        Updated with ADR-0060 for distributed coordination
         """
         try:
             self.docker_client = docker.from_env()
             # Verify Docker is accessible
             self.docker_client.ping()
 
+            # ADR-0064: Hardened Redis initialization with comprehensive error handling
+            await self._init_redis()
+
             # ADR-0044: Initialize container discovery service
+            # This must succeed even if Redis fails
             from servers.services.container_discovery import ContainerDiscoveryService
             self.discovery_service = ContainerDiscoveryService(self.docker_client)
 
-            logger.info("IndexerOrchestrator initialized with container discovery")
+            if self.redis_client:
+                logger.info("IndexerOrchestrator initialized with container discovery and Redis")
+            else:
+                logger.warning("[ADR-0064] IndexerOrchestrator initialized with container discovery only (Redis unavailable)")
 
             # Start background cleanup task
             self._cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
 
+            # ADR-0060: Start garbage collection task
+            self._gc_task = asyncio.create_task(self._garbage_collection_loop())
+
         except docker.errors.DockerException as e:
             logger.error(f"Failed to initialize Docker client: {e}")
             raise
+
+    async def _init_redis(self):
+        """
+        ADR-0064: Initialize Redis with comprehensive error handling
+        Falls back gracefully to local locks on any Redis error
+        """
+        redis_host = os.getenv('REDIS_CACHE_HOST', 'localhost')
+        redis_port = int(os.getenv('REDIS_CACHE_PORT', 46379))
+        redis_password = os.getenv('REDIS_CACHE_PASSWORD', 'cache-secret-key')
+
+        try:
+            self.redis_client = redis.Redis(
+                host=redis_host,
+                port=redis_port,
+                password=redis_password,
+                decode_responses=True,
+                socket_connect_timeout=5
+            )
+
+            # Test Redis connectivity
+            await self.redis_client.ping()
+            logger.info(f"[ADR-0060] Redis connected at {redis_host}:{redis_port}")
+
+        except redis.AuthenticationError as e:
+            logger.warning(f"[ADR-0064] Redis authentication failed at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
+
+        except redis.ResponseError as e:
+            logger.warning(f"[ADR-0064] Redis response error at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
+
+        except redis.ConnectionError as e:
+            logger.warning(f"[ADR-0064] Redis connection failed at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
+
+        except redis.TimeoutError as e:
+            logger.warning(f"[ADR-0064] Redis timeout at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
+
+        except Exception as e:
+            # Catch-all for any other Redis errors
+            logger.warning(f"[ADR-0064] Unexpected Redis error at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
     
     def _allocate_port(self) -> int:
         """Allocate a unique port for an indexer container"""
@@ -111,11 +229,91 @@ class IndexerOrchestrator:
         if project_name in self.active_indexers:
             return self.active_indexers[project_name].get('port')
         return None
-            
+
+    def _generate_unique_container_name(self, project_name: str) -> str:
+        """
+        Generate a unique container name with timestamp and random suffix
+        ADR-0060: Prevents naming conflicts
+
+        Format: indexer-{project}-{timestamp}-{random}
+        Example: indexer-myapp-1726123456-a4f2
+        """
+        timestamp = int(time.time())
+        random_suffix = secrets.token_hex(2)  # 4 hex chars
+        return f"indexer-{project_name}-{timestamp}-{random_suffix}"
+
+    async def get_indexer_endpoint(self, project_name: str) -> Optional[str]:
+        """
+        Get the endpoint for a project's indexer with Redis caching
+        ADR-0060: Cached discovery for performance
+
+        Returns:
+            Endpoint URL if container exists, None otherwise
+        """
+        cache_key = f"endpoint:{project_name}"
+
+        # Try Redis cache first
+        if self.redis_client:
+            try:
+                cached = await self.redis_client.get(cache_key)
+                if cached:
+                    logger.debug(f"[ADR-0060] Cache hit for {project_name}: {cached}")
+                    return cached
+            except Exception as e:
+                logger.warning(f"[ADR-0060] Cache read failed: {e}")
+
+        # Discover container by labels
+        try:
+            containers = self.docker_client.containers.list(
+                filters={'label': f'com.l9.project={project_name}'}
+            )
+
+            if not containers:
+                return None
+
+            # Get the first running container
+            for container in containers:
+                if container.status == 'running':
+                    # Get the mapped port
+                    ports = container.ports.get('8080/tcp')
+                    if ports and len(ports) > 0:
+                        port = ports[0]['HostPort']
+                        endpoint = f"http://localhost:{port}"
+
+                        # Cache for 30 seconds
+                        if self.redis_client:
+                            try:
+                                await self.redis_client.setex(
+                                    cache_key,
+                                    30,  # 30 second TTL
+                                    endpoint
+                                )
+                            except Exception as e:
+                                logger.warning(f"[ADR-0060] Cache write failed: {e}")
+
+                        return endpoint
+        except Exception as e:
+            logger.error(f"[ADR-0060] Discovery failed: {e}")
+
+        return None
+
+    async def _invalidate_cache(self, project_name: str):
+        """
+        Invalidate Redis cache after state changes
+        ADR-0060: Explicit cache invalidation
+        """
+        if self.redis_client:
+            try:
+                cache_key = f"endpoint:{project_name}"
+                await self.redis_client.delete(cache_key)
+                logger.debug(f"[ADR-0060] Cache invalidated for {project_name}")
+            except Exception as e:
+                logger.warning(f"[ADR-0060] Cache invalidation failed: {e}")
+
     async def ensure_indexer(self, project_name: str, project_path: str) -> str:
         """
         Ensure indexer is running for project, with resource limits
-        Updated with ADR-0044 to use ContainerDiscoveryService
+        Updated with ADR-0060 for Graceful Ephemeral Containers pattern
 
         Args:
             project_name: Name of the project (used for container naming)
@@ -128,158 +326,329 @@ class IndexerOrchestrator:
             ValueError: If project path is invalid or insecure
             docker.errors.DockerException: If container operations fail
         """
-        async with self._lock:
-            # ADR-0044: Use discovery service to find or create container
-            if self.discovery_service and self.context_manager:
-                logger.info(f"🔍 Using discovery service for project: {project_name}")
+        # ADR-0060: Use Redis distributed lock for multi-instance coordination
+        lock_key = f"lock:project:{project_name}"
+        lock_acquired = False
 
-                # Update context manager's current project path if needed
-                if not self.context_manager.current_project_path:
-                    self.context_manager.current_project_path = Path(project_path)
-
-                # Use discovery service to get or create container
-                container_info = await self.discovery_service.get_or_create_container(
-                    project_name,
-                    self.context_manager
-                )
-
-                # Update active indexers tracking
-                self.active_indexers[project_name] = {
-                    'container_id': container_info['container_id'],
-                    'last_activity': datetime.now(),
-                    'project_path': project_path,
-                    'port': container_info['port']
-                }
-
-                logger.info(f"✅ Container ready: {container_info['container_name']} on port {container_info['port']}")
-                return container_info['container_id']
-
-            # Fallback to original logic if no discovery service
-            logger.warning("⚠️ No discovery service, using legacy container creation")
-
-            # ADR-0048: Idempotent container management - remove any existing indexer first
+        if self.redis_client:
             try:
-                existing_containers = self.docker_client.containers.list(
-                    all=True,  # Include stopped containers
-                    filters={'name': f'indexer-{project_name}'}
-                )
-                for container in existing_containers:
-                    logger.info(f"[ADR-0048] Removing existing indexer for idempotency: {container.id[:12]}")
-                    try:
-                        # Graceful stop first if running
-                        if container.status == 'running':
-                            container.stop(timeout=10)
-                    except:
-                        pass  # Container might already be stopped
-                    container.remove(force=True)
-                    # Clean up tracking if present
-                    if project_name in self.active_indexers:
-                        port = self.active_indexers[project_name].get('port')
-                        if port:
-                            self._release_port(port)
-                        del self.active_indexers[project_name]
-            except docker.errors.NotFound:
-                pass  # No existing container
+                # Try to acquire distributed lock with 60s timeout
+                async with self.redis_client.lock(
+                    lock_key,
+                    timeout=60,  # Lock expires after 60 seconds
+                    blocking_timeout=5  # Wait up to 5 seconds to acquire
+                ):
+                    lock_acquired = True
+                    logger.info(f"[ADR-0060] Acquired distributed lock for {project_name}")
+                    return await self._ensure_indexer_internal(project_name, project_path)
+            except LockError as e:
+                logger.warning(f"[ADR-0060] Failed to acquire lock for {project_name}: {e}")
+                # Fall through to local lock
             except Exception as e:
-                logger.warning(f"[ADR-0048] Error during cleanup: {e}")
+                logger.error(f"[ADR-0060] Redis lock error: {e}")
+                # Fall through to local lock
 
-            # Check if already running (this should now always be false due to cleanup above)
-            if project_name in self.active_indexers:
-                self.active_indexers[project_name]['last_activity'] = datetime.now()
-                container_id = self.active_indexers[project_name]['container_id']
+        # Fallback to local asyncio lock if Redis unavailable
+        if not lock_acquired:
+            logger.info(f"[ADR-0060] Using local lock for {project_name} (Redis unavailable)")
+            async with self._lock:
+                return await self._ensure_indexer_internal(project_name, project_path)
 
-                # Verify container is still running
-                try:
-                    container = self.docker_client.containers.get(container_id)
-                    if container.status == 'running':
-                        logger.debug(f"Indexer for {project_name} already running: {container_id[:12]}")
-                        return container_id
-                except docker.errors.NotFound:
-                    logger.warning(f"Container {container_id[:12]} not found, will recreate")
-                    del self.active_indexers[project_name]
-                    
-            # Check concurrency limit
-            if len(self.active_indexers) >= self.max_concurrent:
-                await self._stop_least_recently_used()
-            
-            # Validate path security (prevent traversal attacks)
-            project_path = os.path.abspath(project_path)
-            if not os.path.exists(project_path):
-                raise ValueError(f"Project path does not exist: {project_path}")
-                
-            if not os.path.isdir(project_path):
-                raise ValueError(f"Project path is not a directory: {project_path}")
-                
-            # Security: Validate against whitelist
-            if not any(project_path.startswith(prefix) for prefix in self.allowed_mount_prefixes):
-                logger.warning(f"Project path outside whitelist: {project_path}")
-                # For now, log warning but allow (can be made stricter)
-                
-            # Spawn container with security hardening
+    async def _ensure_indexer_internal(self, project_name: str, project_path: str) -> str:
+        """
+        Internal method to ensure indexer (assumes lock is held)
+        ADR-0060: Core logic separated for lock flexibility
+        ADR-0063: Added mount verification before container reuse
+        """
+        # First check if container already exists using label-based discovery
+        existing_container = await self._discover_existing_container(project_name)
+        if existing_container:
+            logger.info(f"[ADR-0060] Found existing container for {project_name}: {existing_container['id'][:12]}")
+
+            # ADR-0063: Verify mount matches requested path before reuse
             try:
-                # Allocate a unique port for this indexer
-                indexer_port = self._allocate_port()
-                logger.info(f"Starting indexer container for project: {project_name} on port {indexer_port}")
-                
-                container = self.docker_client.containers.run(
-                    image='l9-neural-indexer:production',
-                    name=f'indexer-{project_name}',
-                    environment={
-                        'PROJECT_NAME': project_name,
-                        'PROJECT_PATH': '/workspace',  # ADR-0048: ALWAYS use container path, never host path
-                        # Use host.docker.internal for container->host communication
-                        'NEO4J_URI': 'bolt://host.docker.internal:47687',
-                        'NEO4J_USERNAME': 'neo4j',
-                        'NEO4J_PASSWORD': 'graphrag-password',
-                        'QDRANT_HOST': 'host.docker.internal',
-                        'QDRANT_PORT': '46333',
-                        'REDIS_CACHE_HOST': 'host.docker.internal',
-                        'REDIS_CACHE_PORT': '46379',
-                        'REDIS_QUEUE_HOST': 'host.docker.internal',
-                        'REDIS_QUEUE_PORT': '46380',
-                        'EMBEDDING_SERVICE_HOST': 'host.docker.internal',
-                        'EMBEDDING_SERVICE_PORT': '48000',
-                        # Performance tuning
-                        'BATCH_SIZE': '10',
-                        'DEBOUNCE_INTERVAL': '2.0',
-                        'MAX_QUEUE_SIZE': '1000',
-                        'EMBED_DIM': '768',
-                        'STRUCTURE_EXTRACTION_ENABLED': 'true',
-                        'INITIAL_INDEX': 'true',
-                        'LOG_LEVEL': 'INFO',
-                        # File watching optimization for Docker
-                        'WATCHDOG_FORCE_POLLING': '1'
-                    },
-                    volumes={
-                        project_path: {'bind': '/workspace', 'mode': 'ro'}  # Read-only mount
-                    },
-                    ports={
-                        '8080/tcp': indexer_port  # Map container port 8080 to allocated host port
-                    },
-                    network='l9-graphrag-network',
-                    detach=True,
-                    auto_remove=True,  # Clean up on stop
-                    **self.resource_limits,
-                    security_opt=['no-new-privileges'],
-                    user='1000:1000'  # Non-root user
+                container = self.docker_client.containers.get(existing_container['id'])
+                mounts = container.attrs.get('Mounts', [])
+
+                # Check if mount path matches
+                requested_path = os.path.abspath(project_path)
+                mount_valid = any(
+                    m.get('Source') == requested_path and
+                    m.get('Destination') == '/workspace'
+                    for m in mounts
                 )
-                
-                self.active_indexers[project_name] = {
-                    'container_id': container.id,
-                    'last_activity': datetime.now(),
-                    'project_path': project_path,
-                    'port': indexer_port
-                }
-                
-                logger.info(f"Indexer container started for {project_name}: {container.id[:12]} on port {indexer_port}")
-                return container.id
-                
-            except docker.errors.ImageNotFound:
-                logger.error("Indexer image 'l9-neural-indexer:production' not found. Please build it first.")
-                raise
-            except docker.errors.APIError as e:
-                logger.error(f"Docker API error while starting container: {e}")
-                raise
+
+                if mount_valid:
+                    # ADR-0063: Also check if environment variables match
+                    env_vars = container.attrs.get('Config', {}).get('Env', [])
+                    env_dict = {}
+                    for env_str in env_vars:
+                        if '=' in env_str:
+                            key, value = env_str.split('=', 1)
+                            env_dict[key] = value
+
+                    # Check critical environment variables
+                    current_neo4j_pass = os.getenv('NEO4J_PASSWORD', 'graphrag-password')
+                    current_qdrant_url = os.getenv('QDRANT_URL', 'http://localhost:46333')
+
+                    env_valid = (
+                        env_dict.get('NEO4J_PASSWORD') == current_neo4j_pass and
+                        env_dict.get('QDRANT_URL') == current_qdrant_url
+                    )
+
+                    if env_valid:
+                        logger.info(f"[ADR-0063] Mount and env verified, reusing container for {project_name}")
+                        logger.info(f"  Mount path: {requested_path} -> /workspace")
+
+                        # Update tracking with verified path
+                        self.active_indexers[project_name] = {
+                            'container_id': existing_container['id'],
+                            'last_activity': datetime.now(),
+                            'project_path': project_path,
+                            'port': existing_container.get('port')
+                        }
+
+                        # Invalidate cache to force fresh discovery
+                        await self._invalidate_cache(project_name)
+
+                        return existing_container['id']
+                    else:
+                        # Environment mismatch - remove and recreate
+                        logger.warning(f"[ADR-0063] Environment variable mismatch for {project_name}")
+                        logger.warning(f"  Container has NEO4J_PASSWORD={env_dict.get('NEO4J_PASSWORD', 'not set')}")
+                        logger.warning(f"  Current expects NEO4J_PASSWORD={current_neo4j_pass}")
+                        logger.info(f"[ADR-0063] Removing container with wrong environment")
+
+                        container.remove(force=True)
+                        await self._invalidate_cache(project_name)
+                        # Fall through to create new container
+                else:
+                    # Mount mismatch - remove and recreate
+                    logger.warning(f"[ADR-0063] Mount mismatch detected for {project_name}")
+                    logger.warning(f"  Expected: {requested_path}")
+                    actual_mounts = [m.get('Source') for m in mounts if m.get('Destination') == '/workspace']
+                    logger.warning(f"  Actual: {actual_mounts}")
+                    logger.info(f"[ADR-0063] Removing container with wrong mount")
+
+                    container.remove(force=True)
+                    await self._invalidate_cache(project_name)
+                    # Fall through to create new container
+
+            except docker.errors.NotFound:
+                logger.warning(f"[ADR-0063] Container {existing_container['id'][:12]} not found, will create new")
+                await self._invalidate_cache(project_name)
+                # Fall through to create new container
+            except Exception as e:
+                logger.error(f"[ADR-0063] Error verifying container mount: {e}")
+                # On any error, remove and recreate for safety
+                try:
+                    container.remove(force=True)
+                except:
+                    pass
+                await self._invalidate_cache(project_name)
+                # Fall through to create new container
+
+        # No existing container, create a new one
+        logger.info(f"[ADR-0060] Creating new container for {project_name}")
+
+        # Validate path security
+        project_path = os.path.abspath(project_path)
+        if not os.path.exists(project_path):
+            raise ValueError(f"Project path does not exist: {project_path}")
+        if not os.path.isdir(project_path):
+            raise ValueError(f"Project path is not a directory: {project_path}")
+
+        # Check concurrency limit
+        if len(self.active_indexers) >= self.max_concurrent:
+            await self._stop_least_recently_used()
+
+        # ADR-0044: Use ContainerDiscoveryService if available
+        if self.discovery_service:
+            logger.info(f"[ADR-0044] Using ContainerDiscoveryService for container creation")
+            try:
+                # Let discovery service handle container lifecycle
+                container_info = await self.discovery_service.discover_project_container(project_name)
+                if container_info:
+                    # Found existing container through discovery service
+                    logger.info(f"[ADR-0044] Discovery service found container: {container_info.get('container_id', 'unknown')[:12]}")
+                    # Verify mount before using (ADR-0063)
+                    container = self.docker_client.containers.get(container_info['container_id'])
+                    mounts = container.attrs.get('Mounts', [])
+                    requested_path = os.path.abspath(project_path)
+                    mount_valid = any(
+                        m.get('Source') == requested_path and
+                        m.get('Destination') == '/workspace'
+                        for m in mounts
+                    )
+
+                    if mount_valid:
+                        logger.info(f"[ADR-0044] Discovery service container has correct mount")
+                        return container_info['container_id']
+                    else:
+                        logger.warning(f"[ADR-0044] Discovery service container has wrong mount, will recreate")
+                        container.remove(force=True)
+            except Exception as e:
+                logger.warning(f"[ADR-0044] Discovery service error: {e}, falling back to direct creation")
+
+        # Create container with unique name and labels
+        container_name = self._generate_unique_container_name(project_name)
+        container = await self._create_container(
+            project_name=project_name,
+            container_name=container_name,
+            project_path=project_path
+        )
+
+        # Update tracking
+        self.active_indexers[project_name] = {
+            'container_id': container.id,
+            'last_activity': datetime.now(),
+            'project_path': project_path,
+            'port': container.attrs['HostConfig']['PortBindings']['8080/tcp'][0]['HostPort']
+        }
+
+        # Invalidate cache after creating new container
+        await self._invalidate_cache(project_name)
+
+        logger.info(f"[ADR-0060] ✅ Container created: {container_name} ({container.id[:12]})")
+        return container.id
+
+    async def _discover_existing_container(self, project_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Discover existing container by project label
+        ADR-0060: Label-based discovery instead of name-based
+        """
+        try:
+            containers = self.docker_client.containers.list(
+                filters={'label': f'com.l9.project={project_name}'}
+            )
+
+            for container in containers:
+                if container.status == 'running':
+                    # Get port mapping
+                    ports = container.ports.get('8080/tcp')
+                    port = None
+                    if ports and len(ports) > 0:
+                        port = int(ports[0]['HostPort'])
+
+                    return {
+                        'id': container.id,
+                        'name': container.name,
+                        'port': port
+                    }
+        except Exception as e:
+            logger.error(f"[ADR-0060] Discovery error: {e}")
+
+        return None
+
+    async def _create_container(self, project_name: str, container_name: str, project_path: str):
+        """
+        Create a new indexer container with ADR-0060 specifications
+        """
+        # Let Docker allocate the port dynamically
+        logger.info(f"[ADR-0060] Creating container {container_name} for project {project_name}")
+
+        # Detect if this is a test container
+        test_patterns = ['test-', 'adr63-', 'adr60-', 'mount-test']
+        is_test = any(pattern in project_name for pattern in test_patterns)
+
+        labels = {
+            'com.l9.managed': 'true',
+            'com.l9.project': project_name,
+            'com.l9.created': str(int(time.time()))
+        }
+
+        # Add test label if this is a test container
+        if is_test:
+            labels['com.l9.test'] = 'true'
+            logger.info(f"[TEST] Marking {container_name} as test container")
+
+        container = self.docker_client.containers.run(
+            image='l9-neural-indexer:production',
+            name=container_name,
+            labels=labels,
+            environment={
+                'PROJECT_NAME': project_name,
+                'PROJECT_PATH': '/workspace',
+                # Use host.docker.internal for container->host communication
+                'NEO4J_URI': os.environ.get('NEO4J_URI', 'bolt://host.docker.internal:47687'),
+                'NEO4J_USERNAME': os.environ.get('NEO4J_USERNAME', 'neo4j'),
+                'NEO4J_PASSWORD': os.environ.get('NEO4J_PASSWORD', 'graphrag-password'),
+                'QDRANT_HOST': os.environ.get('QDRANT_HOST', 'host.docker.internal'),
+                'QDRANT_PORT': os.environ.get('QDRANT_PORT', '46333'),
+                'REDIS_CACHE_HOST': os.environ.get('REDIS_CACHE_HOST', 'host.docker.internal'),
+                'REDIS_CACHE_PORT': os.environ.get('REDIS_CACHE_PORT', '46379'),
+                'REDIS_QUEUE_HOST': os.environ.get('REDIS_QUEUE_HOST', 'host.docker.internal'),
+                'REDIS_QUEUE_PORT': os.environ.get('REDIS_QUEUE_PORT', '46380'),
+                'EMBEDDING_SERVICE_HOST': os.environ.get('EMBEDDING_SERVICE_HOST', 'host.docker.internal'),
+                'EMBEDDING_SERVICE_PORT': os.environ.get('EMBEDDING_SERVICE_PORT', '48000'),
+                # Performance tuning
+                'BATCH_SIZE': '10',
+                'DEBOUNCE_INTERVAL': '2.0',
+                'MAX_QUEUE_SIZE': '1000',
+                'EMBED_DIM': '768',
+                'STRUCTURE_EXTRACTION_ENABLED': 'true',
+                'INITIAL_INDEX': 'true',
+                'LOG_LEVEL': 'INFO',
+                # File watching optimization for Docker
+                'WATCHDOG_FORCE_POLLING': '1'
+            },
+            volumes={
+                project_path: {'bind': '/workspace', 'mode': 'ro'}  # Read-only mount
+            },
+            ports={
+                '8080/tcp': None  # Let Docker allocate port dynamically
+            },
+            network='l9-graphrag-network',
+            detach=True,
+            auto_remove=True,  # Clean up on stop
+            **self.resource_limits,
+            security_opt=['no-new-privileges'],
+            user='1000:1000'  # Non-root user
+        )
+
+        return container
+
+    async def _garbage_collection_loop(self):
+        """
+        ADR-0060: Garbage collection with 7-day policy for stopped containers
+        """
+        while True:
+            try:
+                await asyncio.sleep(3600)  # Check every hour
+                await self.garbage_collect_containers()
+            except Exception as e:
+                logger.error(f"[ADR-0060] GC error: {e}")
+
+    async def garbage_collect_containers(self):
+        """
+        ADR-0060: Clean up stopped containers older than 7 days
+        """
+        try:
+            now = int(time.time())
+            seven_days_ago = now - (7 * 24 * 3600)
+
+            containers = self.docker_client.containers.list(
+                all=True,
+                filters={'label': 'com.l9.managed=true'}
+            )
+
+            for container in containers:
+                # Skip running containers
+                if container.status == 'running':
+                    continue
+
+                # Check age via label
+                created_str = container.labels.get('com.l9.created', '0')
+                try:
+                    created = int(created_str)
+                    if created < seven_days_ago:
+                        logger.info(f"[ADR-0060] GC removing old container: {container.name}")
+                        container.remove(force=True)
+                except ValueError:
+                    logger.warning(f"[ADR-0060] Invalid creation time for {container.name}")
+        except Exception as e:
+            logger.error(f"[ADR-0060] GC failed: {e}")
+
                 
     async def _idle_cleanup_loop(self):
         """
@@ -295,7 +664,7 @@ class IndexerOrchestrator:
                     to_remove = []
                     
                     for project, info in self.active_indexers.items():
-                        if now - info['last_activity'] > self.idle_timeout:
+                        if now - info['last_activity'] > self.gc_idle_timeout:
                             logger.info(f"Indexer for {project} idle for > 1 hour, stopping")
                             to_remove.append(project)
                             

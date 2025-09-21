@@ -5,7 +5,6 @@ Tests the circular dependency and race condition fixes
 """
 
 import asyncio
-import tempfile
 import json
 import sys
 import time

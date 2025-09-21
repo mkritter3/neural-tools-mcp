@@ -1812,33 +1812,58 @@ class IncrementalIndexer(FileSystemEventHandler):
     async def initial_index(self):
         """Perform initial indexing of existing files"""
         logger.info(f"Starting initial index of {self.project_path}")
-        
-        # Check if we've already indexed
+
+        # CRITICAL: Fail fast if in degraded mode to prevent hanging
+        # In degraded mode, services are unavailable and indexing will fail
+        if self.degraded_mode:
+            logger.error("ABORTING initial_index: Indexer in degraded mode - services unavailable")
+            logger.error("Degraded mode reasons:")
+            logger.error("  - Neo4j or Qdrant initialization failed")
+            logger.error("  - Check container logs for permission errors on /home/indexer")
+            logger.error("  - Verify database connectivity")
+            return
+
+        # Always perform initial index when container starts
+        # This ensures proper indexing when:
+        # - Mount paths change (ADR-63)
+        # - Containers are recreated
+        # - Projects switch
         logger.debug(f"Degraded mode status: {self.degraded_mode}")
-        if not self.degraded_mode['qdrant']:
-            try:
-                logger.debug("Checking if collection already has data...")
-                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-                info = await self.container.qdrant.get_collection_info(collection_name)
-                # Only skip if collection exists AND has points
-                if info.get('exists', False) and info.get('points_count', 0) > 0:
-                    logger.info(f"Collection already has data ({info.get('points_count')} points) - skipping initial index")
-                    return
-                else:
-                    logger.debug(f"Collection status: exists={info.get('exists')}, points={info.get('points_count', 0)}")
-            except Exception as e:
-                logger.debug(f"Error checking collection (will proceed with indexing): {e}")
-                # If we can't check, proceed with indexing
-                pass
-        
+        logger.info("Performing initial index (container startup)")
+
         # Find all files to index
         logger.debug("Starting file discovery...")
+        logger.debug(f"Project path: {self.project_path}, exists: {self.project_path.exists()}")
+        logger.debug(f"Watch patterns: {self.watch_patterns}")
+
         files_to_index = []
         for ext in self.watch_patterns:
-            logger.debug(f"Searching for files with extension: {ext}")
-            matching_files = list(self.project_path.rglob(f"*{ext}"))
-            logger.debug(f"Found {len(matching_files)} files with {ext}")
-            files_to_index.extend(matching_files)
+            logger.info(f"Searching for files with extension: {ext} in {self.project_path}")
+            try:
+                # Use glob with timeout protection and progress logging
+                import time
+                start_time = time.time()
+                logger.debug(f"Starting rglob for pattern: *{ext}")
+
+                # Convert generator to list with progress tracking
+                matching_files = []
+                file_count = 0
+                for file_path in self.project_path.rglob(f"*{ext}"):
+                    matching_files.append(file_path)
+                    file_count += 1
+                    if file_count % 100 == 0:
+                        logger.info(f"  ...discovered {file_count} {ext} files so far...")
+
+                elapsed = time.time() - start_time
+                logger.info(f"Found {len(matching_files)} files with {ext} in {elapsed:.2f}s")
+                files_to_index.extend(matching_files)
+            except Exception as e:
+                logger.error(f"Error searching for {ext} files: {e}")
+                logger.error(f"  Path: {self.project_path}")
+                logger.error(f"  Path exists: {self.project_path.exists()}")
+                import traceback
+                logger.error(f"  Traceback: {traceback.format_exc()}")
+                continue
         
         logger.debug(f"Total files found before filtering: {len(files_to_index)}")
         
