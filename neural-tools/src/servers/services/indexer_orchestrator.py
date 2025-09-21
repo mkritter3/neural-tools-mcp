@@ -352,6 +352,34 @@ class IndexerOrchestrator:
         if len(self.active_indexers) >= self.max_concurrent:
             await self._stop_least_recently_used()
 
+        # ADR-0044: Use ContainerDiscoveryService if available
+        if self.discovery_service:
+            logger.info(f"[ADR-0044] Using ContainerDiscoveryService for container creation")
+            try:
+                # Let discovery service handle container lifecycle
+                container_info = await self.discovery_service.discover_project_container(project_name)
+                if container_info:
+                    # Found existing container through discovery service
+                    logger.info(f"[ADR-0044] Discovery service found container: {container_info.get('container_id', 'unknown')[:12]}")
+                    # Verify mount before using (ADR-0063)
+                    container = self.docker_client.containers.get(container_info['container_id'])
+                    mounts = container.attrs.get('Mounts', [])
+                    requested_path = os.path.abspath(project_path)
+                    mount_valid = any(
+                        m.get('Source') == requested_path and
+                        m.get('Destination') == '/workspace'
+                        for m in mounts
+                    )
+
+                    if mount_valid:
+                        logger.info(f"[ADR-0044] Discovery service container has correct mount")
+                        return container_info['container_id']
+                    else:
+                        logger.warning(f"[ADR-0044] Discovery service container has wrong mount, will recreate")
+                        container.remove(force=True)
+            except Exception as e:
+                logger.warning(f"[ADR-0044] Discovery service error: {e}, falling back to direct creation")
+
         # Create container with unique name and labels
         container_name = self._generate_unique_container_name(project_name)
         container = await self._create_container(

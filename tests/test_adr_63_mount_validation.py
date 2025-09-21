@@ -16,9 +16,9 @@ from pathlib import Path
 
 # Add parent directory to path for imports
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'neural-tools', 'src'))
 
-from neural_tools.src.servers.services.indexer_orchestrator import IndexerOrchestrator
+from servers.services.indexer_orchestrator import IndexerOrchestrator
 
 
 class TestADR63MountValidation:
@@ -28,7 +28,8 @@ class TestADR63MountValidation:
     def setup_class(cls):
         """Initialize test environment"""
         cls.docker_client = docker.from_env()
-        cls.orchestrator = IndexerOrchestrator(cls.docker_client)
+        cls.orchestrator = IndexerOrchestrator()
+        cls.orchestrator.docker_client = cls.docker_client  # Set docker client explicitly
         cls.test_dirs = []
 
     @classmethod
