@@ -29,6 +29,54 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def is_container_reusable(
+    container_attrs: dict,
+    requested_path: str,
+    required_env_vars: Optional[Dict[str, str]] = None
+) -> bool:
+    """
+    Pure function to validate if a container can be reused.
+    ADR-0063: Critical validation to prevent mount path regression.
+
+    Args:
+        container_attrs: The attrs dictionary from a Docker container
+        requested_path: The requested mount path
+        required_env_vars: Environment variables that must match (e.g., {'NEO4J_PASSWORD': 'value'})
+
+    Returns:
+        bool: True if container can be reused, False otherwise
+    """
+    # 1. Validate Mount Path
+    mounts = container_attrs.get('Mounts', [])
+    abs_requested_path = os.path.abspath(requested_path)
+
+    mount_valid = any(
+        m.get('Source') == abs_requested_path and
+        m.get('Destination') == '/workspace'
+        for m in mounts
+    )
+
+    if not mount_valid:
+        return False
+
+    # 2. Validate Environment Variables (if required)
+    if required_env_vars:
+        env_vars = container_attrs.get('Config', {}).get('Env', [])
+        env_dict = {}
+
+        for env_str in env_vars:
+            if '=' in env_str:
+                key, value = env_str.split('=', 1)
+                env_dict[key] = value
+
+        # Check all required env vars match
+        for key, expected_value in required_env_vars.items():
+            if env_dict.get(key) != expected_value:
+                return False
+
+    return True
+
+
 class IndexerOrchestrator:
     """
     Dedicated orchestrator for indexer container lifecycle management

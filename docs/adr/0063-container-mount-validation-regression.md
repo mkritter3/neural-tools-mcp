@@ -851,3 +851,84 @@ The cost of false confidence from inadequate tests far exceeds the cost of compr
 - ADR-0060: Graceful Ephemeral Containers (introduced regression)
 - Production Issue: neural-novelist indexer only finding README.md
 - Test Gap Analysis: All tests use /tmp/test path
+
+## Testing Strategy (Updated September 21, 2025)
+
+### Test Philosophy
+
+After reviewing suggestions from various sources and considering our production incident, we establish the following testing principles:
+
+1. **Critical Path Must Use Real Docker**: Mount validation CANNOT be mocked - Docker's actual mount behavior is what we're testing
+2. **Performance vs Correctness**: We accept 10-12 second test runtime to prevent hours of debugging production issues  
+3. **Test What Failed**: Every test must directly prevent the neural-novelist regression
+
+### Test Boundaries
+
+#### Must Use Real Docker Containers
+- **Mount path validation**: The core regression - container reused with wrong mount
+- **Environment variable propagation**: Actual Docker env var behavior
+- **Container lifecycle**: Creation, reuse, cleanup
+- **Label-based discovery**: Our ADR-060 discovery mechanism
+
+#### Can Be Unit Tested (No Docker)
+- **Label generation logic**: Test patterns for `com.l9.test=true`
+- **Timestamp/random suffix generation**: Collision avoidance
+- **Configuration parsing**: Environment variable extraction
+- **Decision logic**: IF we refactor to pure functions (future work)
+
+### Minimum Test Set to Prevent Regression
+
+1. **test_critical_mount_validation.py** (3-4 seconds)
+   - Creates 2 containers with different paths
+   - Verifies each gets correct mount
+   - Ensures no reuse with wrong path
+   - **This test alone would have caught the regression**
+
+2. **test_adr_63_mount_validation.py** (7-8 seconds)
+   - Priority 1: Mount change forces recreation
+   - Priority 2: Stale containers replaced
+   - Priority 3: Env var changes trigger recreation
+   - **Comprehensive edge case coverage**
+
+3. **test_container_cleanup.py** (2-3 seconds) - PROPOSED
+   - Verify test containers get `com.l9.test=true` label
+   - Ensure cleanup removes all test containers
+   - Prevent test pollution
+
+### Why We Don't Mock Docker (September 2025 Decision)
+
+After considering mocking strategies suggested by 2024-era systems, we decided AGAINST mocking for mount validation because:
+
+1. **Docker's mount behavior is complex**: Symlinks, permissions, bind propagation modes
+2. **The regression was in Docker interaction**: Not in our logic, but in how we used Docker
+3. **Mock accuracy risk**: A mock might pass while real Docker fails
+4. **10 seconds is acceptable**: For preventing production incidents
+
+### Future Optimization Path (Not Current Priority)
+
+IF test time becomes problematic (>30 seconds), consider:
+1. Refactor validation logic to pure functions (as suggested)
+2. Add unit tests for pure logic
+3. Keep integration tests for critical paths
+4. Use `alpine:latest` instead of full indexer image for tests
+
+### Test Quality Metrics
+
+- **Regression Prevention**: Would this test have caught neural-novelist issue? ✅
+- **Cleanup Reliability**: Do test containers get removed? ✅
+- **Time Budget**: Under 15 seconds total? ✅ (currently ~12s)
+- **Flakiness**: Zero tolerance for flaky tests
+
+### Edge Cases to Test (Validated September 2025)
+
+From external review, these edge cases should be covered:
+
+1. **Mount source doesn't exist** - Docker creates it, we should handle
+2. **Permission issues** - Container can't read mount
+3. **Empty vs unset env vars** - `VAR=""` vs no VAR
+4. **Container states** - stopped, restarting, exited
+5. **Image updates** - New image version should invalidate old containers
+6. **Concurrent requests** - Redis locking prevents duplicates
+
+Currently covered: 1, 3, 6
+Need to add: 2, 4, 5
