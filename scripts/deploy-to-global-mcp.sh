@@ -161,8 +161,8 @@ run_local_validation() {
 
     TESTS_DIR="$SOURCE_DIR/../tests"
     CRITICAL_TESTS=(
-        "test_critical_mount_validation.py"  # ADR-63: Mount validation regression
-        "test_adr_63_mount_validation.py"     # ADR-63: Priority tests
+        "test_indexer_mount_validation.py"     # ADR-64: Unit tests for mount validation
+        "integration/test_indexer_mount_validation.py"  # ADR-64: Integration tests
     )
 
     # Track test results
@@ -173,7 +173,8 @@ run_local_validation() {
         if [[ -f "$TESTS_DIR/$test_file" ]]; then
             echo -e "${YELLOW}Running critical test: $test_file${NC}"
             cd "$TESTS_DIR"
-            if python3 "$test_file" 2>&1 | tee /tmp/test_output.log | grep -q "PASSED\|✅.*PASS"; then
+            # Use exit code instead of grep for reliability
+            if python3 "$test_file" > /tmp/test_output.log 2>&1; then
                 echo -e "${GREEN}✅ $test_file PASSED${NC}"
                 PASSED_TESTS+=("$test_file")
             else

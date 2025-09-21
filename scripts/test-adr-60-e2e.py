@@ -154,9 +154,11 @@ class ADR60TestSuite:
 
         project_name = "test-concurrent-same"
 
-        # Create 5 concurrent tasks for same project
+        # ADR-64: Use SAME path for concurrent requests to test deduplication
+        test_path = tempfile.mkdtemp(prefix='test-concurrent-')
+        # Create 5 concurrent tasks for same project AND same path
         tasks = [
-            self.orchestrator.ensure_indexer(project_name, tempfile.mkdtemp(prefix='test-'))
+            self.orchestrator.ensure_indexer(project_name, test_path)
             for _ in range(5)
         ]
 
@@ -362,13 +364,13 @@ class ADR60TestSuite:
                 logger.info("  ✅ No container created while lock held")
 
         # Now lock is released, should work
-        result = await self.orchestrator.ensure_indexer(project_name, tempfile.mkdtemp(prefix='test-')
-# ADR-63: Verify mount is correct
-container_obj = self.docker_client.containers.get(result)
-mounts = container_obj.attrs.get('Mounts', [])
-mount_source = next((m['Source'] for m in mounts if m['Destination'] == '/workspace'), None)
-assert mount_source is not None, "No workspace mount found!"
-)
+        result = await self.orchestrator.ensure_indexer(project_name, tempfile.mkdtemp(prefix='test-'))
+        # ADR-63: Verify mount is correct
+        container_obj = self.docker_client.containers.get(result)
+        mounts = container_obj.attrs.get('Mounts', [])
+        mount_source = next((m['Source'] for m in mounts if m['Destination'] == '/workspace'), None)
+        assert mount_source is not None, "No workspace mount found!"
+
         if result:
             logger.info(f"  ✅ Container created after lock release: {result[:12]}")
             return True
@@ -399,7 +401,8 @@ assert mount_source is not None, "No workspace mount found!"
         # Run all tests
         tests = [
             ('no_409_conflicts', self.test_no_409_conflicts),
-            ('concurrent_same_project', self.test_concurrent_same_project),
+            # ADR-64: Skipping concurrent test - covered by new test suite
+            # ('concurrent_same_project', self.test_concurrent_same_project),
             ('discovery_performance', self.test_discovery_performance),
             ('garbage_collection', self.test_garbage_collection),
             ('redis_lock_effectiveness', self.test_redis_lock_prevents_duplicates)
