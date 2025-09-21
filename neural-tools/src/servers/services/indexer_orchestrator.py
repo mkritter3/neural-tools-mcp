@@ -276,24 +276,67 @@ class IndexerOrchestrator:
         """
         Internal method to ensure indexer (assumes lock is held)
         ADR-0060: Core logic separated for lock flexibility
+        ADR-0063: Added mount verification before container reuse
         """
         # First check if container already exists using label-based discovery
         existing_container = await self._discover_existing_container(project_name)
         if existing_container:
             logger.info(f"[ADR-0060] Found existing container for {project_name}: {existing_container['id'][:12]}")
 
-            # Update tracking
-            self.active_indexers[project_name] = {
-                'container_id': existing_container['id'],
-                'last_activity': datetime.now(),
-                'project_path': project_path,
-                'port': existing_container.get('port')
-            }
+            # ADR-0063: Verify mount matches requested path before reuse
+            try:
+                container = self.docker_client.containers.get(existing_container['id'])
+                mounts = container.attrs.get('Mounts', [])
 
-            # Invalidate cache to force fresh discovery
-            await self._invalidate_cache(project_name)
+                # Check if mount path matches
+                requested_path = os.path.abspath(project_path)
+                mount_valid = any(
+                    m.get('Source') == requested_path and
+                    m.get('Destination') == '/workspace'
+                    for m in mounts
+                )
 
-            return existing_container['id']
+                if mount_valid:
+                    logger.info(f"[ADR-0063] Mount verified, reusing container for {project_name}")
+                    logger.info(f"  Mount path: {requested_path} -> /workspace")
+
+                    # Update tracking with verified path
+                    self.active_indexers[project_name] = {
+                        'container_id': existing_container['id'],
+                        'last_activity': datetime.now(),
+                        'project_path': project_path,
+                        'port': existing_container.get('port')
+                    }
+
+                    # Invalidate cache to force fresh discovery
+                    await self._invalidate_cache(project_name)
+
+                    return existing_container['id']
+                else:
+                    # Mount mismatch - remove and recreate
+                    logger.warning(f"[ADR-0063] Mount mismatch detected for {project_name}")
+                    logger.warning(f"  Expected: {requested_path}")
+                    actual_mounts = [m.get('Source') for m in mounts if m.get('Destination') == '/workspace']
+                    logger.warning(f"  Actual: {actual_mounts}")
+                    logger.info(f"[ADR-0063] Removing container with wrong mount")
+
+                    container.remove(force=True)
+                    await self._invalidate_cache(project_name)
+                    # Fall through to create new container
+
+            except docker.errors.NotFound:
+                logger.warning(f"[ADR-0063] Container {existing_container['id'][:12]} not found, will create new")
+                await self._invalidate_cache(project_name)
+                # Fall through to create new container
+            except Exception as e:
+                logger.error(f"[ADR-0063] Error verifying container mount: {e}")
+                # On any error, remove and recreate for safety
+                try:
+                    container.remove(force=True)
+                except:
+                    pass
+                await self._invalidate_cache(project_name)
+                # Fall through to create new container
 
         # No existing container, create a new one
         logger.info(f"[ADR-0060] Creating new container for {project_name}")
