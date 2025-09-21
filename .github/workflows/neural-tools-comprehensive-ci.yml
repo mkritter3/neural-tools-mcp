@@ -46,18 +46,18 @@ jobs:
           docker build -f docker/Dockerfile.indexer -t l9-neural-indexer:production .
           docker images | grep l9-neural-indexer
 
-      - name: Run ADR-63 Critical Mount Validation Test
+      - name: Run ADR-64 Unit Mount Validation Tests
         id: mount_validation
         run: |
           echo "🚨 Running CRITICAL mount validation regression test..."
-          python3 tests/test_critical_mount_validation.py
+          python3 tests/test_indexer_mount_validation.py
           echo "mount_validation_passed=true" >> $GITHUB_OUTPUT
 
-      - name: Run ADR-63 Priority Tests
+      - name: Run ADR-64 Integration Mount Tests
         id: priority_tests
         run: |
-          echo "🚨 Running ADR-63 priority tests (mount, env, stale)..."
-          python3 tests/test_adr_63_mount_validation.py
+          echo "🚨 Running ADR-64 integration tests (Docker required)..."
+          python3 tests/integration/test_indexer_mount_validation.py
           echo "priority_tests_passed=true" >> $GITHUB_OUTPUT
 
       - name: Run ADR-60 E2E Tests
