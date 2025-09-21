@@ -139,11 +139,39 @@ class IndexerOrchestrator:
             # Verify Docker is accessible
             self.docker_client.ping()
 
-            # ADR-0060: Initialize Redis connections for distributed coordination
-            redis_host = os.getenv('REDIS_CACHE_HOST', 'localhost')
-            redis_port = int(os.getenv('REDIS_CACHE_PORT', 46379))
-            redis_password = os.getenv('REDIS_CACHE_PASSWORD', 'cache-secret-key')
+            # ADR-0064: Hardened Redis initialization with comprehensive error handling
+            await self._init_redis()
 
+            # ADR-0044: Initialize container discovery service
+            # This must succeed even if Redis fails
+            from servers.services.container_discovery import ContainerDiscoveryService
+            self.discovery_service = ContainerDiscoveryService(self.docker_client)
+
+            if self.redis_client:
+                logger.info("IndexerOrchestrator initialized with container discovery and Redis")
+            else:
+                logger.warning("[ADR-0064] IndexerOrchestrator initialized with container discovery only (Redis unavailable)")
+
+            # Start background cleanup task
+            self._cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
+
+            # ADR-0060: Start garbage collection task
+            self._gc_task = asyncio.create_task(self._garbage_collection_loop())
+
+        except docker.errors.DockerException as e:
+            logger.error(f"Failed to initialize Docker client: {e}")
+            raise
+
+    async def _init_redis(self):
+        """
+        ADR-0064: Initialize Redis with comprehensive error handling
+        Falls back gracefully to local locks on any Redis error
+        """
+        redis_host = os.getenv('REDIS_CACHE_HOST', 'localhost')
+        redis_port = int(os.getenv('REDIS_CACHE_PORT', 46379))
+        redis_password = os.getenv('REDIS_CACHE_PASSWORD', 'cache-secret-key')
+
+        try:
             self.redis_client = redis.Redis(
                 host=redis_host,
                 port=redis_port,
@@ -156,24 +184,30 @@ class IndexerOrchestrator:
             await self.redis_client.ping()
             logger.info(f"[ADR-0060] Redis connected at {redis_host}:{redis_port}")
 
-            # ADR-0044: Initialize container discovery service
-            from servers.services.container_discovery import ContainerDiscoveryService
-            self.discovery_service = ContainerDiscoveryService(self.docker_client)
+        except redis.AuthenticationError as e:
+            logger.warning(f"[ADR-0064] Redis authentication failed at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
 
-            logger.info("IndexerOrchestrator initialized with container discovery and Redis")
+        except redis.ResponseError as e:
+            logger.warning(f"[ADR-0064] Redis response error at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
 
-            # Start background cleanup task
-            self._cleanup_task = asyncio.create_task(self._idle_cleanup_loop())
-
-            # ADR-0060: Start garbage collection task
-            self._gc_task = asyncio.create_task(self._garbage_collection_loop())
-
-        except docker.errors.DockerException as e:
-            logger.error(f"Failed to initialize Docker client: {e}")
-            raise
         except redis.ConnectionError as e:
-            logger.error(f"[ADR-0060] Failed to connect to Redis: {e}")
-            # Continue without Redis - fallback to local locks
+            logger.warning(f"[ADR-0064] Redis connection failed at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
+
+        except redis.TimeoutError as e:
+            logger.warning(f"[ADR-0064] Redis timeout at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
+            self.redis_client = None
+
+        except Exception as e:
+            # Catch-all for any other Redis errors
+            logger.warning(f"[ADR-0064] Unexpected Redis error at {redis_host}:{redis_port} - {e.__class__.__name__}: {e}")
+            logger.warning("[ADR-0064] Falling back to local locks (no cross-instance coordination)")
             self.redis_client = None
     
     def _allocate_port(self) -> int:
