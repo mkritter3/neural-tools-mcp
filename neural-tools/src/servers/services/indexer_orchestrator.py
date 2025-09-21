@@ -297,21 +297,49 @@ class IndexerOrchestrator:
                 )
 
                 if mount_valid:
-                    logger.info(f"[ADR-0063] Mount verified, reusing container for {project_name}")
-                    logger.info(f"  Mount path: {requested_path} -> /workspace")
+                    # ADR-0063: Also check if environment variables match
+                    env_vars = container.attrs.get('Config', {}).get('Env', [])
+                    env_dict = {}
+                    for env_str in env_vars:
+                        if '=' in env_str:
+                            key, value = env_str.split('=', 1)
+                            env_dict[key] = value
 
-                    # Update tracking with verified path
-                    self.active_indexers[project_name] = {
-                        'container_id': existing_container['id'],
-                        'last_activity': datetime.now(),
-                        'project_path': project_path,
-                        'port': existing_container.get('port')
-                    }
+                    # Check critical environment variables
+                    current_neo4j_pass = os.getenv('NEO4J_PASSWORD', 'graphrag-password')
+                    current_qdrant_url = os.getenv('QDRANT_URL', 'http://localhost:46333')
 
-                    # Invalidate cache to force fresh discovery
-                    await self._invalidate_cache(project_name)
+                    env_valid = (
+                        env_dict.get('NEO4J_PASSWORD') == current_neo4j_pass and
+                        env_dict.get('QDRANT_URL') == current_qdrant_url
+                    )
 
-                    return existing_container['id']
+                    if env_valid:
+                        logger.info(f"[ADR-0063] Mount and env verified, reusing container for {project_name}")
+                        logger.info(f"  Mount path: {requested_path} -> /workspace")
+
+                        # Update tracking with verified path
+                        self.active_indexers[project_name] = {
+                            'container_id': existing_container['id'],
+                            'last_activity': datetime.now(),
+                            'project_path': project_path,
+                            'port': existing_container.get('port')
+                        }
+
+                        # Invalidate cache to force fresh discovery
+                        await self._invalidate_cache(project_name)
+
+                        return existing_container['id']
+                    else:
+                        # Environment mismatch - remove and recreate
+                        logger.warning(f"[ADR-0063] Environment variable mismatch for {project_name}")
+                        logger.warning(f"  Container has NEO4J_PASSWORD={env_dict.get('NEO4J_PASSWORD', 'not set')}")
+                        logger.warning(f"  Current expects NEO4J_PASSWORD={current_neo4j_pass}")
+                        logger.info(f"[ADR-0063] Removing container with wrong environment")
+
+                        container.remove(force=True)
+                        await self._invalidate_cache(project_name)
+                        # Fall through to create new container
                 else:
                     # Mount mismatch - remove and recreate
                     logger.warning(f"[ADR-0063] Mount mismatch detected for {project_name}")
@@ -449,17 +477,17 @@ class IndexerOrchestrator:
                 'PROJECT_NAME': project_name,
                 'PROJECT_PATH': '/workspace',
                 # Use host.docker.internal for container->host communication
-                'NEO4J_URI': 'bolt://host.docker.internal:47687',
-                'NEO4J_USERNAME': 'neo4j',
-                'NEO4J_PASSWORD': 'graphrag-password',
-                'QDRANT_HOST': 'host.docker.internal',
-                'QDRANT_PORT': '46333',
-                'REDIS_CACHE_HOST': 'host.docker.internal',
-                'REDIS_CACHE_PORT': '46379',
-                'REDIS_QUEUE_HOST': 'host.docker.internal',
-                'REDIS_QUEUE_PORT': '46380',
-                'EMBEDDING_SERVICE_HOST': 'host.docker.internal',
-                'EMBEDDING_SERVICE_PORT': '48000',
+                'NEO4J_URI': os.environ.get('NEO4J_URI', 'bolt://host.docker.internal:47687'),
+                'NEO4J_USERNAME': os.environ.get('NEO4J_USERNAME', 'neo4j'),
+                'NEO4J_PASSWORD': os.environ.get('NEO4J_PASSWORD', 'graphrag-password'),
+                'QDRANT_HOST': os.environ.get('QDRANT_HOST', 'host.docker.internal'),
+                'QDRANT_PORT': os.environ.get('QDRANT_PORT', '46333'),
+                'REDIS_CACHE_HOST': os.environ.get('REDIS_CACHE_HOST', 'host.docker.internal'),
+                'REDIS_CACHE_PORT': os.environ.get('REDIS_CACHE_PORT', '46379'),
+                'REDIS_QUEUE_HOST': os.environ.get('REDIS_QUEUE_HOST', 'host.docker.internal'),
+                'REDIS_QUEUE_PORT': os.environ.get('REDIS_QUEUE_PORT', '46380'),
+                'EMBEDDING_SERVICE_HOST': os.environ.get('EMBEDDING_SERVICE_HOST', 'host.docker.internal'),
+                'EMBEDDING_SERVICE_PORT': os.environ.get('EMBEDDING_SERVICE_PORT', '48000'),
                 # Performance tuning
                 'BATCH_SIZE': '10',
                 'DEBOUNCE_INTERVAL': '2.0',
