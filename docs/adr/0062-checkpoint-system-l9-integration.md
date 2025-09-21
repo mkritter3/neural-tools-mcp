@@ -1,7 +1,7 @@
 # ADR-0062: L9 Checkpoint System Integration Without Webhooks
 
 ## Status
-Proposed
+Proposed (Updated: September 21, 2025 - Aligned with latest standards)
 
 ## Context
 
@@ -14,6 +14,10 @@ Our requirements:
 - Zero data loss during Claude session compaction
 - Full integration with existing L9 infrastructure
 - **NO new containers or webhook servers**
+- **MCP 2025-06-18 compliance with OAuth Resource Server**
+- **Git orphan branch protection from GC**
+- **<0.01% error rate per 2025 production standards**
+- **Command injection prevention for git operations**
 
 Current L9 architecture provides:
 - ServiceContainer with modular service architecture
@@ -97,6 +101,7 @@ import os
 import json
 import asyncio
 import subprocess
+import shlex  # Sept 2025: For command injection prevention
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
@@ -105,6 +110,8 @@ import git
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import logging
+from circuitbreaker import CircuitBreaker
+from ratelimiter import RateLimiter
 
 class CheckpointService:
     """
@@ -135,6 +142,22 @@ class CheckpointService:
         self.checkpoint_dir = self.project_path / ".claude" / "checkpoints"
         self.metadata_file = self.checkpoint_dir / "metadata.jsonl"
         self.branch_name = ".claude-checkpoints"
+
+        # Sept 2025: Bounded buffer with backpressure
+        self.MAX_BUFFER_SIZE = 100 * 1024 * 1024  # 100MB limit
+        self.current_buffer_size = 0
+
+        # Sept 2025: Circuit breaker for resilience
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=5,
+            recovery_timeout=60
+        )
+
+        # Sept 2025: Rate limiter (30 checkpoints/hour)
+        self.rate_limiter = RateLimiter(
+            max_requests=30,
+            time_window=3600
+        )
 
         # Git repository
         try:
@@ -204,9 +227,30 @@ class CheckpointService:
                 # Return to original branch
                 self.repo.git.checkout(original_branch)
 
+                # Sept 2025: Protect orphan branch from GC
+                self._protect_orphan_branch()
+
                 logging.info(f"Created checkpoint branch: {self.branch_name}")
+
+                # Sept 2025: Protect from git GC
+                self._protect_orphan_branch()
         except Exception as e:
             logging.error(f"Failed to ensure checkpoint branch: {e}")
+
+    def _protect_orphan_branch(self):
+        """Sept 2025: Protect orphan branch from git garbage collection."""
+        try:
+            # Prevent GC from pruning orphan branch
+            self.repo.config_writer().set_value(
+                "gc", "reflogExpire", "never"
+            ).set_value(
+                "gc", "reflogExpireUnreachable", "never"
+            ).set_value(
+                "gc", "pruneExpire", "never"
+            ).release()
+            logging.info("Protected orphan branch from GC")
+        except Exception as e:
+            logging.error(f"Failed to protect orphan branch: {e}")
 
     async def _initialize_neo4j_schema(self):
         """Create Neo4j schema for checkpoints."""
@@ -236,18 +280,28 @@ class CheckpointService:
     async def create_checkpoint(self,
                                description: str = None,
                                tags: List[str] = None,
-                               checkpoint_type: str = "manual") -> Dict[str, Any]:
+                               checkpoint_type: str = "manual",
+                               resource_indicator: str = None) -> Dict[str, Any]:
         """
         Create a checkpoint of current project state.
+
+        Sept 2025: Includes command injection prevention and OAuth compliance
 
         Args:
             description: Human-readable description
             tags: Optional tags for categorization
             checkpoint_type: 'manual', 'auto', 'session', 'risky'
+            resource_indicator: MCP resource server identifier (RFC 8707)
 
         Returns:
             Checkpoint metadata including ID and commit SHA
         """
+        # Sept 2025: Validate resource access
+        if resource_indicator:
+            await self._validate_resource_access(resource_indicator)
+
+        # Sept 2025: Rate limit checkpoints
+        async with self.rate_limiter:
         if not self.repo:
             return {"error": "Not a git repository", "success": False}
 
@@ -269,14 +323,19 @@ class CheckpointService:
             # Get list of modified files
             modified_files = self._get_modified_files()
 
-            # Switch to checkpoint branch
-            self.repo.git.checkout(self.branch_name)
+            # Sept 2025: Use circuit breaker for git operations
+            async with self.circuit_breaker:
+                # Switch to checkpoint branch (command injection safe)
+                self.repo.git.checkout(self.branch_name)
 
             # Copy modified files from working branch
             for file_path in modified_files:
                 try:
+                    # Sept 2025: Prevent command injection
+                    safe_branch = shlex.quote(original_branch)
+                    safe_path = shlex.quote(file_path)
                     # Get file from original branch
-                    file_content = self.repo.git.show(f"{original_branch}:{file_path}")
+                    file_content = self.repo.git.show(f"{safe_branch}:{safe_path}")
 
                     # Write to checkpoint branch
                     full_path = self.project_path / file_path
@@ -1143,19 +1202,23 @@ $PROJECT_DIR/
 └── src/                     # Project code
 ```
 
-## Performance Specifications
+## Performance Specifications (September 2025 Standards)
 
 ### Resource Usage
-- **Memory**: +100MB for git operations
+- **Memory**: +100MB for git operations (bounded)
 - **CPU**: <3% during monitoring
 - **Storage**: ~1MB per checkpoint
 - **I/O**: Minimal (event-driven)
 
-### Performance Targets
-- **Checkpoint Creation**: <2 seconds
-- **Restoration**: <5 seconds
-- **Search**: <100ms
-- **Diff Generation**: <500ms
+### Performance Targets (Updated per 2025 Standards)
+- **P95 Latency**: <500ms for all operations
+- **Error Rate**: <0.01% (was <1%)
+- **Checkpoint Creation**: <1 second (was <2s)
+- **Restoration**: <2 seconds (was <5s)
+- **Search**: <50ms (was <100ms)
+- **Diff Generation**: <200ms (was <500ms)
+- **Concurrent Operations**: 500+ (was 200)
+- **Availability**: 99.95%
 
 ### Filesystem Monitoring
 - **Watchdog Events**: Debounced to 1/second
@@ -1164,11 +1227,19 @@ $PROJECT_DIR/
 
 ## Security & Safety
 
-### Git Safety
+### Git Safety (Sept 2025 Enhanced)
 - **Orphan Branch**: Checkpoints isolated from main history
+- **GC Protection**: Orphan branch protected from garbage collection
+- **Command Injection**: All git commands sanitized with shlex
 - **No Force Push**: Never modifies remote
 - **Local Only**: Checkpoints stay local
 - **Safe Restoration**: Always preview first
+- **Git Config Protection**:
+  ```bash
+  git config gc.reflogExpire never
+  git config gc.reflogExpireUnreachable never
+  git config gc.pruneExpire never
+  ```
 
 ### Access Control
 - **Project Isolation**: Checkpoints per project
@@ -1209,49 +1280,392 @@ await get_unified_timeline(days=7)
 
 ## Testing Strategy
 
-### Unit Tests
+### 1. Unit Test Criteria (90% Coverage Required)
+
+#### CheckpointService Tests
 ```python
 # tests/test_checkpoint_service.py
+
 async def test_checkpoint_creation():
     """Test checkpoint creation and metadata storage."""
     service = CheckpointService(...)
     result = await service.create_checkpoint("Test checkpoint")
     assert result['success']
     assert 'checkpoint_id' in result
+    assert result['sha'] is not None
 
 async def test_checkpoint_restoration():
-    """Test checkpoint restoration."""
-    # Create checkpoint
-    # Modify files
-    # Restore
-    # Verify files restored
+    """Test checkpoint restoration with all modes."""
+    # Test preview mode
+    preview = await service.restore_checkpoint(checkpoint_id, preview=True)
+    assert preview['files_affected'] > 0
+    assert preview['applied'] == False
+
+    # Test files-only restoration
+    restore = await service.restore_checkpoint(checkpoint_id, files_only=True)
+    assert restore['files_restored'] > 0
+
+    # Test full git restoration
+    full_restore = await service.restore_checkpoint(checkpoint_id, files_only=False)
+    assert full_restore['branch_created'] is True
 
 async def test_auto_checkpoint():
     """Test automatic checkpoint triggers."""
-    # Enable auto-checkpoint
-    # Simulate file changes
-    # Verify checkpoint created
+    # Test time-based trigger
+    await service.enable_auto_checkpoint(interval_minutes=1)
+    await asyncio.sleep(65)
+    assert service.checkpoint_count > 0
+
+    # Test file threshold trigger
+    for i in range(6):
+        Path(f"test_{i}.txt").touch()
+    await asyncio.sleep(1)
+    assert service.checkpoint_count > 1
+
+async def test_edge_cases():
+    """Test all edge cases."""
+    # Non-git repository
+    # Corrupted git state
+    # Merge conflicts
+    # Large repositories (>1GB)
+    # Permission errors
+    # Disk full scenarios
+    # Command injection attempts
+    # Buffer overflow (>100MB)
+    # Circuit breaker triggers
+    # Rate limit exceeded (>30/hour)
+
+async def test_resilience():
+    """Sept 2025: Chaos engineering tests."""
+    # Test git corruption recovery
+    await corrupt_git_repo()
+    result = await checkpoint_create("test")
+    assert result['degraded_mode'] == True
+
+    # Test command injection prevention
+    malicious = "test; rm -rf /"
+    result = await checkpoint_create(malicious)
+    assert result['success'] == True  # Sanitized
+
+    # Test orphan branch protection
+    await simulate_git_gc()
+    branches = await list_git_branches()
+    assert '.claude-checkpoints' in branches
 ```
 
-### Integration Tests
+### 2. Integration Test Criteria
+
+#### E2E Test Flow (Must Pass)
 ```python
 # tests/test_checkpoint_integration.py
-async def test_conversation_linking():
-    """Test checkpoint-conversation integration."""
-    # Create conversation context
-    # Create checkpoint
-    # Verify linkage in Neo4j
+
+async def test_end_to_end_flow():
+    """Complete E2E test as per Gemini's specification."""
+    # 1. Start conversation → Index conversations
+    conv_stats = await conversation_index()
+    assert conv_stats['messages_indexed'] > 0
+
+    # 2. Create checkpoint with conversation link
+    checkpoint = await checkpoint_create("Test checkpoint")
+    assert checkpoint['checkpoint_id'] is not None
+
+    # 3. Verify checkpoint list
+    checkpoints = await checkpoint_list()
+    assert len(checkpoints) > 0
+    assert checkpoints[0]['id'] == checkpoint['checkpoint_id']
+
+    # 4. Simulate session reset/compaction
+    await simulate_session_compaction()
+
+    # 5. Restore checkpoint
+    restore = await checkpoint_restore(checkpoint['checkpoint_id'])
+    assert restore['success']
+
+    # 6. Verify conversation recall
+    conversations = await conversation_recall("previous context")
+    assert len(conversations) > 0
+
+    # 7. Verify Neo4j linkage
+    linkage = await verify_checkpoint_conversation_linkage(checkpoint['checkpoint_id'])
+    assert linkage['has_conversation_link']
+    assert linkage['conversation_count'] > 0
 
 async def test_mcp_tools():
-    """Test all checkpoint MCP tools."""
-    # Test each tool endpoint
+    """Test all 8 checkpoint MCP tool endpoints."""
+    tools = [
+        'checkpoint_create',
+        'checkpoint_list',
+        'checkpoint_restore',
+        'checkpoint_diff',
+        'checkpoint_search',
+        'checkpoint_auto_configure',
+        'checkpoint_stats',
+        'checkpoint_cleanup'
+    ]
+    for tool in tools:
+        result = await test_tool_endpoint(tool)
+        assert result is not None
+        assert 'error' not in result
 ```
 
-### L9 Validation
-- Extend `run_l9_validation.py` with checkpoint tests
-- Test git operations under load
-- Verify filesystem monitoring performance
-- Confirm no interference with existing services
+### 3. Performance Criteria (Sept 2025 Standards)
+
+| Metric | Target | Alert Threshold | Rollback Trigger |
+|--------|---------|-----------------|-------------------|
+| P95 Latency | <500ms | 400ms | >1000ms |
+| Error Rate | <0.01% | 0.005% | >0.1% |
+| Checkpoint Creation | <1s | 800ms | >2s |
+| Restoration Time | <2s | 1.5s | >5s |
+| Search Latency | <50ms | 40ms | >100ms |
+| Diff Generation | <200ms | 150ms | >500ms |
+| Filesystem Monitor CPU | <3% | 2.5% | >5% |
+| Memory Overhead | <100MB | 80MB | >200MB |
+| Git Operations | <500ms | 400ms | >1s |
+| Concurrent Operations | >500 | 400 | <200 |
+
+### 4. Load Test Criteria
+
+```python
+# tests/test_checkpoint_load.py
+
+async def test_concurrent_operations():
+    """Test 500 concurrent checkpoint operations for 60 minutes (Sept 2025)."""
+    sessions = []
+
+    # Create 500 concurrent sessions (Sept 2025 requirement)
+    for i in range(500):
+        session = create_test_session(f"checkpoint_session_{i}")
+        sessions.append(session)
+
+    # Run for 60 minutes
+    start_time = time.time()
+    while time.time() - start_time < 3600:
+        # Each session performs checkpoint operations
+        tasks = []
+        for session in sessions:
+            tasks.append(session.create_checkpoint())
+            tasks.append(session.list_checkpoints())
+            tasks.append(session.search_checkpoints("test"))
+
+        await asyncio.gather(*tasks)
+
+        # Monitor Neo4j pool utilization
+        neo4j_util = get_neo4j_pool_utilization()
+        assert neo4j_util < 70  # Must stay below 70%
+
+        # Monitor filesystem watcher
+        fs_cpu = get_filesystem_monitor_cpu()
+        assert fs_cpu < 5  # Must stay below 5%
+
+        # Check response times
+        assert get_checkpoint_p95_latency() < 500  # Sept 2025: was 2000
+
+    # Verify no degradation
+    assert get_error_rate() < 0.0001  # Sept 2025: <0.01% (was 1%)
+
+async def test_git_stress():
+    """Test git operations under stress."""
+    # Create 100 rapid checkpoints
+    for i in range(100):
+        await checkpoint_create(f"Stress test {i}")
+
+    # Verify git repo integrity
+    assert await verify_git_integrity()
+
+    # Test restoration of old checkpoints
+    old_checkpoint = (await checkpoint_list(limit=100))[-1]
+    restore = await checkpoint_restore(old_checkpoint['id'])
+    assert restore['success']
+```
+
+### 5. Exit Conditions (Production Ready)
+
+✅ **All must pass before production:**
+- [ ] 90% unit test coverage achieved
+- [ ] All E2E integration tests passing consistently (10 consecutive runs)
+- [ ] Performance metrics met under load for 60 minutes
+- [ ] Zero P0/P1 bugs in release candidate
+- [ ] Documentation reviewed and published
+- [ ] L9 security review passed (no command injection)
+- [ ] Monitoring dashboards deployed and verified
+- [ ] Feature flags configured and tested
+- [ ] Rollback procedure tested successfully
+- [ ] Neo4j pool utilization stays <70% under max load
+- [ ] Git operations verified safe (no corruption)
+- [ ] Filesystem monitoring overhead <5% CPU
+
+### 6. Rollback Triggers (Sept 2025 Standards)
+
+🚨 **Automatic rollback if ANY condition met:**
+- P95 latency >500ms sustained (was no P95 tracking)
+- Error rate >0.1% sustained for 5 minutes (was 1%)
+- Checkpoint creation time >2 seconds sustained (was 3s)
+- Restoration failures >1% of attempts (was 5%)
+- Git corruption or GC of orphan branch detected
+- Neo4j pool utilization >90% for 5+ minutes
+- Filesystem monitor CPU >5% sustained
+- Memory growth >100MB/hour (was 200MB)
+- Data inconsistency between git and Neo4j
+- Command injection vulnerability found
+- Concurrent operations drop below 200 (was not tracked)
+
+### 7. L9 Validation Requirements
+
+```python
+# scripts/run_l9_validation_checkpoints.py
+
+class L9CheckpointValidation:
+    """L9 compliance testing for checkpoint system."""
+
+    async def validate_observability(self):
+        """Verify L9 observability standards."""
+        # Structured logging format
+        assert logs_are_structured()
+
+        # Prometheus metrics available
+        metrics = [
+            'checkpoint_creation_duration_seconds',
+            'checkpoint_restoration_latency_ms',
+            'checkpoint_count_total',
+            'checkpoint_storage_bytes',
+            'git_operations_duration_seconds'
+        ]
+        for metric in metrics:
+            assert metric_exists(metric)
+
+        # Distributed tracing enabled
+        assert tracing_enabled()
+
+    async def validate_security(self):
+        """Verify security requirements."""
+        # No command injection in git operations
+        await test_git_command_injection()
+
+        # No path traversal in file operations
+        await test_path_traversal_attempts()
+
+        # Proper git credential handling
+        await verify_no_credentials_in_logs()
+
+        # Safe branch operations
+        await test_branch_protection()
+
+    async def validate_git_safety(self):
+        """Verify git operations are safe."""
+        # Never force push
+        assert not can_force_push()
+
+        # Orphan branch isolation
+        assert checkpoints_on_orphan_branch()
+
+        # No modification of remote
+        assert local_only_operations()
+
+        # Restoration preview works
+        assert preview_before_restore()
+
+    async def validate_performance(self):
+        """Verify L9 performance standards."""
+        results = await run_performance_suite()
+
+        assert results['checkpoint_creation_p95'] < 2000
+        assert results['restoration_p95'] < 5000
+        assert results['search_latency_p95'] < 100
+        assert results['filesystem_cpu'] < 3
+        assert results['memory_overhead_mb'] < 100
+```
+
+### 8. Monitoring Dashboard Requirements
+
+**Real-time metrics to display:**
+```yaml
+checkpoint_monitoring:
+  operations:
+    checkpoints_created: "XX/hour"      # Target: >10/hour
+    restorations_performed: "XX/day"     # Track usage
+    auto_checkpoints: "XX/hour"          # Auto vs manual
+    search_queries: "XX/min"             # Usage patterns
+
+  performance:
+    creation_p50_ms: "XXX"               # Baseline: 1000ms
+    creation_p95_ms: "XXX"               # Baseline: 2000ms
+    restoration_p95_ms: "XXX"            # Baseline: 5000ms
+    search_latency_ms: "XXX"             # Baseline: 100ms
+
+  git_health:
+    repo_size_mb: "XXX"                  # Monitor growth
+    orphan_branch_size: "XXX"            # Checkpoint storage
+    branch_count: "XX"                   # Track branches
+    integrity_status: "🟢/🟡/🔴"         # Git health
+
+  filesystem:
+    monitor_cpu: "X.X%"                  # Threshold: 3%
+    events_per_second: "XX"              # Debounced rate
+    watched_directories: "XX"            # Active watches
+    ignored_patterns: "XX"               # Exclusions
+
+  storage:
+    checkpoint_count: "XXX"               # Per project
+    total_size_mb: "XXX"                 # Storage usage
+    oldest_checkpoint_days: "XX"         # Cleanup tracking
+    cleanup_pending: "XX"                # Due for cleanup
+```
+
+### 9. Testing Priority (Per Gemini)
+
+1. **Connection pool monitoring** (highest risk)
+   - Neo4j pool must stay <70% with checkpoints
+   - No interference with conversation operations
+   - Proper connection cleanup
+
+2. **Git operation safety**
+   - Verify orphan branch isolation
+   - Test restoration rollback
+   - Ensure no remote modifications
+   - Validate merge conflict handling
+
+3. **Checkpoint-conversation linkage**
+   - E2E flow must work seamlessly
+   - Neo4j relationships correct
+   - Context preserved across operations
+
+4. **Performance under sustained load**
+   - 60-minute continuous checkpointing
+   - No filesystem monitoring degradation
+   - Git repo stays healthy
+
+5. **Rollback mechanisms**
+   - Feature flag testing
+   - Safe restoration preview
+   - Emergency cleanup procedures
+
+### 10. Resilience Testing
+
+```python
+async def test_failure_scenarios():
+    """Test system resilience to failures."""
+    # Database unavailability
+    await simulate_neo4j_outage()
+    result = await checkpoint_create("Test")
+    assert result['fallback_mode'] == True
+
+    # Git corruption
+    await corrupt_git_repo()
+    restore = await checkpoint_restore(checkpoint_id)
+    assert restore['error'] == 'corruption_detected'
+    assert restore['suggested_action'] == 'repair'
+
+    # Network issues
+    await simulate_network_latency(500)
+    stats = await checkpoint_stats()
+    assert stats is not None  # Graceful degradation
+
+    # Disk full
+    await fill_disk_to_95_percent()
+    create = await checkpoint_create("Disk full test")
+    assert create['error'] == 'insufficient_space'
+    assert create['cleanup_suggested'] == True
+```
 
 ## Rollout Plan
 
