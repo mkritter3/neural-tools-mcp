@@ -1,74 +1,79 @@
-# ADR-0059: GraphRAG Chunk Label Mismatch - Critical Fix
+# ADR-0059: GraphRAG Chunk Label Consistency - Preventive Validation
 
 **Date:** September 21, 2025
 **Status:** Accepted
-**Tags:** graphrag, neo4j, critical-fix, data-integrity, regression
+**Tags:** graphrag, neo4j, validation, monitoring, preventive
 
 ## Context
 
-During investigation of why GraphRAG returns empty graph context despite having 8,419 nodes in Neo4j, we discovered a critical mismatch between how chunks are stored and how they're queried. This silent failure has been degrading GraphRAG to pure semantic search without anyone noticing.
+During investigation of why GraphRAG returns empty graph context, we discovered that while the label consistency between WriteSynchronizationManager and hybrid_retriever was correct (both use `Chunk`), the actual issue was that Chunk nodes had never been created in Neo4j due to data being indexed before WriteSynchronizationManager was fully implemented.
 
 ### Discovery Process
 
 1. **User Report**: "Does the graph actually give you contextual awareness?"
-2. **Investigation**: GraphRAG returns results but `graph_context` is always empty
-3. **Finding**: WriteSynchronizationManager creates `Chunk` nodes, but hybrid_retriever queries for `CodeChunk` nodes
-4. **Root Cause**: Label mismatch introduced when ADR-0053 fixed ADR-0050's missing chunks
+2. **Initial Theory**: Suspected label mismatch between `Chunk` and `CodeChunk`
+3. **Investigation**: Found hybrid_retriever already uses correct `Chunk` label
+4. **Root Cause**: Neo4j had 0 Chunk nodes - data was indexed Sept 19 before ADR-0050/0053 fixes
+5. **Resolution**: Backfilled 4,373 chunks from Qdrant to Neo4j using ADR-0050 recovery script
 
 ## Problem Statement
 
-### The Silent Failure Chain
+### What Actually Happened
 
 ```
-ADR-0050: Identified chunks weren't being created at all
+Sept 15: ADR-0050 identified chunks weren't being created
     ↓
-ADR-0053: Fixed by creating `Chunk` nodes in WriteSynchronizationManager
+Sept 15-19: ADR-0053 implemented WriteSynchronizationManager fix
     ↓
-hybrid_retriever.py: Still queries for `CodeChunk` nodes (never updated)
+Sept 19 18:12: Data indexed (before fix was fully deployed)
     ↓
-Result: Graph context always returns empty, GraphRAG degrades to semantic-only
+Sept 21: Discovery that Neo4j had 0 Chunk nodes while Qdrant had 4,373
+    ↓
+Resolution: Backfilled chunks from Qdrant → Neo4j, GraphRAG restored
 ```
 
-### Evidence
+### Evidence of the Real Issue
 
-**WriteSynchronizationManager (sync_manager.py:285)**:
-```python
-CREATE (c:Chunk $props)  # Creates "Chunk" nodes
+**Before Backfill (Sept 21)**:
+```bash
+Neo4j: MATCH (c:Chunk {project: 'claude-l9-template'}) RETURN count(c)
+Result: 0 chunks
+
+Qdrant: project-claude-l9-template collection
+Result: 4,373 points
 ```
 
-**Hybrid Retriever (hybrid_retriever.py:365)**:
-```cypher
-MATCH (c:CodeChunk {id: $chunk_id, project: $project})  # Looks for "CodeChunk" nodes
+**After Backfill**:
+```bash
+Neo4j: 7,363 Chunk nodes
+File->HAS_CHUNK->Chunk: 6,749 relationships
+Chunk->PART_OF->File: 6,749 relationships (created for hybrid_retriever)
 ```
 
 ### Why This Matters
 
-1. **GraphRAG is effectively broken** - Returns only semantic results, no graph enrichment
-2. **Silent degradation** - System appears healthy, no errors reported
-3. **Wasted resources** - Neo4j maintains graph data that's never accessed
-4. **Lost capabilities** - No relationship traversal, no structural context, no multi-hop reasoning
+1. **Data timing issues can break GraphRAG** - Indexing during partial deployment
+2. **Silent degradation** - System returns results but without graph enrichment
+3. **Need for sync validation** - Must verify Neo4j-Qdrant consistency
+4. **Backfill capability critical** - ADR-0050 recovery script saved the system
 
 ## Decision
 
-Fix the label mismatch and implement comprehensive validation to prevent future silent failures.
+While the label consistency was already correct, implement comprehensive validation and monitoring to prevent future silent failures from data synchronization issues.
 
 ## Implementation
 
-### 1. Immediate Fix - Update Hybrid Retriever
+### 1. Completed - Data Backfill
 
-```python
-# hybrid_retriever.py - Line 365
-# OLD (BROKEN):
-cypher = """
-MATCH (c:CodeChunk {id: $chunk_id, project: $project})
-...
-"""
+Ran ADR-0050 recovery script to backfill missing Chunk nodes:
+```bash
+python3 neural-tools/scripts/backfill_chunks_to_neo4j.py \
+  --project claude-l9-template \
+  --batch-size 500 \
+  --create-files
+```
 
-# NEW (FIXED):
-cypher = """
-MATCH (c:Chunk {chunk_id: $chunk_id, project: $project})
-...
-"""
+Result: Successfully migrated 4,373 chunks from Qdrant to Neo4j
 ```
 
 ### 2. Validation Tests - Prevent Future Failures
