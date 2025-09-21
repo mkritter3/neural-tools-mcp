@@ -62,13 +62,29 @@ class ADR60TestSuite:
         """Initialize test environment"""
         logger.info("🔧 Setting up test environment...")
 
-        # Initialize Redis client
-        self.redis_client = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            password=REDIS_PASSWORD,
-            decode_responses=True
-        )
+        # Initialize Redis client with fallback for CI environment
+        try:
+            # Try with password first (production)
+            if REDIS_PASSWORD and REDIS_PASSWORD != 'cache-secret-key':
+                self.redis_client = redis.Redis(
+                    host=REDIS_HOST,
+                    port=REDIS_PORT,
+                    password=REDIS_PASSWORD,
+                    decode_responses=True
+                )
+                await self.redis_client.ping()
+                logger.info("✅ Connected to Redis with authentication")
+            else:
+                raise redis.AuthenticationError("Using no-password fallback")
+        except (redis.AuthenticationError, redis.ConnectionError):
+            # Fallback to no password (CI environment)
+            self.redis_client = redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                decode_responses=True
+            )
+            await self.redis_client.ping()
+            logger.info("✅ Connected to Redis without authentication (CI mode)")
 
         # Initialize orchestrator
         self.orchestrator = IndexerOrchestrator()

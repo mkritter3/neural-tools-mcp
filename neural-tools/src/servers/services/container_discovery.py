@@ -59,6 +59,10 @@ class ContainerDiscoveryService:
 
             for container in containers:
                 container_name = container.name
+                # Skip containers without names (shouldn't happen but defensive coding)
+                if not container_name:
+                    continue
+
                 if container_name == f"indexer-{project_name}":
                     exact_match = container
                     break  # Exact match is best, stop here

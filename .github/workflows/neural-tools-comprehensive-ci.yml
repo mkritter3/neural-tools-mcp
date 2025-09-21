@@ -101,7 +101,6 @@ jobs:
         env:
           REDIS_CACHE_HOST: localhost
           REDIS_CACHE_PORT: 46379
-          REDIS_CACHE_PASSWORD: cache-secret-key
 
       - name: Validate test results
         if: failure()
