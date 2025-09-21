@@ -322,6 +322,15 @@ class ADR60TestSuite:
         project_name = "test-redis-lock"
         lock_key = f"lock:project:{project_name}"
 
+        # Clean up any existing containers from previous test runs
+        existing = self.docker_client.containers.list(
+            all=True,
+            filters={'label': f'com.l9.project={project_name}'}
+        )
+        for container in existing:
+            logger.info(f"  Cleaning up existing container: {container.name}")
+            container.remove(force=True)
+
         # Test that lock prevents concurrent creation
         lock_hold_duration = 10  # Hold lock for 10 seconds
         operation_timeout = 3     # Try to create container for 3 seconds
