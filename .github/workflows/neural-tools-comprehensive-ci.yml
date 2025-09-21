@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install docker pytest pytest-asyncio
+          pip install docker pytest pytest-asyncio redis neo4j qdrant-client
           if [ -f neural-tools/requirements.txt ]; then
             pip install -r neural-tools/requirements.txt
           fi
