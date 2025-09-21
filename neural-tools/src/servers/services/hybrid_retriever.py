@@ -211,8 +211,9 @@ class HybridRetriever:
         """Perform text search directly in Neo4j"""
         try:
             # Simple text matching query
+            # ADR-0059: Fixed label mismatch - use Chunk not CodeChunk
             cypher = """
-            MATCH (c:CodeChunk)
+            MATCH (c:Chunk)
             WHERE c.project = $project
             AND (c.content CONTAINS $query OR c.file_path CONTAINS $query)
             RETURN c.chunk_id as chunk_id, c.file_path as file_path,
@@ -361,8 +362,9 @@ class HybridRetriever:
             try:
                 # Enhanced query for ADR 0017: GraphRAG True Hybrid Search
                 # ADR-0029: All queries must filter by project for isolation
+                # ADR-0059: Fixed label mismatch - use Chunk not CodeChunk
                 cypher = """
-                MATCH (c:CodeChunk {id: $chunk_id, project: $project})
+                MATCH (c:Chunk {chunk_id: $chunk_id, project: $project})
                 OPTIONAL MATCH (c)-[:PART_OF]->(f:File {project: $project})
                 
                 // Get functions in this file/chunk
@@ -384,8 +386,9 @@ class HybridRetriever:
                 OPTIONAL MATCH (importer:File {project: $project})-[:IMPORTS]->(f)
                 
                 // Get related chunks in same file
-                OPTIONAL MATCH (related:CodeChunk {project: $project})-[:PART_OF]->(f)
-                WHERE related.id <> c.id
+                // ADR-0059: Fixed label mismatch - use Chunk not CodeChunk
+                OPTIONAL MATCH (related:Chunk {project: $project})-[:PART_OF]->(f)
+                WHERE related.chunk_id <> c.chunk_id
                 
                 RETURN 
                     f.path AS file_path,
@@ -398,7 +401,7 @@ class HybridRetriever:
                     collect(DISTINCT imported.path) AS imports,
                     collect(DISTINCT importer.path) AS imported_by,
                     collect(DISTINCT {
-                        id: related.id,
+                        id: related.chunk_id,
                         start_line: related.start_line,
                         end_line: related.end_line
                     })[0..5] AS related_chunks

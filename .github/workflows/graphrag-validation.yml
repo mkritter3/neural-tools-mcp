@@ -1,0 +1,140 @@
+name: GraphRAG Validation
+
+# ADR-0059: Prevent silent GraphRAG failures
+on:
+  push:
+    paths:
+      - 'neural-tools/src/servers/services/hybrid_retriever.py'
+      - 'neural-tools/src/servers/services/sync_manager.py'
+      - 'neural-tools/src/servers/services/indexer_service.py'
+      - 'neural-tools/src/servers/services/neo4j_service.py'
+      - 'neural-tools/src/servers/services/qdrant_service.py'
+      - 'neural-tools/tests/test_graphrag_validation.py'
+  pull_request:
+    paths:
+      - 'neural-tools/**'
+  schedule:
+    # Daily validation at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  validate-graphrag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      neo4j:
+        image: neo4j:5.22.0
+        env:
+          NEO4J_AUTH: neo4j/graphrag-password
+          NEO4J_PLUGINS: '["apoc"]'
+          NEO4J_dbms_memory_heap_initial__size: 512m
+          NEO4J_dbms_memory_heap_max__size: 1G
+        ports:
+          - 47687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p graphrag-password 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      qdrant:
+        image: qdrant/qdrant:v1.12.5
+        ports:
+          - 46333:6333
+        options: >-
+          --health-cmd "curl -f http://localhost:6333/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          cd neural-tools
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-timeout
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for Neo4j..."
+          for i in {1..30}; do
+            if curl -s http://localhost:47687 > /dev/null; then
+              echo "Neo4j is ready"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+          echo "Waiting for Qdrant..."
+          for i in {1..30}; do
+            if curl -s http://localhost:46333/health > /dev/null; then
+              echo "Qdrant is ready"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run GraphRAG validation tests
+        run: |
+          cd neural-tools
+          python -m pytest tests/test_graphrag_validation.py -v --tb=short --timeout=60
+        env:
+          NEO4J_URI: bolt://localhost:47687
+          NEO4J_HOST: localhost
+          NEO4J_PORT: 47687
+          NEO4J_USERNAME: neo4j
+          NEO4J_PASSWORD: graphrag-password
+          QDRANT_HOST: localhost
+          QDRANT_PORT: 46333
+          PYTHONPATH: ${{ github.workspace }}/neural-tools/src
+
+      - name: Check chunk label consistency
+        run: |
+          cd neural-tools
+          python scripts/check_chunk_consistency.py
+        env:
+          NEO4J_URI: bolt://localhost:47687
+          NEO4J_PASSWORD: graphrag-password
+          QDRANT_HOST: localhost
+          QDRANT_PORT: 46333
+          PYTHONPATH: ${{ github.workspace }}/neural-tools/src
+        continue-on-error: false  # Fail the build on any mismatch
+
+      - name: Generate validation report
+        if: always()
+        run: |
+          echo "## GraphRAG Validation Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ $? -eq 0 ]; then
+            echo "✅ **All GraphRAG validations passed**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **GraphRAG validation failed**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Common issues:" >> $GITHUB_STEP_SUMMARY
+            echo "- CodeChunk vs Chunk label mismatch (ADR-0059)" >> $GITHUB_STEP_SUMMARY
+            echo "- Neo4j/Qdrant count mismatch" >> $GITHUB_STEP_SUMMARY
+            echo "- Graph context not being returned" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphrag-validation-results
+          path: |
+            neural-tools/pytest-results.xml
+            neural-tools/logs/

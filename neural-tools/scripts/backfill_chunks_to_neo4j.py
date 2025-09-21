@@ -57,7 +57,8 @@ class ChunkBackfiller:
 
         # Get the current project first
         if not self.project_name:
-            project_info = await context_manager.get_current_project()
+            # Use synchronous method get_current_project_sync
+            project_info = context_manager.get_current_project_sync()
             self.project_name = project_info.get('project', 'claude-l9-template')
 
         logger.info(f"Using project: {self.project_name}")
