@@ -52,6 +52,8 @@ jobs:
 
       - name: Setup Redis environment
         run: |
+          # Install Redis client tools
+          sudo apt-get update && sudo apt-get install -y redis-tools
           # Wait for Redis to be ready
           redis-cli -h localhost -p 46379 ping
           echo "✅ Redis is ready on port 46379"
