@@ -1,9 +1,37 @@
 #!/bin/bash
 # L9 Engineering Deployment Script v2
 # Uses GitHub Actions CI/CD validation results for deployment
-# Implements ADR-0053 and ADR-0045 CI/CD compliance
+# Implements ADR-0053, ADR-0045 CI/CD compliance, and ADR-0063 regression prevention
 
 set -euo pipefail
+
+# CRITICAL: Block ANY attempt to bypass tests
+# Check for dangerous flags that might bypass validation
+for arg in "$@"; do
+    case $arg in
+        --force|--skip-tests|--no-validation|--bypass|--yolo)
+            echo "═══════════════════════════════════════════════════════════"
+            echo "🛑 DEPLOYMENT BLOCKED - INVALID FLAG DETECTED: $arg 🛑"
+            echo "═══════════════════════════════════════════════════════════"
+            echo ""
+            echo "⚠️  Bypassing tests is STRICTLY PROHIBITED"
+            echo "⚠️  ADR-63 regression tests MUST pass to deploy"
+            echo ""
+            echo "These flags are blocked to prevent:"
+            echo "  - Mount validation regressions"
+            echo "  - Container reuse with wrong paths"
+            echo "  - Projects only indexing README files"
+            echo ""
+            echo "If you believe tests are failing incorrectly:"
+            echo "  1. Fix the underlying issue"
+            echo "  2. Update the tests if requirements changed"
+            echo "  3. Get code review approval for changes"
+            echo ""
+            echo "DO NOT attempt to bypass validation."
+            exit 1
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -20,6 +48,7 @@ BACKUP_DIR="/Users/mkr/.claude/mcp-servers/neural-tools-backup-$(date +%Y%m%d-%H
 echo -e "${GREEN}🚀 L9 Neural Tools MCP Deployment v2${NC}"
 echo "=================================================="
 echo -e "${BLUE}Using GitHub Actions CI/CD Pipeline Results${NC}"
+echo -e "${RED}ADR-63 Regression Tests: MANDATORY${NC}"
 echo ""
 echo "Source: $SOURCE_DIR"
 echo "Target: $TARGET_DIR"
@@ -122,19 +151,106 @@ run_local_validation() {
         fi
     done
 
-    # Run quick validation tests if available
+    # CRITICAL: Run regression prevention tests (ADR-63)
+    # These tests MUST pass - no exceptions, no bypassing
+    echo ""
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${RED}🚨 CRITICAL REGRESSION TESTS - CANNOT BE BYPASSED 🚨${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    TESTS_DIR="$SOURCE_DIR/../tests"
+    CRITICAL_TESTS=(
+        "test_critical_mount_validation.py"  # ADR-63: Mount validation regression
+        "test_adr_63_mount_validation.py"     # ADR-63: Priority tests
+    )
+
+    # Track test results
+    FAILED_TESTS=()
+    PASSED_TESTS=()
+
+    for test_file in "${CRITICAL_TESTS[@]}"; do
+        if [[ -f "$TESTS_DIR/$test_file" ]]; then
+            echo -e "${YELLOW}Running critical test: $test_file${NC}"
+            cd "$TESTS_DIR"
+            if python3 "$test_file" 2>&1 | tee /tmp/test_output.log | grep -q "PASSED\|✅.*PASS"; then
+                echo -e "${GREEN}✅ $test_file PASSED${NC}"
+                PASSED_TESTS+=("$test_file")
+            else
+                echo -e "${RED}❌ $test_file FAILED${NC}"
+                FAILED_TESTS+=("$test_file")
+                echo "Test output saved to /tmp/test_output.log"
+            fi
+        else
+            echo -e "${RED}❌ Critical test missing: $test_file${NC}"
+            echo -e "${RED}This test is REQUIRED to prevent mount validation regression${NC}"
+            FAILED_TESTS+=("$test_file (MISSING)")
+        fi
+    done
+
+    # Run ADR-60 E2E tests if available
+    if [[ -f "$SOURCE_DIR/../scripts/test-adr-60-e2e.py" ]]; then
+        echo -e "${YELLOW}Running ADR-60 E2E validation...${NC}"
+        cd "$SOURCE_DIR/.."
+        if python3 scripts/test-adr-60-e2e.py 2>&1 | tee /tmp/adr60_output.log | grep -q "ALL TESTS PASSED"; then
+            echo -e "${GREEN}✅ ADR-60 E2E tests passed${NC}"
+            PASSED_TESTS+=("ADR-60 E2E")
+        else
+            echo -e "${RED}❌ ADR-60 E2E tests failed${NC}"
+            FAILED_TESTS+=("ADR-60 E2E")
+        fi
+    fi
+
+    # Run sync manager tests if available
     if [[ -f "$SOURCE_DIR/../scripts/test-sync-manager-integration.py" ]]; then
         echo -e "${YELLOW}Testing WriteSynchronizationManager (ADR-053)...${NC}"
         cd "$SOURCE_DIR/.."
         if python3 scripts/test-sync-manager-integration.py; then
             echo -e "${GREEN}✅ Sync manager validation passed${NC}"
+            PASSED_TESTS+=("Sync Manager")
         else
             echo -e "${RED}❌ Sync manager validation failed${NC}"
-            return 1
+            FAILED_TESTS+=("Sync Manager")
         fi
     fi
 
-    echo -e "${GREEN}✅ Local validation passed${NC}"
+    # Summary
+    echo ""
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}TEST SUMMARY${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}Passed: ${#PASSED_TESTS[@]} tests${NC}"
+    for test in "${PASSED_TESTS[@]}"; do
+        echo -e "  ${GREEN}✅ $test${NC}"
+    done
+
+    if [ ${#FAILED_TESTS[@]} -gt 0 ]; then
+        echo -e "${RED}Failed: ${#FAILED_TESTS[@]} tests${NC}"
+        for test in "${FAILED_TESTS[@]}"; do
+            echo -e "  ${RED}❌ $test${NC}"
+        done
+        echo ""
+        echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+        echo -e "${RED}🛑 DEPLOYMENT BLOCKED - CRITICAL TESTS FAILED 🛑${NC}"
+        echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "${RED}The ADR-63 mount validation tests are CRITICAL and prevent:${NC}"
+        echo -e "${RED}  - Containers being reused with wrong mount paths${NC}"
+        echo -e "${RED}  - Projects like neural-novelist only indexing README${NC}"
+        echo -e "${RED}  - 409 Docker conflicts during container creation${NC}"
+        echo ""
+        echo -e "${YELLOW}To fix:${NC}"
+        echo "  1. Review test output in /tmp/test_output.log"
+        echo "  2. Fix the issues causing test failures"
+        echo "  3. Re-run this deployment script"
+        echo ""
+        echo -e "${RED}⚠️  DO NOT attempt to bypass these tests!${NC}"
+        echo -e "${RED}⚠️  DO NOT comment out test execution!${NC}"
+        echo -e "${RED}⚠️  DO NOT deploy with --force or --skip-tests!${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✅ All critical tests passed${NC}"
     return 0
 }
 
