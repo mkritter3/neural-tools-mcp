@@ -77,13 +77,20 @@ async def test_mount_validation_regression():
         shutil.rmtree(path1, ignore_errors=True)
         shutil.rmtree(path2, ignore_errors=True)
 
-        # Remove test containers
+        # Remove test containers - check both name and label
         for container in docker_client.containers.list(all=True):
-            if 'mount-test' in container.name:
+            # Check by name or project label
+            is_test_container = (
+                'mount-test' in container.name or
+                container.labels.get('com.l9.project') == 'mount-test'
+            )
+
+            if is_test_container:
                 try:
+                    print(f"  Cleaning up: {container.name}")
                     container.remove(force=True)
-                except:
-                    pass
+                except Exception as e:
+                    print(f"  Warning: Could not remove {container.name}: {e}")
 
 
 if __name__ == "__main__":

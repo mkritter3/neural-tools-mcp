@@ -40,16 +40,51 @@ class TestADR63MountValidation:
             if os.path.exists(test_dir):
                 shutil.rmtree(test_dir)
 
-        # Clean up test containers
-        containers = cls.docker_client.containers.list(
-            all=True,
-            filters={'label': 'com.l9.test=true'}
-        )
-        for container in containers:
-            try:
-                container.remove(force=True)
-            except:
-                pass
+        # Clean up test containers - use both test label and project patterns
+        print("\nCleaning up test containers...")
+
+        # Method 1: Look for test label (new containers)
+        try:
+            test_containers = cls.docker_client.containers.list(
+                all=True,
+                filters={'label': 'com.l9.test=true'}
+            )
+            for container in test_containers:
+                try:
+                    print(f"  Removing (by label): {container.name}")
+                    container.remove(force=True)
+                except Exception as e:
+                    print(f"  Warning: Could not remove {container.name}: {e}")
+        except Exception as e:
+            print(f"  Warning: Error finding containers by label: {e}")
+
+        # Method 2: Look for test patterns (legacy containers)
+        test_project_patterns = [
+            'test-mount-change',
+            'test-stale-mount',
+            'test-env-change',
+            'mount-test',
+            'test-',
+            'adr63-',
+            'adr60-'
+        ]
+
+        all_containers = cls.docker_client.containers.list(all=True)
+        for container in all_containers:
+            # Check if it's a test container by project label or name
+            labels = container.labels
+            project = labels.get('com.l9.project', '')
+            name = container.name
+
+            # Remove if it matches any test pattern
+            is_test = any(pattern in project or pattern in name for pattern in test_project_patterns)
+
+            if is_test and 'com.l9.test' not in labels:  # Don't double-remove
+                try:
+                    print(f"  Removing (by pattern): {container.name}")
+                    container.remove(force=True)
+                except Exception as e:
+                    print(f"  Warning: Could not remove {container.name}: {e}")
 
     def create_test_dir(self, name):
         """Create a test directory with sample files"""

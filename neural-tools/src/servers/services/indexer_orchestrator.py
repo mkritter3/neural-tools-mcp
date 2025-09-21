@@ -465,14 +465,25 @@ class IndexerOrchestrator:
         # Let Docker allocate the port dynamically
         logger.info(f"[ADR-0060] Creating container {container_name} for project {project_name}")
 
+        # Detect if this is a test container
+        test_patterns = ['test-', 'adr63-', 'adr60-', 'mount-test']
+        is_test = any(pattern in project_name for pattern in test_patterns)
+
+        labels = {
+            'com.l9.managed': 'true',
+            'com.l9.project': project_name,
+            'com.l9.created': str(int(time.time()))
+        }
+
+        # Add test label if this is a test container
+        if is_test:
+            labels['com.l9.test'] = 'true'
+            logger.info(f"[TEST] Marking {container_name} as test container")
+
         container = self.docker_client.containers.run(
             image='l9-neural-indexer:production',
             name=container_name,
-            labels={
-                'com.l9.managed': 'true',
-                'com.l9.project': project_name,
-                'com.l9.created': str(int(time.time()))
-            },
+            labels=labels,
             environment={
                 'PROJECT_NAME': project_name,
                 'PROJECT_PATH': '/workspace',
