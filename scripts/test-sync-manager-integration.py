@@ -15,10 +15,10 @@ import logging
 sys.path.insert(0, str(Path(__file__).parent.parent / "neural-tools"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "neural-tools" / "src"))
 
-from src.servers.services.service_container import ServiceContainer
-from src.servers.services.project_context_manager import ProjectContextManager
-from src.servers.services.indexer_service import IncrementalIndexer
-from src.servers.services.sync_manager import WriteSynchronizationManager
+from servers.services.service_container import ServiceContainer
+from servers.services.project_context_manager import ProjectContextManager
+from servers.services.indexer_service import IncrementalIndexer
+from servers.services.sync_manager import WriteSynchronizationManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
