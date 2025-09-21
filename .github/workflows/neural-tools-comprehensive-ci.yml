@@ -18,6 +18,17 @@ jobs:
     # These tests are MANDATORY - no skipping allowed
     continue-on-error: false
 
+    services:
+      redis-cache:
+        image: redis:7-alpine
+        ports:
+          - 46379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,6 +49,15 @@ jobs:
           # Create the Docker network expected by the indexer
           docker network create l9-graphrag-network || echo "Network already exists"
           docker network ls | grep l9-graphrag-network
+
+      - name: Setup Redis environment
+        run: |
+          # Wait for Redis to be ready
+          redis-cli -h localhost -p 46379 ping
+          echo "✅ Redis is ready on port 46379"
+        env:
+          REDIS_CACHE_HOST: localhost
+          REDIS_CACHE_PORT: 46379
 
       - name: Install dependencies
         run: |
@@ -76,6 +96,10 @@ jobs:
           else
             echo "ADR-60 E2E test not found, skipping..."
           fi
+        env:
+          REDIS_CACHE_HOST: localhost
+          REDIS_CACHE_PORT: 46379
+          REDIS_CACHE_PASSWORD: cache-secret-key
 
       - name: Validate test results
         if: failure()
