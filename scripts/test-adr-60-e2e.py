@@ -117,13 +117,16 @@ class ADR60TestSuite:
 
         conflicts_detected = 0
 
+        # Create test directory
+        test_dir = tempfile.mkdtemp(prefix='test-conflict-')
+
         try:
             # Try to create 10 containers for same project
             for i in range(10):
                 try:
                     result = await self.orchestrator.ensure_indexer(
                         'test-conflict',
-                        '/tmp/test-project'
+                        test_dir
                     )
                     logger.info(f"  ✅ Container {i+1} created: {result[:12]}")
                 except docker.errors.APIError as e:
@@ -134,6 +137,10 @@ class ADR60TestSuite:
 
         finally:
             old_container.remove(force=True)
+            # Clean up test directory
+            import shutil
+            if os.path.exists(test_dir):
+                shutil.rmtree(test_dir, ignore_errors=True)
 
         # PASS CRITERIA: Must be ZERO conflicts
         if conflicts_detected == 0:
