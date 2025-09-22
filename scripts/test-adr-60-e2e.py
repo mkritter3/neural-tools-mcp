@@ -371,11 +371,12 @@ class ADR60TestSuite:
                 result2 = await self.orchestrator.ensure_indexer(project_name, tempfile.mkdtemp(prefix='test-'))
 
                 # Both should succeed and reuse the same container
-                if result1['container_id'] == result2['container_id']:
+                # ensure_indexer returns just the container ID string
+                if result1 == result2:
                     logger.info("  ✅ Local lock coordination working - container reused correctly")
                     return True
                 else:
-                    logger.error("  ❌ Local locks failed - different containers created")
+                    logger.error(f"  ❌ Local locks failed - different containers created: {result1} vs {result2}")
                     return False
             except Exception as e:
                 logger.error(f"  ❌ Local lock test failed: {e}")
