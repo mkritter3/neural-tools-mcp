@@ -69,9 +69,10 @@ jobs:
             pip install -r neural-tools/requirements.txt
           fi
 
-      - name: Build test Docker image
+      - name: Build test Docker image (no cache)
         run: |
-          docker build -f docker/Dockerfile.indexer -t l9-neural-indexer:production .
+          echo "🚀 Building fresh Docker image without cache to include latest fixes..."
+          docker build --no-cache -f docker/Dockerfile.indexer -t l9-neural-indexer:production .
           docker images | grep l9-neural-indexer
 
       - name: Run ADR-64 Unit Mount Validation Tests

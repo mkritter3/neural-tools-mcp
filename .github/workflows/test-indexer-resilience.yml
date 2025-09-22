@@ -68,10 +68,10 @@ jobs:
         pip install redis docker
         pip install -r neural-tools/config/requirements-indexer-lean.txt
 
-    - name: Build indexer image
+    - name: Build indexer image (fresh build)
       run: |
-        echo "Building l9-neural-indexer:production image..."
-        docker build -f docker/Dockerfile.indexer -t l9-neural-indexer:production .
+        echo "🚀 Building fresh l9-neural-indexer:production image without cache..."
+        docker build --no-cache -f docker/Dockerfile.indexer -t l9-neural-indexer:production .
 
     - name: Start Redis for testing
       run: |
