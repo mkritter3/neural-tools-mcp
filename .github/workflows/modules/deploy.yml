@@ -30,12 +30,12 @@ jobs:
       artifact-url: ${{ steps.artifact.outputs.url }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # Need full history for tagging
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -91,7 +91,7 @@ jobs:
           echo "url=${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/neural-tools-${{ steps.version.outputs.tag }}.tar.gz" >> $GITHUB_OUTPUT
 
       - name: Upload deployment artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: neural-tools-${{ inputs.environment }}-${{ steps.version.outputs.tag }}
           path: neural-tools-${{ steps.version.outputs.tag }}.tar.gz

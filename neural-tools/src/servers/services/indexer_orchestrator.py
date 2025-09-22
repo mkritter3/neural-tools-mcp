@@ -389,11 +389,13 @@ class IndexerOrchestrator:
 
                     # Check critical environment variables
                     current_neo4j_pass = os.getenv('NEO4J_PASSWORD', 'graphrag-password')
-                    current_qdrant_url = os.getenv('QDRANT_URL', 'http://localhost:46333')
+                    current_qdrant_host = os.getenv('QDRANT_HOST', 'host.docker.internal')
+                    current_qdrant_port = os.getenv('QDRANT_PORT', '46333')
 
                     env_valid = (
                         env_dict.get('NEO4J_PASSWORD') == current_neo4j_pass and
-                        env_dict.get('QDRANT_URL') == current_qdrant_url
+                        env_dict.get('QDRANT_HOST') == current_qdrant_host and
+                        env_dict.get('QDRANT_PORT') == current_qdrant_port
                     )
 
                     if env_valid:
@@ -417,6 +419,10 @@ class IndexerOrchestrator:
                         logger.warning(f"[ADR-0063] Environment variable mismatch for {project_name}")
                         logger.warning(f"  Container has NEO4J_PASSWORD={env_dict.get('NEO4J_PASSWORD', 'not set')}")
                         logger.warning(f"  Current expects NEO4J_PASSWORD={current_neo4j_pass}")
+                        logger.warning(f"  Container has QDRANT_HOST={env_dict.get('QDRANT_HOST', 'not set')}")
+                        logger.warning(f"  Current expects QDRANT_HOST={current_qdrant_host}")
+                        logger.warning(f"  Container has QDRANT_PORT={env_dict.get('QDRANT_PORT', 'not set')}")
+                        logger.warning(f"  Current expects QDRANT_PORT={current_qdrant_port}")
                         logger.info(f"[ADR-0063] Removing container with wrong environment")
 
                         container.remove(force=True)
