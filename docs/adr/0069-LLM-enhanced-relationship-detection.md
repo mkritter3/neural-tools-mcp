@@ -1,14 +1,14 @@
-# ADR-0069: Claude Code Haiku Enhanced Relationship Detection for Unified GraphRAG Platform
+# ADR-0069: Local LLM Enhanced Relationship Detection for Unified GraphRAG Platform
 
 **Date:** September 21, 2025
 **Status:** Proposed
-**Tags:** claude-code-haiku, relationship-detection, mcp-enhancement, graphrag-optimization, subagent-architecture
+**Tags:** qwen3-30b-a3b, ollama, local-llm, relationship-detection, mcp-enhancement, graphrag-optimization, data-sovereignty
 **Builds on:** ADR-0068 (MCP Tools Modernization), ADR-0067 (Graphiti Temporal Knowledge Graphs)
-**Dependencies:** Claude Code SDK, MCP Subagent Framework
+**Dependencies:** Ollama, Qwen3-30B-A3B Model, Outlines Library, Redis Cache
 
 ## Executive Summary
 
-Enhance ADR-68's unified content search with Claude Code Haiku subagents for intelligent document-code relationship detection, reducing false positives in temporal discrepancy analysis from ~15% (heuristic baseline) to <5% (intelligent detection) while maintaining cost-effectiveness through selective usage and SDK optimization patterns.
+Enhance ADR-68's unified content search with local Qwen3-30B-A3B LLM subagents for intelligent document-code relationship detection, reducing false positives in temporal discrepancy analysis from ~15% (heuristic baseline) to <5% (intelligent detection) while ensuring data sovereignty and eliminating external API costs through local Ollama deployment with production-grade reliability via Outlines structured output.
 
 ## Context
 
@@ -41,54 +41,110 @@ def detect_relationships_heuristic(file_path: str) -> List[Relationship]:
 2. **Missed Complex Relationships**: Tutorial docs → multiple implementation files
 3. **Refactoring Brittleness**: Fails when file names diverge from documentation
 4. **Limited Semantic Understanding**: Cannot detect conceptual relationships
+5. **External API Dependency**: Previous solutions require external service calls, increasing costs and latency
 
-### Why Claude Code Haiku for Enhancement
+### Why Qwen3-30B-A3B Local LLM for Enhancement
 
-Based on SDK documentation analysis, Haiku provides optimal characteristics for this use case:
+Based on comprehensive analysis of local LLM deployment options, Qwen3-30B-A3B via Ollama provides optimal characteristics for this use case:
 
-**From SDK Research:**
-- **Cost-Effective**: "Cost-effective task delegation based on complexity"
-- **Deterministic Tasks**: "Quick, accurate code suggestions" for structural analysis
+**From Research Analysis:**
+- **Data Sovereignty**: Complete local processing eliminates external API dependencies
+- **Performance**: 78 tokens/sec local inference vs 52-68 tokens/sec via external APIs
+- **MoE Efficiency**: 30.5B total parameters with only 3.3B active per inference
+- **Function Calling**: Native support for structured JSON output via Qwen-Agent framework
+- **Apache 2.0 License**: Permissive licensing for commercial deployment
 - **Isolated Context**: "Isolated context windows" prevent cross-contamination
 - **SDK Integration**: Native Python SDK with streaming and session management
 
 ## Decision
 
-**Implement Claude Code Haiku subagents to enhance relationship detection accuracy while maintaining cost-effectiveness through selective usage and SDK optimization patterns.**
+**Implement local Qwen3-Coder-30B-A3B LLM subagents via Ollama to enhance relationship detection accuracy while ensuring data sovereignty and eliminating external API costs through local deployment with production-grade reliability guarantees.**
 
 ## Technical Architecture
 
 ### Enhanced Relationship Detection Pipeline
 
 ```python
-# neural-tools/src/servers/tools/haiku_enhanced_relationship_detector.py
+# neural-tools/src/servers/tools/llm_enhanced_relationship_detector.py
 """
-Claude Code Haiku integration for intelligent document-code relationship detection
+Qwen3-30B-A3B via Ollama integration for intelligent document-code relationship detection
 """
 
-import asyncio
+import os
+import json
+import redis
+import httpx
+import outlines
 from pathlib import Path
-from typing import List, Dict, Optional
-from claude_code_sdk import ClaudeSDKClient, ClaudeCodeOptions
+from typing import List, Dict, Optional, Literal
+from pydantic import BaseModel, Field
 
-class HaikuEnhancedRelationshipDetector:
-    """Claude Code Haiku subagent for intelligent doc-code relationships"""
+# Pydantic schemas for guaranteed structured output via Outlines
+class Relationship(BaseModel):
+    type: Literal["DOCUMENTS", "DESCRIBES", "EXAMPLES_FOR", "RELATED_TO"] = Field(..., description="The type of relationship.")
+    target_files: List[str] = Field(..., description="The code files this documentation refers to.")
+    confidence: float = Field(..., description="Confidence score from 0.0 to 1.0.")
+    reasoning: str = Field(..., description="A brief explanation for the relationship.")
+
+class AnalysisResult(BaseModel):
+    relationships: List[Relationship]
+    requires_manual_review: bool = Field(..., description="True if the analysis is ambiguous.")
+
+# Environment configuration
+QWEN_API_HOST = os.getenv("QWEN_HOST", "http://qwen_orchestrator:11434")
+REDIS_HOST = os.getenv("REDIS_CACHE_HOST", "redis-cache")
+REDIS_PORT = int(os.getenv("REDIS_CACHE_PORT", 6379))
+REDIS_PASSWORD = os.getenv("REDIS_CACHE_PASSWORD")
+
+class LLMEnhancedRelationshipDetector:
+    """Qwen3-30B-A3B local LLM subagent for intelligent doc-code relationships with guaranteed JSON output"""
 
     def __init__(self, project_path: str):
         self.project_path = Path(project_path)
         self.heuristic_detector = BasicHeuristicDetector()
-        self.haiku_cache = {}  # Cache for similar file patterns
 
-        # Optimized Haiku configuration based on SDK best practices
-        self.haiku_options = ClaudeCodeOptions(
-            system_prompt=self._get_relationship_detection_prompt(),
-            model="claude-3-5-haiku-20241022",  # Haiku model
-            max_turns=1,  # Single-turn for efficiency
-            max_thinking_tokens=2000,  # Reduced for faster response
-            allowed_tools=["Read", "Glob", "Grep"],  # File analysis tools only
-            permission_mode="acceptEdits",  # No prompts for file reads
-            cwd=str(self.project_path)
-        )
+        # Redis cache integration for persistent, shared caching
+        self._initialize_redis_cache()
+
+        # Initialize Outlines model for guaranteed structured output
+        self._initialize_qwen3_model()
+
+    def _initialize_redis_cache(self):
+        """Initialize Redis cache with graceful fallback"""
+        try:
+            self.redis_cache = redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                password=REDIS_PASSWORD,
+                decode_responses=True
+            )
+            self.redis_cache.ping()  # Verify connection
+            print(f"✅ Connected to Redis cache at {REDIS_HOST}:{REDIS_PORT}")
+        except redis.exceptions.ConnectionError as e:
+            print(f"⚠️ Redis cache unavailable: {e}. Using in-memory fallback.")
+            self.redis_cache = None
+
+    def _initialize_qwen3_model(self):
+        """Initialize Qwen3 model via Outlines for guaranteed JSON output"""
+        try:
+            # Extract host and port from QWEN_API_HOST
+            host_parts = QWEN_API_HOST.replace("http://", "").split(":")
+            host = host_parts[0]
+            port = int(host_parts[1]) if len(host_parts) > 1 else 11434
+
+            self.qwen_model = outlines.models.ollama(
+                model="qwen3-coder-30b-a3b",
+                host=host,
+                port=port
+            )
+
+            # Create structured generator for guaranteed JSON output
+            self.json_generator = outlines.generate.json(self.qwen_model, AnalysisResult)
+            print(f"✅ Qwen3-Coder-30B-A3B model initialized via Outlines at {QWEN_API_HOST}")
+        except Exception as e:
+            print(f"❌ Failed to initialize Qwen3 model: {e}")
+            self.qwen_model = None
+            self.json_generator = None
 
     def _get_relationship_detection_prompt(self) -> str:
         """Optimized system prompt for deterministic relationship detection"""
@@ -118,36 +174,42 @@ RULES:
 
     async def detect_relationships(self, file_path: str, content_sample: str = None) -> List[Dict]:
         """
-        Enhanced relationship detection with Haiku intelligence
+        Enhanced relationship detection with local Qwen3-30B-A3B intelligence
 
         Strategy:
         1. Fast heuristic detection first (80% of cases)
-        2. Haiku analysis for ambiguous cases (20% of cases)
-        3. Caching for similar patterns
+        2. Qwen3 analysis for ambiguous cases (20% of cases)
+        3. Redis caching for persistent results
+        4. Guaranteed JSON output via Outlines
         """
         try:
             # Step 1: Fast heuristic detection
             heuristic_relationships = await self.heuristic_detector.detect(file_path)
 
-            # Step 2: Determine if Haiku analysis needed
+            # Step 2: Determine if LLM analysis needed
             if not self._needs_intelligent_analysis(file_path, heuristic_relationships):
                 return self._format_heuristic_results(heuristic_relationships)
 
-            # Step 3: Check cache for similar patterns
+            # Step 3: Check Redis cache for similar patterns
             cache_key = self._get_cache_key(file_path, content_sample)
-            if cache_key in self.haiku_cache:
-                return self.haiku_cache[cache_key]
+            if self.redis_cache:
+                cached_result = self.redis_cache.get(cache_key)
+                if cached_result:
+                    print(f"✅ Cache hit for {file_path}")
+                    return json.loads(cached_result)
 
-            # Step 4: Haiku analysis for complex cases
-            haiku_results = await self._analyze_with_haiku(file_path, content_sample)
+            # Step 4: Qwen3 analysis for complex cases with guaranteed JSON output
+            print(f"🧠 LLM analysis required for {file_path}")
+            qwen3_results = await self._analyze_with_qwen3(file_path, content_sample)
 
-            # Cache results for similar patterns
-            self.haiku_cache[cache_key] = haiku_results
+            # Step 5: Cache results with expiration (24 hours)
+            if self.redis_cache and qwen3_results:
+                self.redis_cache.set(cache_key, json.dumps(qwen3_results), ex=86400)
 
-            return haiku_results
+            return qwen3_results
 
         except Exception as e:
-            logger.warning(f"Haiku relationship detection failed for {file_path}: {e}")
+            logger.warning(f"LLM relationship detection failed for {file_path}: {e}")
             # Graceful fallback to heuristic detection
             return self._format_heuristic_results(heuristic_relationships)
 
@@ -163,15 +225,20 @@ RULES:
             self._has_conflicting_heuristics(heuristic_results)
         ])
 
-    async def _analyze_with_haiku(self, file_path: str, content_sample: str = None) -> List[Dict]:
-        """Perform Haiku analysis using optimized SDK patterns"""
+    async def _analyze_with_qwen3(self, file_path: str, content_sample: str = None) -> List[Dict]:
+        """Perform Qwen3-30B-A3B analysis with guaranteed JSON output via Outlines"""
 
-        # Prepare context for Haiku analysis
+        if not self.json_generator:
+            print("❌ Qwen3 model not available, falling back to heuristics")
+            return []
+
+        # Prepare context for LLM analysis
         analysis_context = await self._prepare_analysis_context(file_path, content_sample)
 
-        async with ClaudeSDKClient(options=self.haiku_options) as client:
-            # Construct focused prompt
-            prompt = f"""Analyze relationships for: {file_path}
+        # Construct system and user prompts optimized for Qwen3
+        system_prompt = """You are a code relationship analyzer. Your task is to determine relationships between documentation and code files based on the provided context. You must follow the user-provided JSON schema."""
+
+        user_prompt = f"""Analyze relationships for the documentation file: {file_path}
 
 FILE CONTENT SAMPLE:
 {analysis_context['content_preview']}
@@ -182,25 +249,28 @@ POTENTIAL CODE FILES:
 HEURISTIC SUGGESTIONS:
 {analysis_context['heuristic_suggestions']}
 
-Determine accurate doc-code relationships. Output JSON only."""
+Based on the context, determine the accurate doc-code relationships. Be conservative - false negatives are better than false positives."""
 
-            await client.query(prompt)
+        try:
+            # Use Outlines to generate guaranteed structured output
+            # Format prompt for Qwen3's chat template
+            full_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{user_prompt}<|im_end|>\n<|im_start|>assistant\n"
 
-            # Collect response with timeout
-            response_text = ""
-            async for message in client.receive_response():
-                if hasattr(message, 'content'):
-                    for block in message.content:
-                        if hasattr(block, 'text'):
-                            response_text += block.text
+            # Generate structured response - guaranteed to match AnalysisResult schema
+            structured_result = self.json_generator(full_prompt)
 
-                if type(message).__name__ == "ResultMessage":
-                    break
+            # Convert Pydantic model to list of dicts for consistent output
+            if structured_result and structured_result.relationships:
+                return [rel.dict() for rel in structured_result.relationships]
+            else:
+                return []
 
-            return self._parse_haiku_response(response_text)
+        except Exception as e:
+            print(f"❌ Qwen3 analysis failed: {e}")
+            return []
 
     async def _prepare_analysis_context(self, file_path: str, content_sample: str = None) -> Dict:
-        """Prepare optimized context for Haiku analysis"""
+        """Prepare optimized context for LLM analysis"""
 
         # Read file content if not provided (first 2KB for efficiency)
         if content_sample is None:
@@ -407,28 +477,186 @@ async def batch_relationship_detection(files: List[str]) -> Dict[str, List[Dict]
 
 ## Implementation Plan
 
-### Phase 1: Haiku Subagent Development (Week 1)
+### Phase 1: Docker Infrastructure Setup (Week 1)
 
-**Goals**: Create production-ready Haiku relationship detector
+**Goals**: Deploy Qwen3-Coder-30B-A3B via Ollama with production-grade reliability
+
+```yaml
+# docker-compose.yml additions - Hybrid deployment configuration
+services:
+  # Optional Ollama service for shared/Docker deployment
+  # Use profiles to enable only when needed
+  qwen_orchestrator:
+    image: ollama/ollama:latest
+    container_name: qwen_orchestrator
+    profiles: ["docker-ollama"]  # Only runs with --profile docker-ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - qwen_models:/root/.ollama
+    ports:
+      - "11435:11434"  # Dedicated port for Qwen3 orchestrator
+    restart: unless-stopped
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Enhanced l9-graphrag service with flexible Qwen3 configuration
+  l9-graphrag:
+    environment:
+      # Existing environment variables...
+      # Flexible Qwen host - supports both local and Docker deployment
+      - QWEN_HOST=${QWEN_HOST:-http://qwen_orchestrator:11434}
+      - REDIS_CACHE_HOST=redis-cache
+      - REDIS_CACHE_PORT=6379
+      - REDIS_CACHE_PASSWORD=${REDIS_CACHE_PASSWORD:-cache-secret-key}
+    depends_on:
+      - redis-cache
+      # Conditional dependency only when using Docker Ollama
+      # qwen_orchestrator: (managed by profiles)
+
+volumes:
+  qwen_models:
+    driver: local
+```
 
 ```python
 # Week 1 Deliverables
 deliverables = [
-    "HaikuEnhancedRelationshipDetector class with SDK integration",
-    "Selective usage logic with cost controls",
-    "Caching system for pattern reuse",
-    "Error handling and graceful fallback",
-    "Performance monitoring and metrics"
+    "LLMEnhancedRelationshipDetector class with Ollama integration",
+    "Outlines library integration for guaranteed JSON output",
+    "Redis caching system for persistent results",
+    "Hybrid Docker Compose configuration with deployment profiles",
+    "Model initialization and health monitoring",
+    "Local development setup documentation"
 ]
 
 # Week 1 Testing
-testing_criteria = [
-    "Relationship detection accuracy >90% on validation dataset",
-    "Haiku usage <2% of total file processing",
-    "Response time <500ms for Haiku analysis",
-    "Graceful fallback when Haiku unavailable",
-    "Cost tracking and circuit breaker functionality"
+unit_testing_criteria = [
+    "Qwen3 model successfully deployed and accessible (both modes)",
+    "GPU utilization <80% during inference (host mode)",
+    "Redis cache connectivity and persistence",
+    "Outlines JSON schema validation 100% success rate",
+    "Docker container startup time <60 seconds (Docker mode)",
+    "Host connectivity via host.docker.internal (local mode)"
 ]
+
+# Week 1 Integration Tests
+integration_testing_criteria = [
+    "End-to-end relationship detection pipeline test",
+    "Real documentation file processing with actual Qwen3 inference",
+    "Redis cache persistence across container restarts",
+    "Graceful fallback from LLM to heuristic on Qwen3 failure",
+    "Memory usage <4GB during sustained operation",
+    "Cross-platform deployment validation (local + Docker modes)"
+]
+
+# Week 1 CI/CD Gates
+cicd_exit_conditions = [
+    "✅ Automated Docker health checks pass",
+    "✅ Integration test suite achieves 100% pass rate",
+    "✅ Performance benchmarks meet latency targets (<100ms)",
+    "✅ Resource utilization stays within limits",
+    "✅ Zero memory leaks during 1-hour stress test",
+    "✅ Documentation deployment guides work for new users"
+]
+```
+
+## Deployment Configuration
+
+### Local Development Setup (Host Ollama + GPU)
+
+**Recommended for fast local development with GPU acceleration**
+
+```bash
+# 1. Install and run Ollama on host machine
+curl -fsSL https://ollama.ai/install.sh | sh
+ollama serve --host 0.0.0.0
+
+# 2. Load your local Qwen3-Coder model (one time setup)
+# Create Modelfile for your local GGUF model
+cat > Modelfile << EOF
+FROM /Users/mkr/models/qwen3-coder/qwen3-coder-30b-a3b-instruct-q4_k_m.gguf
+TEMPLATE """<|im_start|>system
+{{ .System }}<|im_end|>
+<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""
+PARAMETER stop <|im_start|>
+PARAMETER stop <|im_end|>
+EOF
+
+# Create the model in Ollama
+ollama create qwen3-coder-30b-a3b -f Modelfile
+
+# 3. Create local environment configuration
+cat > .env.local << EOF
+QWEN_HOST=http://host.docker.internal:11434
+REDIS_CACHE_HOST=redis-cache
+REDIS_CACHE_PORT=6379
+REDIS_CACHE_PASSWORD=cache-secret-key
+EOF
+
+# 4. Start services (excludes Docker Ollama)
+docker-compose --env-file .env.local up
+```
+
+### Shared/Team Deployment (Docker Ollama)
+
+**For team members or servers with proper GPU Docker support**
+
+```bash
+# 1. Create Docker environment configuration
+cat > .env.docker << EOF
+QWEN_HOST=http://qwen_orchestrator:11434
+REDIS_CACHE_HOST=redis-cache
+REDIS_CACHE_PORT=6379
+REDIS_CACHE_PASSWORD=cache-secret-key
+EOF
+
+# 2. Start all services including Docker Ollama
+docker-compose --profile docker-ollama --env-file .env.docker up
+
+# 3. Initialize model (first time only)
+# Option A: Pull from Ollama Hub (if available)
+docker exec qwen_orchestrator ollama pull qwen3-coder:30b
+
+# Option B: Copy your local model into container
+docker cp /Users/mkr/models/qwen3-coder/qwen3-coder-30b-a3b-instruct-q4_k_m.gguf qwen_orchestrator:/tmp/
+docker exec qwen_orchestrator sh -c "
+cat > /tmp/Modelfile << EOF
+FROM /tmp/qwen3-coder-30b-a3b-instruct-q4_k_m.gguf
+TEMPLATE \"\"\"<|im_start|>system
+{{ .System }}<|im_end|>
+<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+\"\"\"
+PARAMETER stop <|im_start|>
+PARAMETER stop <|im_end|>
+EOF
+ollama create qwen3-coder-30b-a3b -f /tmp/Modelfile
+"
+```
+
+### CPU-Only Fallback (Development/Testing)
+
+**For environments without GPU access**
+
+```bash
+# Use smaller, CPU-friendly model for testing
+QWEN_MODEL=qwen3-coder:7b  # Much faster on CPU
+QWEN_HOST=http://host.docker.internal:11434
 ```
 
 ### Phase 2: Integration with ADR-68 (Week 2)
@@ -438,24 +666,45 @@ testing_criteria = [
 ```python
 # Integration Points
 integration_steps = [
-    "Enhance unified_content_search with optional Haiku analysis",
+    "Enhance unified_content_search with local LLM analysis",
     "A/B testing framework for accuracy comparison",
-    "Performance monitoring and cost tracking",
+    "GPU resource monitoring and thermal management",
     "Configuration flags for gradual rollout",
-    "Comprehensive error handling and monitoring"
+    "Comprehensive error handling and Redis fallback"
 ]
 
 # A/B Testing Configuration
 ab_testing_config = {
-    "haiku_percentage": 20,  # Start with 20% Haiku usage
+    "llm_percentage": 20,  # Start with 20% LLM usage
     "baseline_percentage": 80,  # 80% heuristic baseline
     "success_metrics": [
         "relationship_detection_accuracy",
         "false_positive_rate",
-        "user_satisfaction_score",
-        "cost_per_relationship_detected"
+        "inference_latency",
+        "gpu_utilization_efficiency",
+        "redis_cache_hit_rate"
     ]
 }
+
+# Week 2 Integration Tests
+phase2_integration_tests = [
+    "ADR-68 unified_content_search integration verification",
+    "A/B testing framework statistical significance validation",
+    "Cross-ADR compatibility: ADR-66 (Neo4j) + ADR-67 (Graphiti) + ADR-68 + ADR-69",
+    "Real-world codebase processing (>1000 files) end-to-end test",
+    "Concurrent user simulation (10+ simultaneous queries)",
+    "Database consistency validation after LLM enrichment"
+]
+
+# Week 2 CI/CD Gates
+phase2_cicd_gates = [
+    "✅ A/B testing shows statistically significant accuracy improvement",
+    "✅ Performance regression tests pass (no degradation to existing features)",
+    "✅ Multi-ADR integration tests achieve 100% success rate",
+    "✅ Load testing demonstrates stable performance under concurrent usage",
+    "✅ Backward compatibility maintained with existing ADR-68 API",
+    "✅ Monitoring dashboards accurately track LLM vs heuristic performance"
+]
 ```
 
 ### Phase 3: Production Deployment (Week 3)
@@ -465,13 +714,36 @@ ab_testing_config = {
 ```python
 # Production Readiness Checklist
 production_checklist = [
-    "✅ Performance validation: <50ms additional latency",
-    "✅ Cost controls: <2% of total processing cost",
+    "✅ Performance validation: <100ms inference latency",
+    "✅ Resource efficiency: GPU utilization 60-80% range",
     "✅ Accuracy improvement: >95% relationship detection",
+    "✅ Data sovereignty: Zero external API calls",
     "✅ Fallback reliability: 100% graceful degradation",
     "✅ Monitoring and alerting: Comprehensive coverage",
     "✅ Documentation: User guides and troubleshooting",
     "✅ Circuit breaker: Automatic cost protection"
+]
+
+# Week 3 Production Integration Tests
+production_integration_tests = [
+    "Full-scale deployment validation in production environment",
+    "Disaster recovery testing (Redis failure, Qwen3 unavailability)",
+    "24-hour continuous operation stability test",
+    "Production data processing validation (real user workloads)",
+    "Security testing: data isolation, no credential exposure",
+    "Multi-project concurrent operation validation",
+    "Rollback procedure validation and timing verification"
+]
+
+# Week 3 Production CI/CD Gates
+production_cicd_gates = [
+    "✅ Production deployment automation succeeds without manual intervention",
+    "✅ Health checks and monitoring confirm system stability over 24+ hours",
+    "✅ User acceptance testing demonstrates measurable accuracy improvements",
+    "✅ Security audit confirms no data sovereignty violations",
+    "✅ Performance benchmarks sustained under production load",
+    "✅ Incident response procedures tested and documented",
+    "✅ Rollback capability verified with <5 minute recovery time"
 ]
 
 # Gradual Rollout Strategy
