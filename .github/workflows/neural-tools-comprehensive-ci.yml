@@ -88,6 +88,9 @@ jobs:
           echo "🚨 Running ADR-64 integration tests (Docker required)..."
           python3 tests/integration/test_indexer_mount_validation.py
           echo "priority_tests_passed=true" >> $GITHUB_OUTPUT
+        env:
+          REDIS_CACHE_HOST: localhost
+          REDIS_CACHE_PORT: 46379
 
       - name: Run ADR-60 E2E Tests
         id: adr60_tests
