@@ -367,8 +367,10 @@ class ADR60TestSuite:
             # With local locks, we can't simulate cross-instance contention,
             # but we can verify that the system works correctly in sequence
             try:
-                result1 = await self.orchestrator.ensure_indexer(project_name, tempfile.mkdtemp(prefix='test-'))
-                result2 = await self.orchestrator.ensure_indexer(project_name, tempfile.mkdtemp(prefix='test-'))
+                # Use the same mount path for both calls to test proper container reuse
+                test_mount_path = tempfile.mkdtemp(prefix='test-')
+                result1 = await self.orchestrator.ensure_indexer(project_name, test_mount_path)
+                result2 = await self.orchestrator.ensure_indexer(project_name, test_mount_path)
 
                 # Both should succeed and reuse the same container
                 # ensure_indexer returns just the container ID string
