@@ -66,7 +66,7 @@ class ContainerDiscoveryService:
                 if container_name == f"indexer-{project_name}":
                     exact_match = container
                     break  # Exact match is best, stop here
-                elif f"indexer-{project_name}" in container_name:
+                elif container_name and f"indexer-{project_name}" in container_name:
                     partial_matches.append(container)
 
             # Use exact match if found, otherwise warn about partial matches
