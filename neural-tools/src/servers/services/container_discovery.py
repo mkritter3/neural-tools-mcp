@@ -72,8 +72,7 @@ class ContainerDiscoveryService:
             # Use exact match if found, otherwise warn about partial matches
             if exact_match:
                 container = exact_match
-                container_name = container.name
-                logger.info(f"🐳 Found existing container (exact match): {container_name}")
+                logger.info(f"🐳 Found existing container (exact match): {container.name}")
             elif partial_matches:
                 # Log warning about ambiguous matches
                 logger.warning(f"⚠️ Found {len(partial_matches)} partial matches for indexer-{project_name}: {[c.name for c in partial_matches]}")
@@ -85,6 +84,12 @@ class ContainerDiscoveryService:
 
             # Now process the found container
             if container:
+                # Ensure we have the container name
+                container_name = container.name
+                if not container_name:
+                    logger.warning(f"⚠️ Container {container.id[:12]} has no name, skipping")
+                    return None
+
                 # Get port mapping
                 ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
                 host_port = None
