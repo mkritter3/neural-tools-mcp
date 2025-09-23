@@ -737,8 +737,16 @@ class ServiceContainer:
             
             for attempt in range(max_retries):
                 neo4j_ok = self.ensure_neo4j_client()
-                qdrant_ok = self.ensure_qdrant_client()
-                
+
+                # ADR-0074: Support Neo4j-only mode (unified architecture)
+                skip_qdrant = os.getenv("ADR_074_NEO4J_ONLY", "false").lower() == "true"
+
+                if skip_qdrant:
+                    logger.info("🎯 ADR-0074: Neo4j-only mode enabled, skipping Qdrant requirement")
+                    qdrant_ok = True  # Bypass Qdrant requirement
+                else:
+                    qdrant_ok = self.ensure_qdrant_client()
+
                 if neo4j_ok and qdrant_ok:
                     logger.info(f"✅ Services connected on attempt {attempt + 1}/{max_retries}")
                     break

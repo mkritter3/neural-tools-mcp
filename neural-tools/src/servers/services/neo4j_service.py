@@ -246,7 +246,7 @@ class Neo4jService:
             }
     
     async def _ensure_constraints(self):
-        """Ensure graph constraints with project-based isolation (ADR-0029)"""
+        """Ensure graph constraints with project-based isolation (ADR-0029) and vector indexes (ADR-0066)"""
         try:
             # ADR-0029: Composite constraints for multi-project isolation
             # These constraints ensure uniqueness WITHIN each project
@@ -255,23 +255,94 @@ class Neo4jService:
                 "CREATE CONSTRAINT file_project_path_unique IF NOT EXISTS FOR (f:File) REQUIRE (f.project, f.path) IS UNIQUE",
                 "CREATE CONSTRAINT class_project_name_unique IF NOT EXISTS FOR (c:Class) REQUIRE (c.project, c.name, c.file_path) IS UNIQUE",
                 "CREATE CONSTRAINT method_project_signature_unique IF NOT EXISTS FOR (m:Method) REQUIRE (m.project, m.name, m.class_name, m.file_path) IS UNIQUE",
-                
+
                 # CRITICAL: Index on project property for performance
-                "CREATE INDEX project_property_index IF NOT EXISTS FOR (n) ON (n.project)",
-                
+                "CREATE INDEX project_property_index IF NOT EXISTS FOR (n:File) ON (n.project)",
+                "CREATE INDEX project_property_chunk_index IF NOT EXISTS FOR (n:Chunk) ON (n.project)",
+
                 # Additional indexes for query performance
                 "CREATE INDEX file_language_index IF NOT EXISTS FOR (f:File) ON (f.language)",
                 "CREATE INDEX class_name_index IF NOT EXISTS FOR (c:Class) ON (c.name)",
                 "CREATE INDEX method_name_index IF NOT EXISTS FOR (m:Method) ON (m.name)"
             ]
-            
+
             for constraint in constraints:
                 await self.client.execute_query(constraint)
-                
-            logger.info("Neo4j constraints created for project isolation (ADR-0029)")
-                
+
+            # ADR-0066: Create vector indexes for elite GraphRAG performance
+            await self._ensure_vector_indexes()
+
+            logger.info("Neo4j constraints and vector indexes created for elite GraphRAG (ADR-0029, ADR-0066)")
+
         except Exception as e:
             logger.warning(f"Could not create constraints: {e}")
+
+    async def _ensure_vector_indexes(self):
+        """ADR-0066: Create vector indexes for HNSW-optimized semantic search"""
+        try:
+            # Check if vector indexes already exist
+            check_query = """
+            SHOW INDEXES
+            YIELD name, type
+            WHERE type = 'VECTOR'
+            RETURN name
+            """
+
+            existing_result = await self.client.execute_query(check_query)
+            existing_indexes = []
+            if existing_result.get("status") == "success":
+                existing_indexes = [record["name"] for record in existing_result["result"]]
+
+            # Vector indexes for elite GraphRAG performance - Neo4j 5.23+ compliant
+            # Using minimal required configuration for maximum compatibility
+            vector_indexes = [
+                {
+                    "name": "chunk_embeddings_index",
+                    "query": """
+                    CREATE VECTOR INDEX chunk_embeddings_index IF NOT EXISTS
+                    FOR (c:Chunk) ON c.embedding
+                    OPTIONS {
+                        indexConfig: {
+                            `vector.dimensions`: 768,
+                            `vector.similarity_function`: 'cosine'
+                        }
+                    }
+                    """,
+                    "description": "Elite chunk search: Optimized for Nomic 768-dimensional embeddings with cosine similarity"
+                },
+                {
+                    "name": "file_embeddings_index",
+                    "query": """
+                    CREATE VECTOR INDEX file_embeddings_index IF NOT EXISTS
+                    FOR (f:File) ON f.embedding
+                    OPTIONS {
+                        indexConfig: {
+                            `vector.dimensions`: 768,
+                            `vector.similarity_function`: 'cosine'
+                        }
+                    }
+                    """,
+                    "description": "File search: Optimized for Nomic 768-dimensional embeddings with cosine similarity"
+                }
+            ]
+
+            for index_config in vector_indexes:
+                index_name = index_config["name"]
+                if index_name not in existing_indexes:
+                    logger.info(f"Creating vector index: {index_name}")
+                    result = await self.client.execute_query(index_config["query"])
+                    if result.get("status") == "success":
+                        logger.info(f"✅ Vector index {index_name} created successfully")
+                    else:
+                        logger.error(f"❌ Failed to create vector index {index_name}: {result.get('message')}")
+                else:
+                    logger.info(f"✅ Vector index {index_name} already exists")
+
+            logger.info("Vector indexes ensured for elite GraphRAG performance (ADR-0066)")
+
+        except Exception as e:
+            logger.error(f"Failed to create vector indexes: {e}")
+            # Don't fail initialization if vector indexes fail - they can be created later
     
     async def execute_query(self, cypher_query: str, parameters: Optional[Dict] = None) -> Dict[str, Any]:
         """Execute query using Neo4j 5.x+ standard naming (ADR-0046). Delegates to execute_cypher."""
@@ -339,33 +410,33 @@ class Neo4jService:
         """Perform semantic search across graph entities with intelligent caching"""
         if not self.initialized:
             return []
-        
+
         # Check cache for semantic search results (shorter TTL due to content sensitivity)
         search_params = {"query": query_text.lower(), "limit": limit}
         cache_key = self._generate_cache_key(f"semantic_search:{query_text}", search_params, "semantic")
-        
+
         if self.enable_caching:
             cached_result = await self._get_from_cache(cache_key)
             if cached_result:
                 logger.debug(f"Semantic search cache hit for: {query_text[:50]}...")
                 return cached_result.get("search_results", [])
-        
+
         # Search across files, classes, and methods for relevant text
         cypher = """
-        MATCH (n) 
+        MATCH (n)
         WHERE (n:File OR n:Class OR n:Method)
-          AND (n.content CONTAINS $query 
-               OR n.name CONTAINS $query 
+          AND (n.content CONTAINS $query
+               OR n.name CONTAINS $query
                OR n.description CONTAINS $query)
         RETURN n, labels(n) as node_type
         LIMIT $limit
         """
-        
+
         result = await self.execute_cypher(cypher, search_params)
-        
+
         if result["status"] == "success":
             search_results = result["result"]
-            
+
             # Cache semantic search results with shorter TTL
             if self.enable_caching:
                 cache_result = {
@@ -375,11 +446,162 @@ class Neo4jService:
                     "cached_at": int(time.time())
                 }
                 await self._store_in_cache(cache_key, cache_result, self.cache_ttl_semantic)
-            
+
             return search_results
         else:
             logger.error(f"Semantic search failed: {result.get('message')}")
             return []
+
+    async def vector_similarity_search(self, query_embedding: List[float], node_type: str = "Chunk", limit: int = 10, min_score: float = 0.7) -> List[Dict[str, Any]]:
+        """ADR-0066: Elite GraphRAG vector similarity search using Neo4j HNSW indexes"""
+        if not self.initialized:
+            return []
+
+        # Validate inputs
+        if not query_embedding or len(query_embedding) != 768:
+            logger.error(f"Invalid embedding dimensions: expected 768, got {len(query_embedding)}")
+            return []
+
+        valid_node_types = ["Chunk", "File"]
+        if node_type not in valid_node_types:
+            logger.error(f"Invalid node type: {node_type}. Must be one of {valid_node_types}")
+            return []
+
+        # Cache key for vector search
+        embedding_hash = hashlib.sha256(str(query_embedding).encode()).hexdigest()[:16]
+        cache_key = self._generate_cache_key(f"vector_search:{node_type}:{embedding_hash}", {"limit": limit, "min_score": min_score}, "vector")
+
+        if self.enable_caching:
+            cached_result = await self._get_from_cache(cache_key)
+            if cached_result:
+                logger.debug(f"Vector search cache hit for {node_type}")
+                return cached_result.get("search_results", [])
+
+        # Use appropriate vector index based on node type (Neo4j may modify index names)
+        index_name = "chunk_embeddings_index" if node_type == "Chunk" else "file_embeddings_index"
+
+        # ADR-0066: Use Neo4j's native vector search with HNSW indexes
+        cypher = f"""
+        CALL db.index.vector.queryNodes($index_name, $top_k, $query_vector)
+        YIELD node, score
+        WHERE score >= $min_score
+          AND node.project = $project
+        RETURN node, score, labels(node) as node_type
+        ORDER BY score DESC
+        LIMIT $limit
+        """
+
+        search_params = {
+            "index_name": index_name,
+            "top_k": limit * 3,  # Get more candidates for filtering
+            "query_vector": query_embedding,
+            "min_score": min_score,
+            "limit": limit,
+            "project": self.project_name
+        }
+
+        result = await self.execute_cypher(cypher, search_params)
+
+        if result["status"] == "success":
+            search_results = result["result"]
+
+            # Enhance results with metadata
+            enhanced_results = []
+            for record in search_results:
+                node = record["node"]
+                score = record["score"]
+                enhanced_result = {
+                    "node": node,
+                    "similarity_score": score,
+                    "node_type": record["node_type"],
+                    "search_type": "vector_similarity",
+                    "index_used": index_name
+                }
+                enhanced_results.append(enhanced_result)
+
+            # Cache vector search results
+            if self.enable_caching:
+                cache_result = {
+                    "search_results": enhanced_results,
+                    "node_type": node_type,
+                    "limit": limit,
+                    "min_score": min_score,
+                    "cached_at": int(time.time())
+                }
+                await self._store_in_cache(cache_key, cache_result, self.cache_ttl_semantic)
+
+            logger.info(f"✅ Elite vector search completed: {len(enhanced_results)} results for {node_type} (index: {index_name})")
+            return enhanced_results
+        else:
+            logger.error(f"Vector similarity search failed: {result.get('message')}")
+            return []
+
+    async def hybrid_search(self, query_text: str, query_embedding: List[float], limit: int = 10, vector_weight: float = 0.7) -> List[Dict[str, Any]]:
+        """ADR-0066: Elite GraphRAG hybrid search combining vector similarity and text search"""
+        if not self.initialized:
+            return []
+
+        # Validate inputs
+        if vector_weight < 0 or vector_weight > 1:
+            logger.error(f"Invalid vector_weight: {vector_weight}. Must be between 0 and 1")
+            return []
+
+        text_weight = 1.0 - vector_weight
+
+        # Get vector similarity results
+        vector_results = await self.vector_similarity_search(query_embedding, "Chunk", limit * 2)
+
+        # Get text search results
+        text_results = await self.semantic_search(query_text, limit * 2)
+
+        # Combine and score results
+        combined_results = {}
+
+        # Add vector results with vector weight
+        for result in vector_results:
+            node = result["node"]
+            node_id = node.get("chunk_id") or node.get("path")
+            if node_id:
+                combined_results[node_id] = {
+                    "node": node,
+                    "vector_score": result["similarity_score"] * vector_weight,
+                    "text_score": 0.0,
+                    "combined_score": result["similarity_score"] * vector_weight,
+                    "node_type": result["node_type"],
+                    "search_type": "hybrid"
+                }
+
+        # Add text results with text weight
+        for result in text_results:
+            node = result["n"]
+            node_id = node.get("chunk_id") or node.get("path")
+            if node_id:
+                text_score = 1.0 * text_weight  # Simple text relevance score
+
+                if node_id in combined_results:
+                    # Update existing result
+                    combined_results[node_id]["text_score"] = text_score
+                    combined_results[node_id]["combined_score"] += text_score
+                else:
+                    # New text-only result
+                    combined_results[node_id] = {
+                        "node": node,
+                        "vector_score": 0.0,
+                        "text_score": text_score,
+                        "combined_score": text_score,
+                        "node_type": result["node_type"],
+                        "search_type": "hybrid"
+                    }
+
+        # Sort by combined score and return top results
+        sorted_results = sorted(
+            combined_results.values(),
+            key=lambda x: x["combined_score"],
+            reverse=True
+        )[:limit]
+
+        logger.info(f"✅ Hybrid search completed: {len(sorted_results)} results (vector_weight: {vector_weight})")
+        return sorted_results
     
     async def get_code_dependencies(self, file_path: str, max_depth: int = 3) -> Dict[str, Any]:
         """Get code dependencies for a file with traversal depth"""
