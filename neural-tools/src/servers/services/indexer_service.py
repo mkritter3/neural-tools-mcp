@@ -886,6 +886,169 @@ class IncrementalIndexer(FileSystemEventHandler):
         
         return metadata
 
+    async def _index_unified(self, file_path: str, relative_path: Path, chunks: List[Dict], content: str) -> bool:
+        """ADR-0066: Unified Neo4j indexing - vectors + graph in single atomic transaction"""
+        try:
+            # 1. Generate embeddings with Nomic
+            texts = [chunk['text'] for chunk in chunks]
+            embeddings = await self.container.nomic.get_embeddings(texts)
+
+            if not embeddings:
+                logger.error(f"Nomic embedding failed for {relative_path}")
+                raise RuntimeError(f"Nomic embedding failed for {relative_path}: No embeddings generated")
+
+            # 2. Extract symbols for graph enrichment
+            symbols_data = None
+            if self.tree_sitter_extractor and str(file_path).endswith(('.py', '.js', '.jsx', '.ts', '.tsx')):
+                try:
+                    symbols_result = await self.tree_sitter_extractor.extract_symbols_from_file(
+                        file_path, content, timeout=5.0
+                    )
+                    if symbols_result and not symbols_result.get('error'):
+                        symbols_data = symbols_result.get('symbols', [])
+                        logger.info(f"✓ Extracted {len(symbols_data)} symbols from {file_path}")
+                except Exception as e:
+                    logger.warning(f"Symbol extraction failed for {file_path}: {e}")
+
+            # 3. Single atomic transaction: store file + chunks with embeddings + symbols
+            success = await self._store_unified_neo4j(
+                file_path, relative_path, chunks, embeddings, content, symbols_data
+            )
+
+            if success:
+                logger.info(f"✅ Unified Neo4j storage successful: {len(chunks)} chunks with vectors")
+                return True
+            else:
+                raise RuntimeError(f"Neo4j unified storage failed for {relative_path}")
+
+        except Exception as e:
+            logger.error(f"Unified indexing failed for {relative_path}: {e}")
+            return False
+
+    async def _store_unified_neo4j(self, file_path: str, relative_path: Path, chunks: List[Dict],
+                                   embeddings: List[List[float]], content: str, symbols_data: List[Dict] = None) -> bool:
+        """ADR-0066: Store file, chunks with embeddings, and symbols in single Neo4j transaction"""
+        try:
+            file_hash = hashlib.sha256(content.encode()).hexdigest()
+            metadata = self._extract_metadata(content, file_path)
+
+            # Build single atomic Cypher transaction
+            cypher = """
+            // 1. Create or update File node
+            MERGE (f:File {path: $path, project: $project})
+            SET f += {
+                name: $name,
+                content_hash: $file_hash,
+                size: $size,
+                created_time: datetime(),
+                updated_time: datetime(),
+                indexed_time: datetime(),
+                project: $project,
+                file_type: $file_type,
+                language: $language,
+                is_test: $is_test,
+                is_config: $is_config,
+                is_docs: $is_docs,
+                complexity_score: $complexity_score,
+                importance: $importance
+            }
+
+            // 2. Remove old chunks
+            MATCH (f)-[:HAS_CHUNK]->(old_chunk:Chunk)
+            DETACH DELETE old_chunk
+
+            // 3. Create new chunks with embeddings
+            WITH f
+            UNWIND $chunks_data AS chunk_data
+            CREATE (c:Chunk {
+                chunk_id: chunk_data.chunk_id,
+                content: chunk_data.content,
+                start_line: chunk_data.start_line,
+                end_line: chunk_data.end_line,
+                size: chunk_data.size,
+                project: $project,
+                embedding: chunk_data.embedding,  // Store vector directly in Neo4j
+                created_time: datetime()
+            })
+            CREATE (f)-[:HAS_CHUNK]->(c)
+
+            // 4. Create symbol nodes if provided
+            WITH f, collect(c) as chunks
+            CALL apoc.do.when(
+                $symbols_data IS NOT NULL AND size($symbols_data) > 0,
+                "
+                UNWIND $symbols_data AS symbol
+                CREATE (s:Symbol {
+                    name: symbol.name,
+                    type: symbol.type,
+                    start_line: symbol.start_line,
+                    end_line: symbol.end_line,
+                    project: $project
+                })
+                CREATE (f)-[:HAS_SYMBOL]->(s)
+                RETURN count(s) as symbols_created
+                ",
+                "RETURN 0 as symbols_created",
+                {symbols_data: $symbols_data, f: f, project: $project}
+            ) YIELD value
+
+            RETURN f.path as file_path, size(chunks) as chunks_created, value.symbols_created as symbols_created
+            """
+
+            # Prepare chunk data with embeddings
+            chunks_data = []
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                chunk_id = f"{relative_path}:chunk:{i}"
+                chunks_data.append({
+                    'chunk_id': chunk_id,
+                    'content': chunk['text'],
+                    'start_line': chunk.get('start_line', 0),
+                    'end_line': chunk.get('end_line', 0),
+                    'size': len(chunk['text']),
+                    'embedding': embedding  # Store vector directly in Neo4j
+                })
+
+            params = {
+                'path': str(relative_path),
+                'project': self.project_name,
+                'name': relative_path.name,
+                'file_hash': file_hash,
+                'size': len(content),
+                'file_type': metadata.get('file_type', 'unknown'),
+                'language': metadata.get('language', 'unknown'),
+                'is_test': metadata.get('is_test', False),
+                'is_config': metadata.get('is_config', False),
+                'is_docs': metadata.get('is_docs', False),
+                'complexity_score': metadata.get('complexity_score', 0),
+                'importance': metadata.get('importance', 1.0),
+                'chunks_data': chunks_data,
+                'symbols_data': symbols_data
+            }
+
+            # Execute atomic transaction
+            result = await self.container.neo4j.execute_cypher(cypher, params)
+
+            if result.get('status') == 'success':
+                result_data = result.get('result', [{}])[0]
+                chunks_created = result_data.get('chunks_created', 0)
+                symbols_created = result_data.get('symbols_created', 0)
+
+                logger.info(f"✅ Neo4j unified storage: {chunks_created} chunks + {symbols_created} symbols")
+
+                # Update metrics
+                self.metrics['chunks_created'] += chunks_created
+                if symbols_created:
+                    self.metrics['symbols_created'] = self.metrics.get('symbols_created', 0) + symbols_created
+
+                return True
+            else:
+                logger.error(f"Neo4j unified storage failed: {result.get('message')}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Neo4j unified storage error: {e}")
+            return False
+
     async def _index_semantic(self, file_path: str, relative_path: Path, chunks: List[Dict]) -> bool:
         """Index with full semantic embeddings and GraphRAG cross-references"""
         try:
