@@ -1,0 +1,17 @@
+FROM qwen2.5-coder:7b
+
+# Optimize for Intel iMac Pro with 8 physical cores
+PARAMETER num_thread 8
+
+# Set temperature to 0 for deterministic entity extraction
+PARAMETER temperature 0
+
+# Optimize context for code episodes (adjust as needed)
+PARAMETER num_ctx 4096
+
+# Reduce repetition penalty for more consistent JSON output
+PARAMETER repeat_penalty 1.0
+
+# Set stop tokens for qwen-coder
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"
