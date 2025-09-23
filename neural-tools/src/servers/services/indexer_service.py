@@ -1049,205 +1049,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             logger.error(f"Neo4j unified storage error: {e}")
             return False
 
-    async def _index_semantic(self, file_path: str, relative_path: Path, chunks: List[Dict]) -> bool:
-        """Index with full semantic embeddings and GraphRAG cross-references"""
-        try:
-            # Extract symbols if tree-sitter is available
-            symbols_data = None
-            if self.tree_sitter_extractor and file_path.endswith(('.py', '.js', '.jsx', '.ts', '.tsx')):
-                logger.debug(f"Attempting symbol extraction for {file_path}")
-                try:
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                    
-                    symbols_result = await self.tree_sitter_extractor.extract_symbols_from_file(
-                        file_path, content, timeout=5.0
-                    )
-                    
-                    if symbols_result and not symbols_result.get('error'):
-                        symbols_data = symbols_result.get('symbols', [])
-                        logger.info(f"✓ Extracted {len(symbols_data)} symbols from {file_path}")
-                        # Log first few symbols for verification
-                        for symbol in symbols_data[:3]:
-                            logger.debug(f"  - {symbol['type']}: {symbol['name']}")
-                    else:
-                        logger.debug(f"No symbols extracted from {file_path}: {symbols_result.get('error', 'unknown')}")
-                except Exception as e:
-                    logger.warning(f"Symbol extraction failed for {file_path}: {e}")
-            else:
-                if not self.tree_sitter_extractor:
-                    logger.debug("Tree-sitter extractor not available")
-                elif not file_path.endswith(('.py', '.js', '.jsx', '.ts', '.tsx')):
-                    logger.debug(f"Skipping symbol extraction for non-supported file: {file_path}")
-            
-            # Extract metadata for the file (ADR-0031)
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            metadata = await self._extract_metadata(file_path, content)
-            
-            # Prepare texts for embedding
-            texts = [f"File: {relative_path}\n{chunk['text'][:500]}" for chunk in chunks]
-            
-            # Get embeddings in batch
-            embeddings = await self.container.nomic.get_embeddings(texts)
-
-            if not embeddings:
-                logger.error(f"Nomic embedding failed for {relative_path}")
-                raise RuntimeError(f"Nomic embedding failed for {relative_path}: No embeddings generated")
-            
-            # Prepare points for Qdrant with Neo4j cross-references
-            points = []
-            neo4j_chunk_ids = []  # Track for Neo4j batch update
-            
-            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                # Generate deterministic shared ID using SHA256
-                chunk_id_str = f"{file_path}:{chunk['start_line']}:{chunk['end_line']}"
-                chunk_id_hash = hashlib.sha256(chunk_id_str.encode()).hexdigest()
-                # Convert to numeric ID for Qdrant (use first 15 hex chars to stay within Neo4j int64 range)
-                # Neo4j max int: 9223372036854775807 (19 digits)
-                # 15 hex chars = max 1152921504606846975 (19 digits, always safe)
-                chunk_id = int(chunk_id_hash[:15], 16)
-                
-                # Create sparse vector from keywords
-                sparse_indices, sparse_values = self._extract_keywords(chunk['text'])
-                
-                # Find symbols that overlap with this chunk
-                chunk_symbols = []
-                if symbols_data:
-                    for symbol in symbols_data:
-                        # Check if symbol is within this chunk's line range
-                        if (symbol['start_line'] >= chunk['start_line'] and 
-                            symbol['start_line'] <= chunk['end_line']):
-                            chunk_symbols.append({
-                                'type': symbol['type'],
-                                'name': symbol['name'],
-                                'qualified_name': symbol.get('qualified_name', symbol['name']),
-                                'line': symbol['start_line'],
-                                'language': symbol.get('language', 'unknown')
-                            })
-                
-                payload = {
-                    'file_path': str(relative_path),
-                    'full_path': file_path,
-                    'chunk_index': i,
-                    'total_chunks': len(chunks),
-                    'start_line': chunk['start_line'],
-                    'end_line': chunk['end_line'],
-                    'content': chunk['text'][:1000],
-                    'file_type': relative_path.suffix,
-                    'indexed_at': datetime.now().isoformat(),
-                    'project': self.project_name,
-                    # Add all extracted metadata (ADR-0031)
-                    **metadata,
-                    # GraphRAG: Store Neo4j node ID reference
-                    'neo4j_chunk_id': chunk_id_hash,
-                    'chunk_hash': chunk_id_hash
-                }
-                
-                # Add chunk-specific metadata (ADR-0031)
-                if self.pattern_extractor:
-                    chunk_patterns = self.pattern_extractor.extract_for_chunk(chunk['text'])
-                    payload.update(chunk_patterns)
-                
-                # Add symbol information if available
-                if chunk_symbols:
-                    payload['symbols'] = chunk_symbols
-                    payload['symbol_count'] = len(chunk_symbols)
-                    payload['has_symbols'] = True
-                    # Add primary symbol for better search
-                    if chunk_symbols:
-                        payload['primary_symbol'] = chunk_symbols[0]['qualified_name']
-                else:
-                    payload['has_symbols'] = False
-                    payload['symbol_count'] = 0
-                
-                # Create PointStruct-compatible dict (no sparse_vector field)
-                point = {
-                    'id': chunk_id,
-                    'vector': embedding,  # Use unnamed default vector
-                    'payload': payload
-                }
-                # Note: sparse vectors would need separate handling if needed
-                points.append(point)
-                neo4j_chunk_ids.append({
-                    'id': chunk_id_hash,
-                    'qdrant_id': chunk_id,
-                    'start_line': chunk['start_line'],
-                    'end_line': chunk['end_line'],
-                    'chunk_type': self._detect_chunk_type(chunk['text']),
-                    'content': chunk['text']  # Add content to be stored in Neo4j
-                })
-            
-            # Use WriteSynchronizationManager for atomic writes if available (ADR-053)
-            if self.sync_manager:
-                # Atomic write to both Neo4j and Qdrant
-                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-                success_count = 0
-                for point, neo4j_data in zip(points, neo4j_chunk_ids):
-                    # Prepare metadata for Neo4j
-                    neo4j_metadata = {
-                        'file_path': str(relative_path),
-                        'full_path': file_path,
-                        'start_line': neo4j_data['start_line'],
-                        'end_line': neo4j_data['end_line'],
-                        'chunk_type': neo4j_data['chunk_type'],
-                        'qdrant_id': neo4j_data['qdrant_id'],
-                        'project': self.project_name,
-                        'indexed_at': datetime.now().isoformat()
-                    }
-
-                    # Write atomically to both databases
-                    success, chunk_id, chunk_hash = await self.sync_manager.write_chunk(
-                        content=neo4j_data['content'],
-                        metadata=neo4j_metadata,
-                        vector=point['vector'],
-                        collection_name=collection_name,
-                        payload=point['payload']
-                    )
-
-                    if success:
-                        success_count += 1
-                    else:
-                        logger.warning(f"Failed to sync chunk {chunk_hash} for {file_path}")
-
-                logger.info(f"Successfully synchronized {success_count}/{len(points)} chunks for {file_path}")
-                self.metrics['cross_references_created'] += success_count
-
-                # Create file-to-chunk relationships in Neo4j if symbols available
-                if symbols_data and success_count > 0:
-                    await self._create_file_chunk_relationships(file_path, relative_path, neo4j_chunk_ids)
-            else:
-                # Fallback to original non-atomic writes
-                logger.warning("WriteSynchronizationManager not available - using non-atomic writes")
-
-                # Upsert to Qdrant using proper collection management
-                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-                qdrant_result = await self.container.qdrant.upsert_points(collection_name, points)
-                if qdrant_result.get('status') != 'success':
-                    logger.error(f"Qdrant storage failed for {relative_path}: {qdrant_result.get('message')}")
-                    raise RuntimeError(f"Qdrant storage failed for {relative_path}: {qdrant_result.get('message')}")
-
-                # Update Neo4j with chunk references
-                logger.info(f"Neo4j update check: chunks={len(neo4j_chunk_ids)}")
-                if neo4j_chunk_ids:
-                    logger.info(f"Calling _update_neo4j_chunks for {file_path} with {len(neo4j_chunk_ids)} chunks")
-                    await self._update_neo4j_chunks(file_path, relative_path, neo4j_chunk_ids, symbols_data)
-                    self.metrics['cross_references_created'] += len(neo4j_chunk_ids)
-                else:
-                    logger.debug("No chunks to update in Neo4j")
-
-            logger.info(f"✅ Semantic indexing successful: {len(points)} vectors stored")
-            return True
-
-        except Exception as e:
-            logger.error(f"Semantic indexing failed for {file_path}: {e}")
-            if 'service_failures' not in self.metrics:
-                self.metrics['service_failures'] = {}
-            if 'semantic_pipeline' not in self.metrics['service_failures']:
-                self.metrics['service_failures']['semantic_pipeline'] = 0
-            self.metrics['service_failures']['semantic_pipeline'] += 1
-            return False
-    
+    # Legacy method removed - ADR-0066 unified indexing eliminates semantic/graph split
     async def _index_keywords(self, file_path: str, relative_path: Path, chunks: List[Dict]):
         """Fallback: Index with keywords only (no embeddings)"""
         try:
@@ -1314,210 +1116,6 @@ class IncrementalIndexer(FileSystemEventHandler):
             sparse_values.append(float(freq))
         
         return sparse_indices, sparse_values
-    
-    async def _index_graph(self, file_path: str, relative_path: Path, content: str) -> bool:
-        """Index code relationships in Neo4j graph with GraphRAG support"""
-        try:
-            # Extract basic metadata
-            file_type = relative_path.suffix
-            
-            # Generate file content hash for deduplication
-            file_hash = hashlib.sha256(content.encode()).hexdigest()
-            
-            # Extract metadata for the file (ADR-0031)
-            metadata = await self._extract_metadata(file_path, content)
-            
-            # Create or update file node with content hash and metadata
-            # ADR-0029: Use composite key (project, path) for multi-project isolation
-            # ADR-0031: Include canonical metadata and objective scores
-            cypher = """
-            MERGE (f:File {path: $path, project: $project})
-            SET f.name = $name,
-                f.type = $type,
-                f.size = $size,
-                f.content_hash = $content_hash,
-                f.indexed_at = datetime(),
-                // Canonical metadata
-                f.canon_level = $canon_level,
-                f.canon_weight = $canon_weight,
-                f.canon_reason = $canon_reason,
-                f.is_canonical = $is_canonical,
-                // PRISM scores
-                f.complexity_score = $complexity_score,
-                f.dependencies_score = $dependencies_score,
-                f.recency_score = $recency_score,
-                f.contextual_score = $contextual_score,
-                f.prism_total = $prism_total,
-                // Git metadata
-                f.last_modified = $last_modified,
-                f.change_frequency = $change_frequency,
-                f.author_count = $author_count,
-                f.last_commit = $last_commit,
-                // Pattern metadata
-                f.todo_count = $todo_count,
-                f.fixme_count = $fixme_count,
-                f.deprecated_markers = $deprecated_markers,
-                f.test_markers = $test_markers,
-                f.security_patterns = $security_patterns,
-                f.canon_markers = $canon_markers,
-                f.experimental_markers = $experimental_markers,
-                f.is_async = $is_async,
-                f.has_type_hints = $has_type_hints
-            RETURN f.content_hash AS existing_hash
-            """
-            
-            params = {
-                'path': str(relative_path),
-                'name': relative_path.name,
-                'type': file_type,
-                'size': len(content),
-                'content_hash': file_hash,
-                'project': self.project_name,
-                # Include all metadata fields with defaults
-                'canon_level': metadata.get('canon_level', 'none'),
-                'canon_weight': metadata.get('canon_weight', 0.5),
-                'canon_reason': metadata.get('canon_reason', ''),
-                'is_canonical': metadata.get('is_canonical', False),
-                'complexity_score': metadata.get('complexity_score', 0.0),
-                'dependencies_score': metadata.get('dependencies_score', 0.0),
-                'recency_score': metadata.get('recency_score', 0.0),
-                'contextual_score': metadata.get('contextual_score', 0.0),
-                'prism_total': metadata.get('prism_total', 0.0),
-                'last_modified': metadata.get('last_modified', datetime.now().isoformat()),
-                'change_frequency': metadata.get('change_frequency', 0),
-                'author_count': metadata.get('author_count', 1),
-                'last_commit': metadata.get('last_commit', 'unknown'),
-                'todo_count': metadata.get('todo_count', 0),
-                'fixme_count': metadata.get('fixme_count', 0),
-                'deprecated_markers': metadata.get('deprecated_markers', 0),
-                'test_markers': metadata.get('test_markers', 0),
-                'security_patterns': metadata.get('security_patterns', 0),
-                'canon_markers': metadata.get('canon_markers', 0),
-                'experimental_markers': metadata.get('experimental_markers', 0),
-                'is_async': metadata.get('is_async', False),
-                'has_type_hints': metadata.get('has_type_hints', False)
-            }
-            
-            result = await self.container.neo4j.execute_cypher(cypher, params)
-            if result.get('status') != 'success':
-                logger.error(f"Neo4j operation failed for {relative_path}: {result.get('message')}")
-                raise RuntimeError(f"Neo4j operation failed for {relative_path}: {result.get('message')}")
-
-            # Check if query was successful and content unchanged (for deduplication)
-            if result.get('status') == 'success' and result.get('result') and len(result['result']) > 0 and result['result'][0].get('existing_hash') == file_hash:
-                logger.debug(f"File content unchanged in Neo4j: {file_path}")
-                # Still need to ensure chunks exist if Qdrant was updated
-            
-            # Extract structured code information using CodeParser (ADR 0017)
-            if self.code_parser and file_type in self.code_parser.supported_extensions:
-                structure = self.code_parser.extract_structure(content, file_type)
-                
-                # Create Function nodes
-                for func in structure.get('functions', []):
-                    await self.container.neo4j.execute_cypher("""
-                        MERGE (f:Function {name: $name, file_path: $file_path, project: $project})
-                        SET f.signature = $signature,
-                            f.start_line = $start_line,
-                            f.end_line = $end_line
-                        WITH f
-                        MATCH (file:File {path: $file_path, project: $project})
-                        MERGE (f)-[:DEFINED_IN]->(file)
-                    """, {
-                        'name': func['name'],
-                        'file_path': str(relative_path),
-                        'signature': func.get('signature', ''),
-                        'start_line': func.get('start_line', 0),
-                        'end_line': func.get('end_line', 0),
-                        'project': self.project_name
-                    })
-                
-                # Create Class nodes
-                for cls in structure.get('classes', []):
-                    await self.container.neo4j.execute_cypher("""
-                        MERGE (c:Class {name: $name, file_path: $file_path, project: $project})
-                        SET c.start_line = $start_line,
-                            c.end_line = $end_line
-                        WITH c
-                        MATCH (file:File {path: $file_path, project: $project})
-                        MERGE (c)-[:DEFINED_IN]->(file)
-                    """, {
-                        'name': cls['name'],
-                        'file_path': str(relative_path),
-                        'start_line': cls.get('start_line', 0),
-                        'end_line': cls.get('end_line', 0),
-                        'project': self.project_name
-                    })
-                
-                # Create CALLS relationships
-                for call in structure.get('calls', []):
-                    # Only create if both functions exist
-                    await self.container.neo4j.execute_cypher("""
-                        MATCH (caller:Function {file_path: $file_path, project: $project})
-                        WHERE caller.start_line <= $call_line AND caller.end_line >= $call_line
-                        MATCH (callee:Function {name: $callee_name, project: $project})
-                        MERGE (caller)-[:CALLS]->(callee)
-                    """, {
-                        'file_path': str(relative_path),
-                        'call_line': call.get('line', 0),
-                        'callee_name': call.get('name', ''),
-                        'project': self.project_name
-                    })
-                
-                # Process imports with flattened properties (ADR-0036: Neo4j primitive compatibility)
-                imports = structure.get('imports', [])
-                for imp in imports:
-                    # Import flattening utility for ADR-0036 compliance
-                    from utils.property_flattener import extract_import_primitives
-                    
-                    # Extract primitive properties from complex import object
-                    if isinstance(imp, dict):
-                        # Use flattening utility to extract primitives
-                        import_props = extract_import_primitives(imp)
-                        module_name = import_props.get('import_module', 'unknown')
-                    else:
-                        # Handle simple string imports
-                        module_name = str(imp)
-                        import_props = {
-                            'import_statement': module_name,
-                            'import_module': module_name
-                        }
-                    
-                    # Create import relationships with rich flattened metadata
-                    cypher = """
-                    MATCH (f:File {path: $from_path, project: $project})
-                    MERGE (m:Module {name: $module, project: $project})
-                    CREATE (f)-[r:IMPORTS $import_properties]->(m)
-                    RETURN r
-                    """
-                    
-                    # Prepare all properties as primitives
-                    import_properties = {
-                        'project': self.project_name,
-                        'created_at': datetime.utcnow().isoformat(),
-                        **import_props  # All flattened primitive properties
-                    }
-                    
-                    result = await self.container.neo4j.execute_cypher(cypher, {
-                        'from_path': str(relative_path),
-                        'module': module_name,  # ✅ Primitive string for module name
-                        'project': self.project_name,
-                        'import_properties': import_properties  # ✅ All primitive properties
-                    })
-                    if result.get('status') != 'success':
-                        logger.warning(f"Failed to create import relationship: {result.get('message')}")
-
-            logger.info(f"✅ Graph indexing successful: {result.get('result', [])} nodes created")
-            return True
-
-        except Exception as e:
-            logger.error(f"Graph indexing failed for {file_path}: {e}")
-            if 'service_failures' not in self.metrics:
-                self.metrics['service_failures'] = {}
-            if 'neo4j' not in self.metrics['service_failures']:
-                self.metrics['service_failures']['neo4j'] = 0
-            self.metrics['service_failures']['neo4j'] += 1
-            return False
-    
     def _detect_chunk_type(self, text: str) -> str:
         """Detect the type of code chunk (function, class, import, etc.)"""
         lines = text.strip().split('\n')
@@ -1735,58 +1333,58 @@ class IncrementalIndexer(FileSystemEventHandler):
             
             # First, get chunk IDs from Neo4j to ensure complete removal
             chunk_ids_to_remove = []
-                # ADR-0050: Get all Chunk nodes for this file using correct relationship
-                cypher = """
+            # ADR-0050: Get all Chunk nodes for this file using correct relationship
+            cypher = """
                 MATCH (f:File {path: $path, project: $project})-[:HAS_CHUNK]->(c:Chunk)
                 RETURN c.qdrant_id AS qdrant_id, c.chunk_id AS chunk_id
                 """
-                result = await self.container.neo4j.execute_cypher(cypher, {
-                    'path': str(relative_path),
-                    'project': self.project_name
-                })
-                
-                if result:
-                    chunk_ids_to_remove = [(r['qdrant_id'], r['chunk_id']) for r in result if r.get('qdrant_id')]
+            result = await self.container.neo4j.execute_cypher(cypher, {
+                'path': str(relative_path),
+                'project': self.project_name
+            })
+
+            if result:
+                chunk_ids_to_remove = [(r['qdrant_id'], r['chunk_id']) for r in result if r.get('qdrant_id')]
             
             # Remove from Qdrant
-                collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-                
-                if chunk_ids_to_remove:
-                    # Remove specific chunks by ID (more precise)
-                    qdrant_ids = [qid for qid, _ in chunk_ids_to_remove if qid]
-                    if qdrant_ids:
-                        await self.container.qdrant.delete_points(
-                            collection_name,
-                            points_selector=models.PointIdsList(points=qdrant_ids)
-                        )
-                        logger.info(f"Removed {len(qdrant_ids)} chunks from Qdrant for {file_path}")
-                else:
-                    # Fallback: Delete by file path filter (use Qdrant models)
-                    file_filter = models.Filter(
-                        must=[
-                            models.FieldCondition(
-                                key='full_path',
-                                match=models.MatchValue(value=file_path)
-                            )
-                        ]
-                    )
+            collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
+
+            if chunk_ids_to_remove:
+                # Remove specific chunks by ID (more precise)
+                qdrant_ids = [qid for qid, _ in chunk_ids_to_remove if qid]
+                if qdrant_ids:
                     await self.container.qdrant.delete_points(
                         collection_name,
-                        filter_conditions=file_filter
+                        points_selector=models.PointIdsList(points=qdrant_ids)
                     )
-                    logger.info(f"Removed {file_path} from Qdrant")
-            
+                    logger.info(f"Removed {len(qdrant_ids)} chunks from Qdrant for {file_path}")
+            else:
+                # Fallback: Delete by file path filter (use Qdrant models)
+                file_filter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key='full_path',
+                            match=models.MatchValue(value=file_path)
+                        )
+                    ]
+                )
+                await self.container.qdrant.delete_points(
+                    collection_name,
+                    filter_conditions=file_filter
+                )
+                logger.info(f"Removed {file_path} from Qdrant")
+
             # Remove from Neo4j (including chunks and file)
-                # Delete chunks and file in one transaction
-                cypher = """
+            # Delete chunks and file in one transaction
+            cypher = """
                 MATCH (f:File {path: $path})
                 OPTIONAL MATCH (c:CodeChunk)-[:PART_OF]->(f)
                 DETACH DELETE c, f
                 """
-                await self.container.neo4j.execute_cypher(cypher, {
-                    'path': str(relative_path)
-                })
-                logger.info(f"Removed {file_path} and its chunks from Neo4j")
+            await self.container.neo4j.execute_cypher(cypher, {
+                'path': str(relative_path)
+            })
+            logger.info(f"Removed {file_path} and its chunks from Neo4j")
             
             # Remove from tracking
             self.file_hashes.pop(file_path, None)
