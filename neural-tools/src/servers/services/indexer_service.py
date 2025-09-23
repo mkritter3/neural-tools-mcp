@@ -915,6 +915,8 @@ class IncrementalIndexer(FileSystemEventHandler):
                                    embeddings: List[List[float]], content: str, symbols_data: List[Dict] = None) -> bool:
         """ADR-0066: Store file, chunks with embeddings, and symbols in single Neo4j transaction"""
         try:
+            logger.info(f"🔥 ADR-0078 ENTRY: _store_unified_neo4j called for {file_path}")
+            logger.info(f"🔥 ADR-0078 ENTRY: chunks={len(chunks)}, embeddings={len(embeddings)}")
             file_hash = hashlib.sha256(content.encode()).hexdigest()
             metadata = await self._extract_metadata(content, file_path)
 
@@ -944,43 +946,60 @@ class IncrementalIndexer(FileSystemEventHandler):
             MATCH (f)-[:HAS_CHUNK]->(old_chunk:Chunk)
             DETACH DELETE old_chunk
 
-            // 3. Create new chunks with embeddings
+            // 3. Create new chunks with embeddings (ADR-0078: Defensive UNWIND)
             WITH f
-            UNWIND $chunks_data AS chunk_data
-            CREATE (c:Chunk {
-                chunk_id: chunk_data.chunk_id,
-                content: chunk_data.content,
-                start_line: chunk_data.start_line,
-                end_line: chunk_data.end_line,
-                size: chunk_data.size,
-                project: $project,
-                embedding: chunk_data.embedding,  // Store vector directly in Neo4j
-                created_time: datetime()
-            })
-            CREATE (f)-[:HAS_CHUNK]->(c)
+            UNWIND CASE
+                WHEN $chunks_data IS NULL OR size($chunks_data) = 0
+                THEN [null]
+                ELSE $chunks_data
+            END AS chunk_data
 
-            // 4. Create symbol nodes if provided
+            // ADR-0078: Native conditional execution (replaces deprecated apoc.do.when)
+            CALL {
+                WITH chunk_data, f, $project AS project
+                WHERE chunk_data IS NOT NULL
+                CREATE (c:Chunk {
+                    chunk_id: chunk_data.chunk_id,
+                    content: chunk_data.content,
+                    start_line: chunk_data.start_line,
+                    end_line: chunk_data.end_line,
+                    size: chunk_data.size,
+                    project: project,
+                    embedding: chunk_data.embedding,  // Store vector directly in Neo4j
+                    created_time: datetime()
+                })
+                CREATE (f)-[:HAS_CHUNK]->(c)
+                RETURN c
+            } YIELD c
+
+            // 4. Create symbol nodes if provided (ADR-0078: Native conditionals)
             WITH f, collect(c) as chunks
-            CALL apoc.do.when(
-                $symbols_data IS NOT NULL AND size($symbols_data) > 0,
-                "
-                UNWIND $symbols_data AS symbol
+            CALL {
+                WITH f, $symbols_data AS symbols_data, $project AS project
+                WHERE symbols_data IS NOT NULL AND size(symbols_data) > 0
+                UNWIND symbols_data AS symbol
                 CREATE (s:Symbol {
                     name: symbol.name,
                     type: symbol.type,
                     start_line: symbol.start_line,
                     end_line: symbol.end_line,
-                    project: $project
+                    project: project
                 })
                 CREATE (f)-[:HAS_SYMBOL]->(s)
                 RETURN count(s) as symbols_created
-                ",
-                "RETURN 0 as symbols_created",
-                {symbols_data: $symbols_data, f: f, project: $project}
-            ) YIELD value
+            } YIELD symbols_created
 
-            RETURN f.path as file_path, size(chunks) as chunks_created, value.symbols_created as symbols_created
+            RETURN f.path as file_path, size(chunks) as chunks_created,
+                   COALESCE(symbols_created, 0) as symbols_created
             """
+
+            # ADR-0078: Debug chunk preparation pipeline
+            logger.info(f"🔍 ADR-0078 Pipeline Debug:")
+            logger.info(f"  - Input chunks length: {len(chunks)}")
+            logger.info(f"  - Input embeddings length: {len(embeddings)}")
+            if chunks:
+                logger.info(f"  - First chunk keys: {list(chunks[0].keys())}")
+                logger.info(f"  - First chunk text preview: {chunks[0].get('text', 'NO_TEXT')[:50]}...")
 
             # Prepare chunk data with embeddings
             chunks_data = []
@@ -994,6 +1013,8 @@ class IncrementalIndexer(FileSystemEventHandler):
                     'size': len(chunk['text']),
                     'embedding': embedding  # Store vector directly in Neo4j
                 })
+
+            logger.info(f"🔍 ADR-0078 chunks_data prepared: {len(chunks_data)} items")
 
             params = {
                 'path': str(relative_path),
@@ -1012,15 +1033,52 @@ class IncrementalIndexer(FileSystemEventHandler):
                 'symbols_data': symbols_data
             }
 
+            # ADR-0078: Enhanced debugging and validation
+            if not chunks_data:
+                logger.error(f"🚨 CRITICAL: chunks_data is empty for {file_path}")
+                logger.error(f"🚨 Original chunks length: {len(chunks)}")
+                logger.error(f"🚨 Embeddings length: {len(embeddings)}")
+                return False
+
+            # Validate chunk data structure (ADR-0078)
+            required_fields = ['chunk_id', 'content', 'start_line', 'end_line', 'embedding']
+            for i, chunk in enumerate(chunks_data):
+                missing_fields = [field for field in required_fields if field not in chunk]
+                if missing_fields:
+                    logger.error(f"🚨 Invalid chunk {i} structure - missing: {missing_fields}")
+                    return False
+                if not isinstance(chunk['embedding'], list) or len(chunk['embedding']) == 0:
+                    logger.error(f"🚨 Invalid embedding in chunk {i}: {chunk['chunk_id']}")
+                    return False
+
+            logger.info(f"✅ ADR-0078 Debug - chunks_data length: {len(chunks_data)}")
+            logger.info(f"✅ ADR-0078 Debug - first chunk preview: {chunks_data[0]['chunk_id']}")
+            logger.info(f"✅ ADR-0078 Debug - embedding dimensions: {len(chunks_data[0]['embedding'])}")
+
             # Execute atomic transaction
             result = await self.container.neo4j.execute_cypher(cypher, params)
 
             if result.get('status') == 'success':
-                result_data = result.get('result', [{}])[0]
-                chunks_created = result_data.get('chunks_created', 0)
-                symbols_created = result_data.get('symbols_created', 0)
+                result_list = result.get('result', [])
+                if result_list:
+                    result_data = result_list[0]
+                    chunks_created = result_data.get('chunks_created', 0)
+                    symbols_created = result_data.get('symbols_created', 0)
+                else:
+                    # Empty result - no data returned from query
+                    logger.warning(f"Neo4j query returned empty result for {file_path}")
+                    chunks_created = 0
+                    symbols_created = 0
 
                 logger.info(f"✅ Neo4j unified storage: {chunks_created} chunks + {symbols_created} symbols")
+
+                # ADR-0078: Post-execution analysis
+                if chunks_created == 0 and len(chunks_data) > 0:
+                    logger.error(f"🚨 UNWIND FAILURE: {len(chunks_data)} chunks passed but 0 created")
+                    logger.error(f"🚨 This indicates a Neo4j UNWIND issue - check ADR-0078")
+                    return False
+                elif chunks_created > 0:
+                    logger.info(f"✅ ADR-0078 SUCCESS: {chunks_created} chunks created successfully")
 
                 # Update metrics
                 self.metrics['chunks_created'] += chunks_created
