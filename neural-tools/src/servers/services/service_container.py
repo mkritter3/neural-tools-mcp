@@ -738,12 +738,16 @@ class ServiceContainer:
             for attempt in range(max_retries):
                 neo4j_ok = self.ensure_neo4j_client()
 
-                # ADR-0074: Support Neo4j-only mode (unified architecture)
-                skip_qdrant = os.getenv("ADR_074_NEO4J_ONLY", "false").lower() == "true"
+                # ADR-0075: Neo4j-only architecture - Qdrant not required
+                # Support both ADR-0074 and ADR-0075 environment variables
+                skip_qdrant = (
+                    os.getenv("ADR_074_NEO4J_ONLY", "false").lower() == "true" or
+                    os.getenv("ADR_075_NEO4J_ONLY", "true").lower() == "true"  # Default to true for ADR-0075
+                )
 
                 if skip_qdrant:
-                    logger.info("🎯 ADR-0074: Neo4j-only mode enabled, skipping Qdrant requirement")
-                    qdrant_ok = True  # Bypass Qdrant requirement
+                    logger.info("🎯 ADR-0075: Neo4j-only architecture enabled, skipping Qdrant requirement")
+                    qdrant_ok = True  # Bypass Qdrant requirement per ADR-0075
                 else:
                     qdrant_ok = self.ensure_qdrant_client()
 
@@ -762,7 +766,18 @@ class ServiceContainer:
         else:
             # Single attempt without retry
             neo4j_ok = self.ensure_neo4j_client()
-            qdrant_ok = self.ensure_qdrant_client()
+
+            # ADR-0075: Neo4j-only architecture - Qdrant not required
+            skip_qdrant = (
+                os.getenv("ADR_074_NEO4J_ONLY", "false").lower() == "true" or
+                os.getenv("ADR_075_NEO4J_ONLY", "true").lower() == "true"  # Default to true for ADR-0075
+            )
+
+            if skip_qdrant:
+                logger.info("🎯 ADR-0075: Neo4j-only architecture enabled, skipping Qdrant requirement")
+                qdrant_ok = True  # Bypass Qdrant requirement per ADR-0075
+            else:
+                qdrant_ok = self.ensure_qdrant_client()
         
         # Initialize REAL service wrappers - NO MOCKS!
         if neo4j_ok:
@@ -826,12 +841,13 @@ class ServiceContainer:
                 self.nomic = None
 
         # Return a dictionary for compatibility with the caller
+        # ADR-0075: Neo4j-only architecture - Qdrant not required
         return {
-            "success": base_init and self.neo4j is not None and self.qdrant is not None and self.nomic is not None,
+            "success": base_init and self.neo4j is not None and self.nomic is not None,
             "services": {
                 "neo4j": self.neo4j is not None,
-                "qdrant": self.qdrant is not None,
-                "nomic": self.nomic is not None
+                "nomic": self.nomic is not None,
+                "qdrant": "not_required_per_adr_0075"  # Document why absent
             }
         }
     

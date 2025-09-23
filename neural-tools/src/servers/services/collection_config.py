@@ -144,17 +144,22 @@ class CollectionManager:
     async def validate_collection_exists(self, collection_type: CollectionType, qdrant_client) -> bool:
         """
         Validate that collection exists in Qdrant
-        Following Neo4j GraphRAG validation patterns
+        ADR-0075: Neo4j-only architecture - Qdrant is optional
         """
         try:
+            # ADR-0075: Return True if Qdrant not available (Neo4j-only mode)
+            if not qdrant_client:
+                logger.info("ℹ️ Qdrant not available - using Neo4j-only storage per ADR-0075")
+                return True
+
             collection_name = self.get_collection_name(collection_type)
             # Get collections using proper Qdrant client (awaiting async method)
             collection_names = await qdrant_client.get_collections()
-            
+
             exists = collection_name in collection_names
             if not exists:
                 logger.warning(f"Collection {collection_name} does not exist in Qdrant")
-            
+
             return exists
         except Exception as e:
             logger.error(f"Error validating collection {collection_type.value}: {e}")

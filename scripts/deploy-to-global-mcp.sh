@@ -133,9 +133,12 @@ run_local_validation() {
         return 1
     fi
 
-    # Check key files exist
+    # Check key files exist - Updated for ADR-0076 modular architecture
     REQUIRED_FILES=(
-        "src/neural_mcp/neural_server_stdio.py"
+        "src/neural_mcp/server.py"
+        "src/neural_mcp/tools/neural_system_status.py"
+        "src/neural_mcp/tools/semantic_search.py"
+        "src/neural_mcp/shared/connection_pool.py"
         "src/servers/services/project_context_manager.py"
         "src/servers/services/sync_manager.py"  # ADR-053 WriteSynchronizationManager
         "src/servers/services/indexer_service.py"
@@ -256,19 +259,19 @@ run_local_validation() {
 
     # Run sync manager tests if available (with timeout)
     if [[ -f "$SOURCE_DIR/../scripts/test-sync-manager-integration.py" ]]; then
-        echo -e "${YELLOW}Testing WriteSynchronizationManager (ADR-053)...${NC}"
+        echo -e "${YELLOW}Testing Neo4j-only Architecture (ADR-0075)...${NC}"
         cd "$SOURCE_DIR/.."
-        if run_with_timeout 300 python3 scripts/test-sync-manager-integration.py "/tmp/sync_manager_output.log"; then
+        if run_with_timeout 300 python3 scripts/test-sync-manager-neo4j-only.py "/tmp/sync_manager_output.log"; then
             echo -e "${GREEN}✅ Sync manager validation passed${NC}"
-            PASSED_TESTS+=("Sync Manager")
+            PASSED_TESTS+=("Neo4j-only Architecture")
         else
             EXIT_CODE=$?
             if [ $EXIT_CODE -eq 124 ]; then
-                echo -e "${RED}❌ Sync manager validation timeout (5min)${NC}"
-                FAILED_TESTS+=("Sync Manager (TIMEOUT)")
+                echo -e "${RED}❌ Neo4j-only architecture validation timeout (5min)${NC}"
+                FAILED_TESTS+=("Neo4j-only Architecture (TIMEOUT)")
             else
-                echo -e "${RED}❌ Sync manager validation failed${NC}"
-                FAILED_TESTS+=("Sync Manager")
+                echo -e "${RED}❌ Neo4j-only architecture validation failed${NC}"
+                FAILED_TESTS+=("Neo4j-only Architecture")
             fi
             echo "Sync manager output saved to /tmp/sync_manager_output.log"
         fi
@@ -359,10 +362,11 @@ rsync -av --checksum \
     --exclude='tests/' \
     "$SOURCE_DIR/" "$TARGET_DIR/"
 
-# Verify critical files
+# Verify critical files - Updated for ADR-0076 modular architecture
 echo -e "${YELLOW}🔍 Verifying deployment...${NC}"
 REQUIRED_FILES=(
-    "src/neural_mcp/neural_server_stdio.py"
+    "src/neural_mcp/server.py"
+    "src/neural_mcp/tools/semantic_search.py"
     "src/servers/services/sync_manager.py"
     "run_mcp_server.py"
 )

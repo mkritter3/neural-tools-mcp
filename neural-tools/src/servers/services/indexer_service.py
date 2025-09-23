@@ -362,15 +362,25 @@ class IncrementalIndexer(FileSystemEventHandler):
                     raise RuntimeError(f"All initialization attempts failed: {e}")
     
     async def _ensure_collections(self):
-        """Ensure required Qdrant collections exist using battle-tested patterns"""
-        # Use centralized collection management
-        success = await self.collection_manager.ensure_collection_exists(
-            CollectionType.CODE,
-            self.container.qdrant
-        )
+        """Ensure required collections exist - ADR-0075: Neo4j-only, skip Qdrant"""
+        # ADR-0075: Neo4j-only architecture - Qdrant collections not required
+        if hasattr(self.container, 'qdrant') and self.container.qdrant:
+            try:
+                # Use centralized collection management if Qdrant available
+                success = await self.collection_manager.ensure_collection_exists(
+                    CollectionType.CODE,
+                    self.container.qdrant
+                )
+                if success:
+                    logger.info("✅ Qdrant collections ready (optional)")
+                else:
+                    logger.warning("⚠️ Qdrant collection creation failed (continuing with Neo4j-only)")
+            except Exception as e:
+                logger.warning(f"⚠️ Qdrant collection setup failed (continuing with Neo4j-only): {e}")
+        else:
+            logger.info("ℹ️ Qdrant not available - using Neo4j-only storage per ADR-0075")
 
-        if not success:
-            raise RuntimeError("Failed to ensure code collection exists")
+        # Always succeed - Neo4j handles vector storage per ADR-0075
     
     def should_index(self, file_path: str) -> bool:
         """Check if file should be indexed with security filters"""
@@ -930,7 +940,7 @@ class IncrementalIndexer(FileSystemEventHandler):
         """ADR-0066: Store file, chunks with embeddings, and symbols in single Neo4j transaction"""
         try:
             file_hash = hashlib.sha256(content.encode()).hexdigest()
-            metadata = self._extract_metadata(content, file_path)
+            metadata = await self._extract_metadata(content, file_path)
 
             # Build single atomic Cypher transaction
             cypher = """
@@ -954,6 +964,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             }
 
             // 2. Remove old chunks
+            WITH f
             MATCH (f)-[:HAS_CHUNK]->(old_chunk:Chunk)
             DETACH DELETE old_chunk
 

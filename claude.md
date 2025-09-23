@@ -9,6 +9,7 @@
 - Commit to git regularly
 - Verify everything - never assume
 - Follow DRY, KISS, YAGNI, single-responsibility principles
+- You MUST run pylance, ruff, and black checks after every Python code modify, enhancement or new code generation
 
 **🚨 NEO4J DATA TYPES (ADR-0036):**
 Only primitives: String, Long, Double, Boolean. NO Map{} or nested objects.
