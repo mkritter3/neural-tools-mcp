@@ -170,7 +170,8 @@ services:
   arq-embedding-worker:
     image: l9-neural-indexer:production  # Same as indexer
     container_name: arq-embedding-worker-claude-l9-template
-    command: ["python", "-m", "arq", "workers.embedding_worker.WorkerSettings"]
+    working_dir: /app
+    command: ["python", "-c", "import sys; sys.path.append('/app'); from workers.embedding_worker import main; import asyncio; asyncio.run(main())"]
     networks:
       - default
     environment:
@@ -181,6 +182,7 @@ services:
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_PASSWORD=graphrag-password
       - LOG_LEVEL=INFO
+      - PROJECT_NAME=claude-l9-template  # Required for worker
     depends_on:
       redis-queue:
         condition: service_healthy
