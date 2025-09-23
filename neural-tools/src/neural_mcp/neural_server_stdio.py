@@ -1014,6 +1014,33 @@ async def handle_list_tools() -> List[types.Tool]:
             ),
             inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
         ),
+        types.Tool(
+            name="dependency_analysis",
+            description="ADR-0075: Advanced multi-hop dependency analysis for code files",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "target_file": {
+                        "type": "string",
+                        "description": "File path to analyze dependencies for"
+                    },
+                    "analysis_type": {
+                        "type": "string",
+                        "description": "Type of analysis ('imports', 'dependents', 'calls', 'all')",
+                        "enum": ["imports", "dependents", "calls", "all"],
+                        "default": "all"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum traversal depth (1-5)",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "default": 3
+                    }
+                },
+                "required": ["target_file"]
+            }
+        ),
     ]
 
 
@@ -1160,6 +1187,22 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             return await set_project_context_impl(arguments)
         elif name == "list_projects":
             return await list_projects_impl(arguments)
+        elif name == "dependency_analysis":
+            # Validate parameters
+            target_file = arguments.get("target_file", "")
+            if not isinstance(target_file, str) or len(target_file.strip()) == 0:
+                return [types.TextContent(type="text", text=_make_validation_error(
+                    "dependency_analysis",
+                    "Missing or empty 'target_file' parameter",
+                    missing=["target_file"] if not target_file else [],
+                    example={"target_file": "neural-tools/src/service.py", "analysis_type": "all", "max_depth": 3},
+                    received=arguments
+                ))]
+
+            analysis_type = arguments.get("analysis_type", "all")
+            max_depth = arguments.get("max_depth", 3)
+
+            return await dependency_analysis_impl(target_file.strip(), analysis_type, max_depth)
         else:
             return [types.TextContent(type="text", text=json.dumps({
                 "error": f"Unknown tool: {name}",
@@ -1466,7 +1509,7 @@ async def backfill_metadata_impl(arguments: dict) -> List[types.TextContent]:
         }))]
 
 
-async def enrich_with_graph_context(neo4j_service, search_results: List[Dict], project_name: str) -> Dict[str, Any]:
+async def enrich_with_graph_context(neo4j_service, search_results: List[Dict], project_name: str, depth: int = 2) -> Dict[str, Any]:
     """ADR-0075: Enrich vector search results with graph context"""
     try:
         if not search_results:
@@ -1478,43 +1521,57 @@ async def enrich_with_graph_context(neo4j_service, search_results: List[Dict], p
         if not chunk_ids:
             return {}
 
-        # Graph context enrichment query - work with existing Function/Module structure
-        graph_query = """
-        // Map chunk IDs to file paths, then find graph context
-        WITH $chunk_ids as target_chunks, $project as proj
+        # ADR-0075 Phase 3: Multi-hop graph context enrichment query
+        graph_query = f"""
+        // Multi-hop graph traversal with configurable depth
+        WITH $chunk_ids as target_chunks, $project as proj, $depth as max_depth
 
-        // Find Functions and Modules from files that match chunk patterns
+        // Start with Functions and Modules from files
         MATCH (f:Function)-[:DEFINED_IN]->(file:File)
         WHERE file.project = proj
 
-        // Also find imported modules
-        OPTIONAL MATCH (file)-[:IMPORTS]->(imported:Module)
+        // Multi-hop import traversal (up to depth levels)
+        OPTIONAL MATCH path = (file)-[:IMPORTS*1..{depth}]->(imported_modules:Module)
 
-        // Find files that import from this file's modules
+        // Multi-hop reverse dependencies
         OPTIONAL MATCH (this_module:Module)-[:DEFINED_IN]->(file)
-        OPTIONAL MATCH (other_file:File)<-[:DEFINED_IN]-(other_module:Module)-[:IMPORTS]->(this_module)
+        OPTIONAL MATCH reverse_path = (dependent_files:File)<-[:DEFINED_IN*1..{depth}]-(other_modules:Module)-[:IMPORTS]->(this_module)
 
-        // Return context for all chunks (we'll filter by availability)
+        // Multi-hop function call chains (if available)
+        OPTIONAL MATCH call_path = (f)-[:CALLS*1..{depth}]->(called_functions:Function)
+
+        // Return enhanced multi-hop context
         RETURN file.path as file_path,
                collect(DISTINCT f.name)[0..5] as related_functions,
-               collect(DISTINCT imported.name)[0..5] as imported_modules,
-               collect(DISTINCT other_file.path)[0..3] as related_files
+               collect(DISTINCT imported_modules.name)[0..8] as imported_modules,
+               collect(DISTINCT dependent_files.path)[0..5] as related_files,
+               collect(DISTINCT called_functions.name)[0..5] as called_functions,
+               length(path) as import_depth,
+               length(reverse_path) as dependency_depth,
+               length(call_path) as call_depth
         """
 
         context_result = await neo4j_service.execute_cypher(graph_query, {
             'chunk_ids': chunk_ids,
-            'project': project_name
+            'project': project_name,
+            'depth': depth
         })
 
         if context_result.get('status') == 'success':
-            # Build file_path -> context mapping first
+            # Build file_path -> context mapping with multi-hop data
             file_context = {}
             for record in context_result['result']:
                 file_path = record['file_path']
                 file_context[file_path] = {
                     'related_functions': [f for f in record.get('related_functions', []) if f and f.strip()],
                     'imported_modules': [m for m in record.get('imported_modules', []) if m and m.strip()],
-                    'related_files': [f for f in record.get('related_files', []) if f and f.strip()]
+                    'related_files': [f for f in record.get('related_files', []) if f and f.strip()],
+                    'called_functions': [f for f in record.get('called_functions', []) if f and f.strip()],
+                    'traversal_depth': {
+                        'imports': record.get('import_depth', 0),
+                        'dependencies': record.get('dependency_depth', 0),
+                        'calls': record.get('call_depth', 0)
+                    }
                 }
 
             # Map to chunk_ids using search results
@@ -1635,6 +1692,130 @@ async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextCo
         return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
     except Exception as e:
         error_response = {"status": "error", "message": str(e)}
+        error_response = add_instance_metadata(error_response)
+        return [types.TextContent(type="text", text=json.dumps(error_response))]
+
+async def dependency_analysis_impl(
+    target_file: str,
+    analysis_type: str = "all",
+    max_depth: int = 3
+) -> List[types.TextContent]:
+    """
+    ADR-0075 Phase 3: Advanced multi-hop dependency analysis
+
+    Args:
+        target_file: File path to analyze dependencies for
+        analysis_type: Type of analysis ('imports', 'dependents', 'calls', 'all')
+        max_depth: Maximum traversal depth (1-5)
+    """
+    try:
+        logger.info(f"🕸️ ADR-0075: Multi-hop dependency analysis for {target_file}")
+
+        # Validate parameters
+        if max_depth < 1 or max_depth > 5:
+            max_depth = 3
+
+        valid_types = ['imports', 'dependents', 'calls', 'all']
+        if analysis_type not in valid_types:
+            analysis_type = 'all'
+
+        # Initialize services
+        from servers.services.neo4j_service import Neo4jService
+        project_name = "claude-l9-template"
+        neo4j = Neo4jService(project_name)
+
+        neo4j_result = await neo4j.initialize()
+        if not neo4j_result.get("success"):
+            raise Exception(f"Neo4j initialization failed: {neo4j_result}")
+
+        # Build comprehensive dependency analysis query
+        analysis_query = f"""
+        // Multi-hop dependency analysis for {analysis_type}
+        MATCH (target_file:File {{path: $target_file, project: $project}})
+
+        OPTIONAL MATCH import_path = (target_file)-[:IMPORTS*1..{max_depth}]->(imported:Module)
+        OPTIONAL MATCH dependent_path = (dependent_files:File)<-[:DEFINED_IN]-(dep_modules:Module)-[:IMPORTS*1..{max_depth}]->(target_modules:Module)-[:DEFINED_IN]->(target_file)
+        OPTIONAL MATCH function_path = (target_funcs:Function)-[:DEFINED_IN]->(target_file), call_path = (target_funcs)-[:CALLS*1..{max_depth}]->(called_funcs:Function)
+
+        WITH target_file, $analysis_type as analysis_type,
+             collect(DISTINCT {{
+                 type: 'import',
+                 target: imported.name,
+                 path_length: length(import_path),
+                 full_path: [node in nodes(import_path) | CASE WHEN 'Module' IN labels(node) THEN node.name ELSE node.path END]
+             }}) as all_imports,
+             collect(DISTINCT {{
+                 type: 'dependent',
+                 source: dependent_files.path,
+                 path_length: length(dependent_path),
+                 full_path: [node in nodes(dependent_path) | CASE WHEN 'File' IN labels(node) THEN node.path ELSE node.name END]
+             }}) as all_dependents,
+             collect(DISTINCT {{
+                 type: 'call',
+                 from_function: target_funcs.name,
+                 to_function: called_funcs.name,
+                 call_depth: length(call_path),
+                 call_chain: [node in nodes(call_path) | node.name]
+             }}) as all_calls
+
+        RETURN
+            CASE WHEN analysis_type IN ['imports', 'all'] THEN all_imports ELSE [] END as import_dependencies,
+            CASE WHEN analysis_type IN ['dependents', 'all'] THEN all_dependents ELSE [] END as reverse_dependencies,
+            CASE WHEN analysis_type IN ['calls', 'all'] THEN all_calls ELSE [] END as call_dependencies
+        """
+
+        result = await neo4j.execute_cypher(analysis_query, {
+            'target_file': target_file,
+            'project': project_name,
+            'analysis_type': analysis_type,
+            'max_depth': max_depth
+        })
+
+        if result.get('status') == 'success' and result['result']:
+            analysis_data = result['result'][0]
+
+            response = {
+                "status": "success",
+                "target_file": target_file,
+                "analysis_type": analysis_type,
+                "max_depth": max_depth,
+                "dependencies": {
+                    "imports": analysis_data.get('import_dependencies', []),
+                    "dependents": analysis_data.get('reverse_dependencies', []),
+                    "calls": analysis_data.get('call_dependencies', [])
+                },
+                "summary": {
+                    "total_imports": len(analysis_data.get('import_dependencies', [])),
+                    "total_dependents": len(analysis_data.get('reverse_dependencies', [])),
+                    "total_calls": len(analysis_data.get('call_dependencies', [])),
+                    "max_import_depth": max([dep.get('path_length', 0) or 0 for dep in analysis_data.get('import_dependencies', [])] + [0]),
+                    "max_dependent_depth": max([dep.get('path_length', 0) or 0 for dep in analysis_data.get('reverse_dependencies', [])] + [0]),
+                    "max_call_depth": max([dep.get('call_depth', 0) or 0 for dep in analysis_data.get('call_dependencies', [])] + [0])
+                },
+                "architecture": "neo4j_multi_hop_analysis"
+            }
+        else:
+            response = {
+                "status": "no_data",
+                "target_file": target_file,
+                "message": "No dependency data found for the specified file",
+                "suggestion": "File may not be indexed or may not have dependencies"
+            }
+
+        logger.info(f"🎯 Dependency analysis completed for {target_file}")
+
+        # Add instance metadata
+        response = add_instance_metadata(response, project_name=project_name)
+
+        return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
+
+    except Exception as e:
+        error_response = {
+            "status": "error",
+            "message": str(e),
+            "target_file": target_file,
+            "analysis_type": analysis_type
+        }
         error_response = add_instance_metadata(error_response)
         return [types.TextContent(type="text", text=json.dumps(error_response))]
 
