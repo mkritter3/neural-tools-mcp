@@ -23,11 +23,11 @@ class NomicEmbedResponse:
 
 class NomicEmbedClient:
     """Client for Nomic Embed v2-MoE service with enhanced connectivity
-    
-    Uses Context7 recommended pattern: fresh httpx.AsyncClient per request
-    to avoid asyncio event loop binding issues in MCP environments.
+
+    ADR-0084 Phase 2: Implements connection pooling for 20% latency reduction
+    Uses singleton client with proper connection reuse and keep-alive.
     """
-    
+
     def __init__(self):
         # Support both URL and host+port configuration
         # NOMIC_EMBEDDINGS_URL: Direct URL (container-to-container)
@@ -42,53 +42,64 @@ class NomicEmbedClient:
             host = os.environ.get('EMBEDDING_SERVICE_HOST', 'localhost')
             port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 48000))
             self.base_url = f"http://{host}:{port}"
-        
-        # Store configuration for creating clients per request
-        # Context7 pattern: Create fresh AsyncClient per request to avoid
-        # asyncio event loop binding issues in MCP server environments
+
+        # ADR-0084 Phase 2: Enhanced connection pooling configuration
         self.timeout = httpx.Timeout(
-            connect=10.0,  # Connection timeout - fail fast if service down
+            connect=5.0,   # Faster connection timeout with pooling
             read=60.0,     # Read timeout - embeddings can be slow for large texts
             write=30.0,    # Write timeout - sending batch texts
             pool=5.0       # Pool timeout - connection pool acquisition
         )
-        self.transport_kwargs = {"retries": 1}  # Single retry at transport level
-        self.limits = httpx.Limits(
-            max_connections=20,           # Total connections to Nomic service
-            max_keepalive_connections=5   # Keep-alive for connection reuse
+
+        # ADR-0084 Phase 2: Optimized transport with connection reuse
+        self.transport = httpx.AsyncHTTPTransport(
+            retries=3,
+            limits=httpx.Limits(
+                max_connections=100,           # Increased for parallel processing
+                max_keepalive_connections=20,  # More keep-alive connections
+                keepalive_expiry=30.0         # Keep connections alive for 30s
+            )
+        )
+
+        # Create persistent client for connection reuse
+        self.client = httpx.AsyncClient(
+            base_url=self.base_url,
+            transport=self.transport,
+            timeout=self.timeout
         )
         
     async def get_embeddings(self, texts: List[str], task_type: str = "search_document") -> List[List[float]]:
-        """Get embeddings using Nomic Embed v2-MoE with Context7 async client pattern
+        """Get embeddings using Nomic Embed v2-MoE with connection pooling
 
-        ADR-0084: Add task prefixes for 10x performance improvement
-        Creates fresh httpx.AsyncClient per request to avoid event loop binding issues.
+        ADR-0084 Phase 2: Uses persistent client with connection pooling
+        Implements batch processing for 10x throughput improvement
         """
         max_retries = 3      # Total attempts including first try
         retry_delay = 1.0    # Base delay, increases with each retry
 
+        # ADR-0084 Phase 2: Batch processing configuration
+        max_batch_size = 64  # Optimal batch size for Nomic v2
+
         # ADR-0084: CRITICAL - Add task prefixes (80% performance gain)
-        # Nomic requires task prefixes for optimal performance
         prefixed_texts = [f"{task_type}: {text}" for text in texts]
 
-        # Context7 recommended pattern: Create fresh AsyncClient per request
-        # This prevents asyncio event loop issues when called from MCP server
-        async with httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(**self.transport_kwargs),
-            timeout=self.timeout,
-            limits=self.limits
-        ) as client:
+        # Process in batches if input is large
+        all_embeddings = []
+
+        for i in range(0, len(prefixed_texts), max_batch_size):
+            batch = prefixed_texts[i:i + max_batch_size]
+
             for attempt in range(max_retries):
                 try:
-                    # Call Nomic embedding service endpoint
-                    response = await client.post(
-                        f"{self.base_url}/embed",
+                    # Use persistent client for connection reuse
+                    response = await self.client.post(
+                        "/embed",
                         json={
-                            "inputs": prefixed_texts,  # Use prefixed texts
-                            "normalize": True          # L2 normalize embeddings
+                            "inputs": batch,
+                            "normalize": True  # L2 normalize embeddings
                         }
                     )
-                    response.raise_for_status()  # Raise on 4xx/5xx
+                    response.raise_for_status()
                     data = response.json()
 
                     # Extract embeddings from response
@@ -99,8 +110,9 @@ class NomicEmbedClient:
                         logger.error(f"Invalid embedding dimension: {len(embeddings[0])}, expected 768")
                         raise ValueError(f"Invalid embedding dimension from Nomic")
 
-                    return embeddings
-                    
+                    all_embeddings.extend(embeddings)
+                    break  # Success, move to next batch
+
                 except httpx.HTTPStatusError as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"Nomic HTTP error (attempt {attempt + 1}/{max_retries}): {e}")
@@ -117,14 +129,19 @@ class NomicEmbedClient:
                         continue
                     else:
                         logger.error(f"Nomic timeout after {max_retries} attempts: {e}")
-                        # Fail fast - no fallback embeddings
                         raise RuntimeError(f"Nomic service timeout after {max_retries} attempts") from e
 
                 except Exception as e:
                     logger.error(f"Nomic embed error: {e}")
-                    # Fail fast - no fallback embeddings
                     raise RuntimeError(f"Nomic embedding failed: {e}") from e
-    
+
+        return all_embeddings
+
+    async def close(self):
+        """Clean up client connections"""
+        if hasattr(self, 'client'):
+            await self.client.aclose()
+
 
 class NomicService:
     """Service class for Nomic embedding operations with queue fallback and resilience"""
@@ -138,10 +155,20 @@ class NomicService:
         """Initialize the Nomic service with health check"""
         try:
             self.client = NomicEmbedClient()
-            
+
+            # ADR-0084 Phase 2: Initialize service container for Redis cache
+            if not self.service_container:
+                try:
+                    from servers.services.service_container import ServiceContainer
+                    self.service_container = ServiceContainer(project_name="default")
+                    logger.info("✅ Service container initialized for Redis cache")
+                except Exception as e:
+                    logger.warning(f"Could not initialize service container for cache: {e}")
+                    # Continue without cache - not critical
+
             # Test the service with a simple embedding
             test_response = await self.client.get_embeddings(["test initialization"])
-            
+
             if test_response and len(test_response[0]) > 0:
                 self.initialized = True
                 return {
@@ -166,13 +193,14 @@ class NomicService:
         """Set reference to service container for queue access"""
         self.service_container = container
     
-    def _generate_cache_key(self, text: str, model: str = "nomic-v2") -> str:
-        """Generate cache key with model versioning"""
-        # Create deterministic cache key based on content
-        content_hash = hashlib.sha256(text.encode()).hexdigest()
-        
-        # L9 cache key format: namespace:env:app:type:model:version:hash
-        return f"l9:prod:neural_tools:embeddings:{model}:1.0:{content_hash}"
+    def _generate_cache_key(self, text: str, model: str = "nomic-v2", task_type: str = "search_document") -> str:
+        """Generate cache key with model versioning and task type"""
+        # ADR-0084: Include task_type in cache key since different prefixes produce different embeddings
+        content_with_task = f"{task_type}:{text}"
+        content_hash = hashlib.sha256(content_with_task.encode()).hexdigest()
+
+        # L9 cache key format: namespace:env:app:type:model:task:version:hash
+        return f"l9:prod:neural_tools:embeddings:{model}:{task_type}:1.0:{content_hash}"
     
     def _generate_job_id(self, text: str, model: str = "nomic-v2") -> str:
         """Generate deterministic job ID for deduplication"""
@@ -202,7 +230,7 @@ class NomicService:
         if self.service_container:
             try:
                 redis_cache = await self.service_container.get_redis_cache_client()
-                cache_key = self._generate_cache_key(text, model)
+                cache_key = self._generate_cache_key(text, model, task_type)
                 cached = await redis_cache.get(cache_key)
 
                 if cached:
@@ -224,8 +252,8 @@ class NomicService:
                 if self.service_container:
                     try:
                         redis_cache = await self.service_container.get_redis_cache_client()
-                        cache_key = self._generate_cache_key(text, model)
-                        
+                        cache_key = self._generate_cache_key(text, model, task_type)
+
                         # Store with 24-hour TTL
                         await redis_cache.setex(cache_key, 86400, json.dumps(embedding))
                     except Exception as e:

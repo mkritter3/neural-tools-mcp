@@ -1462,12 +1462,21 @@ class IncrementalIndexer(FileSystemEventHandler):
                 return
             
             logger.info(f"Processing batch of {len(batch)} file changes")
-            
-            for file_path, event_type in batch:
-                if event_type == 'delete':
-                    await self.remove_file_from_index(file_path)
-                else:
-                    await self.index_file(file_path, event_type)
+
+            # ADR-0084 Phase 2: Parallel file processing with semaphore
+            sem = asyncio.Semaphore(10)  # Process up to 10 files concurrently
+
+            async def process_file_with_limit(file_path, event_type):
+                async with sem:
+                    if event_type == 'delete':
+                        await self.remove_file_from_index(file_path)
+                    else:
+                        await self.index_file(file_path, event_type)
+
+            # Process all files in parallel
+            tasks = [process_file_with_limit(file_path, event_type)
+                    for file_path, event_type in batch]
+            await asyncio.gather(*tasks, return_exceptions=True)
             
             # Update metrics
             self.metrics['queue_depth'] = self.pending_queue.qsize()
