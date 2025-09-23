@@ -1,7 +1,7 @@
 # ADR-0068: MCP Tools Architecture Modernization for Unified GraphRAG Platform
 
 **Date:** September 21, 2025
-**Status:** Proposed
+**Status:** Abandoned
 **Tags:** mcp-tools, architecture-modernization, graphrag-integration, neo4j-consolidation, temporal-knowledge-graphs
 **Builds on:** ADR-0066 (Neo4j Vector Consolidation), ADR-0067 (Graphiti Temporal Knowledge Graphs)
 **Related:** ADR-0029 (Multi-Project Isolation), ADR-0060 (Container Orchestration), ADR-0065 (Pipeline Resilience)

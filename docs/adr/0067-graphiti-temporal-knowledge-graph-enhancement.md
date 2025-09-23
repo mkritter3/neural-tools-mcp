@@ -1,7 +1,7 @@
 # ADR-0067: Graphiti Temporal Knowledge Graph Enhancement for Incremental Indexing
 
 **Date:** September 21, 2025
-**Status:** Proposed
+**Status:** Abandoned
 **Tags:** graphiti, temporal-knowledge-graph, incremental-indexing, neo4j-enhancement, episodic-processing
 **Builds on:** ADR-0066 (Neo4j Vector Consolidation)
 **Related:** ADR-0065 (Pipeline Resilience), ADR-0060 (Container Orchestration)

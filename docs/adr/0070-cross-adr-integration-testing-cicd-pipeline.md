@@ -1,7 +1,7 @@
 # ADR-70: Cross-ADR Integration Testing & CI/CD Pipeline
 
 **Date:** 2025-09-21
-**Status:** Proposed
+**Status:** Abandoned
 **Context:** Neural GraphRAG MCP Architecture (L9 2025)
 **Dependencies:** ADR-66, ADR-67, ADR-68, ADR-69
 

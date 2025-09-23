@@ -1,7 +1,7 @@
 # ADR-0069: Local LLM Enhanced Relationship Detection for Unified GraphRAG Platform
 
 **Date:** September 21, 2025
-**Status:** Proposed
+**Status:** Abandoned
 **Tags:** qwen3-30b-a3b, ollama, local-llm, relationship-detection, mcp-enhancement, graphrag-optimization, data-sovereignty
 **Builds on:** ADR-0068 (MCP Tools Modernization), ADR-0067 (Graphiti Temporal Knowledge Graphs)
 **Dependencies:** Ollama, Qwen3-30B-A3B Model, Outlines Library, Redis Cache

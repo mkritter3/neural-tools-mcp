@@ -1,7 +1,7 @@
 # ADR-0066: Neo4j Vector Consolidation - Eliminate Dual-Storage Architecture
 
 **Date:** September 21, 2025
-**Status:** Proposed
+**Status:** Abandoned
 **Tags:** neo4j, vector-search, consolidation, dual-storage, graphrag, hybrid-search, architecture-simplification
 **Supersedes:** ADR-0065 (incremental fix), Renders ADR-0051 (distributed systems) unnecessary
 **Related:** ADR-0060 (container orchestration)
