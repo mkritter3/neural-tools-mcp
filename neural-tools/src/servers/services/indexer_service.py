@@ -475,34 +475,43 @@ class IncrementalIndexer(FileSystemEventHandler):
             chunks = self._chunk_content(content, str(relative_path))
             
             # Process with available services
-            success = False
-            
+            semantic_success = False
+            graph_success = False
+
             # 1. Semantic indexing with Qdrant + Nomic
-            if not self.degraded_mode['qdrant']:
-                if not self.degraded_mode['nomic']:
-                    # Full semantic indexing
-                    await self._index_semantic(file_path, relative_path, chunks)
-                    success = True
-                else:
-                    # Keyword-only indexing (no embeddings)
-                    await self._index_keywords(file_path, relative_path, chunks)
-                    success = True
-            
+            if not self.degraded_mode['qdrant'] and not self.degraded_mode['nomic']:
+                semantic_success = await self._index_semantic(file_path, relative_path, chunks)
+
             # 2. Graph indexing with Neo4j
             if not self.degraded_mode['neo4j']:
-                await self._index_graph(file_path, relative_path, content)
-                success = True
+                graph_success = await self._index_graph(file_path, relative_path, content)
+
+            # Success only if at least one pipeline succeeds
+            success = semantic_success or graph_success
+
+            # Track detailed metrics
+            if semantic_success:
+                if 'semantic_files_indexed' not in self.metrics:
+                    self.metrics['semantic_files_indexed'] = 0
+                self.metrics['semantic_files_indexed'] += 1
+            if graph_success:
+                if 'graph_files_indexed' not in self.metrics:
+                    self.metrics['graph_files_indexed'] = 0
+                self.metrics['graph_files_indexed'] += 1
             
-            # 3. Fallback: Basic file tracking when all services are degraded
-            if not success and self.degraded_mode['neo4j'] and self.degraded_mode['qdrant']:
-                # At minimum, track that we've seen the file
-                logger.debug(f"All services degraded - basic tracking for: {file_path}")
-                success = True
-            
+            # Overall success counter only incremented for actual storage success
             if success:
                 # Update hash tracking
                 self.file_hashes[file_path] = current_hash
                 self.metrics['files_indexed'] += 1
+                logger.info(f"✅ At least one pipeline successful: {file_path}")
+            else:
+                if 'files_failed' not in self.metrics:
+                    self.metrics['files_failed'] = 0
+                self.metrics['files_failed'] += 1
+                logger.error(f"❌ Complete dual-pipeline failure for {file_path}: semantic={semantic_success}, graph={graph_success}")
+
+            if success:
                 self.metrics['chunks_created'] += len(chunks)
                 self.metrics['last_index_time'] = datetime.now().isoformat()
                 
@@ -969,7 +978,26 @@ class IncrementalIndexer(FileSystemEventHandler):
         
         return metadata
 
-    async def _index_semantic(self, file_path: str, relative_path: Path, chunks: List[Dict]):
+    def _handle_service_failure(self, service_name: str, error_result: Dict):
+        """Handle service failure with immediate degraded mode activation"""
+        error_type = error_result.get('error_type', 'unknown')
+
+        # Immediate degradation for connection-level errors
+        if error_type in ['authentication_error', 'connection_error', 'service_unavailable']:
+            self.degraded_mode[service_name] = True
+            logger.warning(f"Service {service_name} entering degraded mode: {error_result.get('message')}")
+
+        # Increment failure counter
+        if 'service_failures' not in self.metrics:
+            self.metrics['service_failures'] = {}
+        if service_name not in self.metrics['service_failures']:
+            self.metrics['service_failures'][service_name] = 0
+        self.metrics['service_failures'][service_name] += 1
+
+        # Schedule recovery attempt (placeholder for future implementation)
+        # self._schedule_service_recovery(service_name)
+
+    async def _index_semantic(self, file_path: str, relative_path: Path, chunks: List[Dict]) -> bool:
         """Index with full semantic embeddings and GraphRAG cross-references"""
         try:
             # Extract symbols if tree-sitter is available
@@ -1010,10 +1038,12 @@ class IncrementalIndexer(FileSystemEventHandler):
             
             # Get embeddings in batch
             embeddings = await self.container.nomic.get_embeddings(texts)
-            
+
             if not embeddings:
-                logger.warning(f"No embeddings generated for {file_path}")
-                return
+                logger.error(f"Nomic embedding failed for {relative_path}")
+                self._handle_service_failure('nomic', {"message": "No embeddings generated"})
+                self.degraded_mode['nomic'] = True
+                return False
             
             # Prepare points for Qdrant with Neo4j cross-references
             points = []
@@ -1142,7 +1172,12 @@ class IncrementalIndexer(FileSystemEventHandler):
 
                 # Upsert to Qdrant using proper collection management
                 collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-                await self.container.qdrant.upsert_points(collection_name, points)
+                qdrant_result = await self.container.qdrant.upsert_points(collection_name, points)
+                if qdrant_result.get('status') != 'success':
+                    logger.error(f"Qdrant storage failed for {relative_path}: {qdrant_result.get('message')}")
+                    self._handle_service_failure('qdrant', qdrant_result)
+                    self.degraded_mode['qdrant'] = True
+                    return False
 
                 # Update Neo4j with chunk references (if available)
                 logger.info(f"Neo4j update check: degraded={self.degraded_mode['neo4j']}, chunks={len(neo4j_chunk_ids)}")
@@ -1152,17 +1187,18 @@ class IncrementalIndexer(FileSystemEventHandler):
                     self.metrics['cross_references_created'] += len(neo4j_chunk_ids)
                 else:
                     logger.warning(f"Skipping Neo4j update: degraded={self.degraded_mode['neo4j']}, has_chunks={bool(neo4j_chunk_ids)}")
-            
+
+            logger.info(f"✅ Semantic indexing successful: {len(points)} vectors stored")
+            return True
+
         except Exception as e:
-            error_category = self._categorize_error(e, file_path)
-            logger.error(f"Semantic indexing failed for {file_path} ({error_category}): {e}")
-            self.metrics['service_failures']['nomic'] += 1
-            self._handle_error_metrics(error_category)
-            
-            # Enter degraded mode after threshold failures
-            if self.metrics['service_failures']['nomic'] > 10:
-                logger.warning("Nomic failures exceeded threshold - entering degraded mode")
-                self.degraded_mode['nomic'] = True
+            logger.error(f"Semantic indexing failed for {file_path}: {e}")
+            if 'service_failures' not in self.metrics:
+                self.metrics['service_failures'] = {}
+            if 'semantic_pipeline' not in self.metrics['service_failures']:
+                self.metrics['service_failures']['semantic_pipeline'] = 0
+            self.metrics['service_failures']['semantic_pipeline'] += 1
+            return False
     
     async def _index_keywords(self, file_path: str, relative_path: Path, chunks: List[Dict]):
         """Fallback: Index with keywords only (no embeddings)"""
@@ -1235,7 +1271,7 @@ class IncrementalIndexer(FileSystemEventHandler):
         
         return sparse_indices, sparse_values
     
-    async def _index_graph(self, file_path: str, relative_path: Path, content: str):
+    async def _index_graph(self, file_path: str, relative_path: Path, content: str) -> bool:
         """Index code relationships in Neo4j graph with GraphRAG support"""
         try:
             # Extract basic metadata
@@ -1319,7 +1355,12 @@ class IncrementalIndexer(FileSystemEventHandler):
             }
             
             result = await self.container.neo4j.execute_cypher(cypher, params)
-            
+            if result.get('status') != 'success':
+                logger.error(f"Neo4j operation failed for {relative_path}: {result.get('message')}")
+                self._handle_service_failure('neo4j', result)
+                self.degraded_mode['neo4j'] = True
+                return False
+
             # Check if query was successful and content unchanged (for deduplication)
             if result.get('status') == 'success' and result.get('result') and len(result['result']) > 0 and result['result'][0].get('existing_hash') == file_hash:
                 logger.debug(f"File content unchanged in Neo4j: {file_path}")
@@ -1422,17 +1463,18 @@ class IncrementalIndexer(FileSystemEventHandler):
                     })
                     if result.get('status') != 'success':
                         logger.warning(f"Failed to create import relationship: {result.get('message')}")
-            
+
+            logger.info(f"✅ Graph indexing successful: {result.get('result', [])} nodes created")
+            return True
+
         except Exception as e:
-            error_category = self._categorize_error(e, file_path)
-            logger.error(f"Graph indexing failed for {file_path} ({error_category}): {e}")
+            logger.error(f"Graph indexing failed for {file_path}: {e}")
+            if 'service_failures' not in self.metrics:
+                self.metrics['service_failures'] = {}
+            if 'neo4j' not in self.metrics['service_failures']:
+                self.metrics['service_failures']['neo4j'] = 0
             self.metrics['service_failures']['neo4j'] += 1
-            self._handle_error_metrics(error_category)
-            
-            # Enter degraded mode after threshold failures
-            if self.metrics['service_failures']['neo4j'] > 10:
-                logger.warning("Neo4j failures exceeded threshold - entering degraded mode")
-                self.degraded_mode['neo4j'] = True
+            return False
     
     def _detect_chunk_type(self, text: str) -> str:
         """Detect the type of code chunk (function, class, import, etc.)"""
