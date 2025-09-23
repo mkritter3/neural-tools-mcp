@@ -954,7 +954,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 ELSE $chunks_data
             END AS chunk_data
 
-            // ADR-0078: Native conditional execution (replaces deprecated apoc.do.when)
+            // ADR-0078: Neo4j 5.22 CALL subquery with proper variable scope
             CALL {
                 WITH chunk_data, f, $project AS project
                 WHERE chunk_data IS NOT NULL
@@ -970,7 +970,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 })
                 CREATE (f)-[:HAS_CHUNK]->(c)
                 RETURN c
-            } YIELD c
+            }
 
             // 4. Create symbol nodes if provided (ADR-0078: Native conditionals)
             WITH f, collect(c) as chunks
@@ -987,7 +987,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 })
                 CREATE (f)-[:HAS_SYMBOL]->(s)
                 RETURN count(s) as symbols_created
-            } YIELD symbols_created
+            }
 
             RETURN f.path as file_path, size(chunks) as chunks_created,
                    COALESCE(symbols_created, 0) as symbols_created
