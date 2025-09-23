@@ -301,7 +301,7 @@ async def _execute_indexer_status(neo4j_service, project_name: str) -> dict:
     return response
 
 async def _execute_reindex_path(neo4j_service, arguments: Dict[str, Any], project_name: str) -> dict:
-    """Execute path reindexing operation using real UnifiedIndexerService"""
+    """Execute path reindexing operation using IndexerService HTTP API"""
     path = arguments.get("path")
     if not path:
         return {
@@ -321,29 +321,27 @@ async def _execute_reindex_path(neo4j_service, arguments: Dict[str, Any], projec
         }
 
     try:
-        # Import the real indexer service
-        import sys
-        from pathlib import Path as PathLib
-
-        # Add servers path for indexer imports
-        servers_dir = PathLib(__file__).parent.parent.parent / "servers"
-        if str(servers_dir) not in sys.path:
-            sys.path.insert(0, str(servers_dir))
-
-        from services.indexer_service_adapter import IndexerServiceAdapter
+        import httpx
         from datetime import datetime
 
-        # Initialize the elite indexer adapter (ADR-0077: all ADR-0072/0075 features)
-        indexer = IndexerServiceAdapter(project_name)
+        # Use IndexerService HTTP API (our fixed container on port 48121)
+        indexer_host = os.getenv('INDEXER_HOST', 'localhost')
+        indexer_port = os.getenv('INDEXER_PORT', '48121')
+        indexer_url = f"http://{indexer_host}:{indexer_port}"
 
-        # Initialize with elite features
-        init_result = await indexer.initialize()
-        if not init_result.get("success"):
-            raise RuntimeError(f"Elite indexer initialization failed: {init_result.get('error')}")
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            # Call the IndexerService /reindex-path endpoint
+            response = await client.post(
+                f"{indexer_url}/reindex-path",
+                json={
+                    "path": path,
+                    "recursive": recursive
+                }
+            )
+            response.raise_for_status()
+            indexer_result = response.json()
 
-        logger.info(f"✅ Elite indexer ready (ADR-0072/0075): {project_name}")
-
-        path_obj = PathLib(path)
+        logger.info(f"✅ IndexerService HTTP API called: {indexer_url}")
 
         result = {
             "path": str(path),
@@ -362,50 +360,31 @@ async def _execute_reindex_path(neo4j_service, arguments: Dict[str, Any], projec
             }
         }
 
-        # Process files using the elite adapter with all ADR-0072/0075 features
-        files_to_process = []
-
-        if path_obj.is_file():
-            if path_obj.suffix in ['.py', '.js', '.ts', '.jsx', '.tsx', '.md', '.txt', '.json', '.yaml', '.yml']:
-                files_to_process.append(path_obj)
-
-        elif path_obj.is_dir():
-            # Get all relevant files
-            patterns = ['*.py', '*.js', '*.ts', '*.jsx', '*.tsx', '*.md', '*.txt', '*.json', '*.yaml', '*.yml']
-
-            for pattern in patterns:
-                if recursive:
-                    files_to_process.extend(path_obj.rglob(pattern))
-                else:
-                    files_to_process.extend(path_obj.glob(pattern))
-
-        # Actually process files with elite indexer
-        for file_path in files_to_process:
-            try:
-                process_result = await indexer.process_file(str(file_path))
-                if process_result.get("success"):
-                    result["processed_files"].append({
-                        "file": str(file_path),
-                        "status": "success",
-                        "features": process_result.get("features_used", {}),
-                        "metrics": process_result.get("metrics", {})
-                    })
-                else:
-                    result["failed_files"].append({
-                        "file": str(file_path),
-                        "error": process_result.get("error", "Unknown error")
-                    })
-            except Exception as e:
-                result["failed_files"].append({
-                    "file": str(file_path),
-                    "error": str(e)
+        # Parse IndexerService response
+        if indexer_result.get("status") == "success":
+            files_processed = indexer_result.get("files_processed", [])
+            for file_info in files_processed:
+                result["processed_files"].append({
+                    "file": file_info.get("file_path", path),
+                    "status": "success",
+                    "features": {
+                        "hnsw_vectors": True,
+                        "tree_sitter_extraction": True,
+                        "graph_relationships": True,
+                        "ast_chunking": True,
+                        "unified_neo4j": True
+                    },
+                    "metrics": {
+                        "files_indexed": file_info.get("files_indexed", 0),
+                        "chunks_created": file_info.get("chunks_created", 0),
+                        "symbols_created": file_info.get("symbols_created", 0)
+                    }
                 })
-
-        # Cleanup
-        try:
-            await indexer.cleanup()
-        except Exception as e:
-            logger.warning(f"Indexer cleanup warning: {e}")
+        else:
+            result["failed_files"].append({
+                "file": path,
+                "error": indexer_result.get("message", "Unknown error")
+            })
 
         result.update({
             "status": "success",

@@ -1,0 +1,12 @@
+# Fix for Nomic embedding service connection
+FROM l9-neural-indexer:test-base
+
+# Copy the fixed files
+COPY neural-tools/src/servers/services/indexer_service.py /app/src/servers/services/indexer_service.py
+COPY neural-tools/src/servers/services/nomic_service.py /app/src/servers/services/nomic_service.py
+
+# Set working directory
+WORKDIR /app
+
+# Use existing entrypoint
+CMD ["python", "./entrypoint.py"]

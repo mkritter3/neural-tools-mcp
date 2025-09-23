@@ -12,7 +12,7 @@ import hashlib
 import asyncio
 import logging
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple, Any
+from typing import Dict, Optional, List, Any
 from datetime import datetime, timedelta
 import json
 
@@ -29,7 +29,6 @@ sys.path.insert(0, str(services_dir))  # Enables: from service_container import 
 
 from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
-from servers.services.sync_manager import WriteSynchronizationManager
 
 # CRITICAL: DO NOT REMOVE - Required for config imports (see ADR-0056)
 sys.path.insert(0, str(services_dir.parent))  # Enables: from config.collection_naming import ...
@@ -960,9 +959,9 @@ class IncrementalIndexer(FileSystemEventHandler):
                 ELSE $chunks_data
             END AS chunk_data
 
-            // ADR-0078: Neo4j 5.22 CALL subquery with proper variable scope and YIELD
-            CALL {
-                WITH chunk_data, f, $project AS project
+            // ADR-0078: Neo4j CALL subquery with modern variable scope clause (Neo4j 2025+)
+            CALL (chunk_data, f) {
+                WITH chunk_data, f
                 WHERE chunk_data IS NOT NULL
                 CREATE (c:Chunk {
                     chunk_id: chunk_data.chunk_id,
@@ -970,37 +969,37 @@ class IncrementalIndexer(FileSystemEventHandler):
                     start_line: chunk_data.start_line,
                     end_line: chunk_data.end_line,
                     size: chunk_data.size,
-                    project: project,
+                    project: $project,
                     embedding: chunk_data.embedding,  // Store vector directly in Neo4j
                     created_time: datetime()
                 })
                 CREATE (f)-[:HAS_CHUNK]->(c)
                 RETURN c
-            } YIELD c
+            }
 
             // 4. Create symbol nodes if provided (ADR-0078: Native conditionals)
             WITH f, collect(c) as chunks
-            CALL {
-                WITH f, $symbols_data AS symbols_data, $project AS project
-                WHERE symbols_data IS NOT NULL AND size(symbols_data) > 0
-                UNWIND symbols_data AS symbol
+            CALL (f) {
+                WITH f
+                WHERE $symbols_data IS NOT NULL AND size($symbols_data) > 0
+                UNWIND $symbols_data AS symbol
                 CREATE (s:Symbol {
                     name: symbol.name,
                     type: symbol.type,
                     start_line: symbol.start_line,
                     end_line: symbol.end_line,
-                    project: project
+                    project: $project
                 })
                 CREATE (f)-[:HAS_SYMBOL]->(s)
                 RETURN count(s) as symbols_created
-            } YIELD symbols_created
+            }
 
             RETURN f.path as file_path, size(chunks) as chunks_created,
                    COALESCE(symbols_created, 0) as symbols_created
             """
 
             # ADR-0078: Debug chunk preparation pipeline
-            logger.info(f"🔍 ADR-0078 Pipeline Debug:")
+            logger.info("🔍 ADR-0078 Pipeline Debug:")
             logger.info(f"  - Input chunks length: {len(chunks)}")
             logger.info(f"  - Input embeddings length: {len(embeddings)}")
             if chunks:
@@ -1105,7 +1104,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 # ADR-0078: Post-execution analysis
                 if chunks_created == 0 and len(chunks_data) > 0:
                     logger.error(f"🚨 UNWIND FAILURE: {len(chunks_data)} chunks passed but 0 created")
-                    logger.error(f"🚨 This indicates a Neo4j UNWIND issue - check ADR-0078")
+                    logger.error("🚨 This indicates a Neo4j UNWIND issue - check ADR-0078")
                     return False
                 elif chunks_created > 0:
                     logger.info(f"✅ ADR-0078 SUCCESS: {chunks_created} chunks created successfully")

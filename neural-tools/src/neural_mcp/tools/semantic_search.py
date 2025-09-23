@@ -224,8 +224,9 @@ async def _generate_query_embedding(
             return cached_embedding
 
         # Generate embedding using existing service (ADR-0075 connection pooling)
+        # ADR-0084: Use 'search_query' task type for search queries
         embedding_service = await get_shared_embedding_service(project_name)
-        embedding = await embedding_service.get_embedding(query)
+        embedding = await embedding_service.get_embedding(query, task_type="search_query")
 
         if embedding and isinstance(embedding, list) and len(embedding) == 768:
             # Cache for 1 hour

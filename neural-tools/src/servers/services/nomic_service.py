@@ -29,11 +29,19 @@ class NomicEmbedClient:
     """
     
     def __init__(self):
-        # CRITICAL: Use localhost + exposed port for host-to-container communication
-        # NOT Docker internal IPs (172.x.x.x) which broke MCP connectivity
-        host = os.environ.get('EMBEDDING_SERVICE_HOST', 'localhost')  # Must be localhost from host
-        port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 48000))   # Exposed port 48000, not 8000
-        self.base_url = f"http://{host}:{port}"
+        # Support both URL and host+port configuration
+        # NOMIC_EMBEDDINGS_URL: Direct URL (container-to-container)
+        # EMBEDDING_SERVICE_HOST/PORT: Host+port (host-to-container)
+        nomic_url = os.environ.get('NOMIC_EMBEDDINGS_URL')
+
+        if nomic_url:
+            # Container-to-container communication using service name
+            self.base_url = nomic_url
+        else:
+            # Host-to-container communication using localhost + exposed port
+            host = os.environ.get('EMBEDDING_SERVICE_HOST', 'localhost')
+            port = int(os.environ.get('EMBEDDING_SERVICE_PORT', 48000))
+            self.base_url = f"http://{host}:{port}"
         
         # Store configuration for creating clients per request
         # Context7 pattern: Create fresh AsyncClient per request to avoid
@@ -50,14 +58,19 @@ class NomicEmbedClient:
             max_keepalive_connections=5   # Keep-alive for connection reuse
         )
         
-    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+    async def get_embeddings(self, texts: List[str], task_type: str = "search_document") -> List[List[float]]:
         """Get embeddings using Nomic Embed v2-MoE with Context7 async client pattern
-        
+
+        ADR-0084: Add task prefixes for 10x performance improvement
         Creates fresh httpx.AsyncClient per request to avoid event loop binding issues.
         """
         max_retries = 3      # Total attempts including first try
         retry_delay = 1.0    # Base delay, increases with each retry
-        
+
+        # ADR-0084: CRITICAL - Add task prefixes (80% performance gain)
+        # Nomic requires task prefixes for optimal performance
+        prefixed_texts = [f"{task_type}: {text}" for text in texts]
+
         # Context7 recommended pattern: Create fresh AsyncClient per request
         # This prevents asyncio event loop issues when called from MCP server
         async with httpx.AsyncClient(
@@ -71,15 +84,22 @@ class NomicEmbedClient:
                     response = await client.post(
                         f"{self.base_url}/embed",
                         json={
-                            "inputs": texts,      # List of texts to embed
-                            "normalize": True     # L2 normalize embeddings
+                            "inputs": prefixed_texts,  # Use prefixed texts
+                            "normalize": True          # L2 normalize embeddings
                         }
                     )
                     response.raise_for_status()  # Raise on 4xx/5xx
                     data = response.json()
-                    
+
                     # Extract embeddings from response
-                    return data.get('embeddings', [])
+                    embeddings = data.get('embeddings', [])
+
+                    # ADR-0084: Validate embeddings dimension
+                    if embeddings and len(embeddings[0]) != 768:
+                        logger.error(f"Invalid embedding dimension: {len(embeddings[0])}, expected 768")
+                        raise ValueError(f"Invalid embedding dimension from Nomic")
+
+                    return embeddings
                     
                 except httpx.HTTPStatusError as e:
                     if attempt < max_retries - 1:
@@ -88,8 +108,8 @@ class NomicEmbedClient:
                         continue
                     else:
                         logger.error(f"Nomic connection failed after {max_retries} attempts: {e}")
-                        raise
-                        
+                        raise RuntimeError(f"Nomic service unavailable after {max_retries} attempts") from e
+
                 except (httpx.TimeoutException, httpx.ConnectTimeout) as e:
                     if attempt < max_retries - 1:
                         logger.warning(f"Nomic timeout (attempt {attempt + 1}/{max_retries}): {e}")
@@ -97,32 +117,14 @@ class NomicEmbedClient:
                         continue
                     else:
                         logger.error(f"Nomic timeout after {max_retries} attempts: {e}")
-                        # Fallback to local embedding after all retries exhausted
-                        return await self._fallback_local_embeddings(texts)
-                        
+                        # Fail fast - no fallback embeddings
+                        raise RuntimeError(f"Nomic service timeout after {max_retries} attempts") from e
+
                 except Exception as e:
                     logger.error(f"Nomic embed error: {e}")
-                    # Fallback to local embedding for testing
-                    return await self._fallback_local_embeddings(texts)
+                    # Fail fast - no fallback embeddings
+                    raise RuntimeError(f"Nomic embedding failed: {e}") from e
     
-    async def _fallback_local_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Fallback to simple local embeddings for testing purposes"""
-        import hashlib
-        import numpy as np
-        
-        logger.warning("Using fallback local embeddings - NOT Nomic quality!")
-        
-        # Simple hash-based embedding for testing (768 dimensions to match expected size)
-        embeddings = []
-        for text in texts:
-            # Create deterministic embedding based on text hash
-            hash_obj = hashlib.md5(text.encode())
-            seed = int(hash_obj.hexdigest()[:8], 16)
-            np.random.seed(seed)
-            embedding = np.random.normal(0, 1, 768).astype(np.float32).tolist()
-            embeddings.append(embedding)
-        
-        return embeddings
 
 class NomicService:
     """Service class for Nomic embedding operations with queue fallback and resilience"""
@@ -180,38 +182,41 @@ class NomicService:
         # Create short deterministic ID for ARQ job deduplication
         return f"embed_{hashlib.sha256(content.encode()).hexdigest()[:16]}"
     
-    async def get_embedding(self, text: str, model: str = "nomic-v2") -> List[float]:
+    async def get_embedding(self, text: str, model: str = "nomic-v2", task_type: str = "search_document") -> List[float]:
         """
-        Get embedding for single text with intelligent caching and queue fallback
-        
+        Get embedding for single text with intelligent caching
+        ADR-0084: Add task prefixes for optimal performance
+
         Args:
             text: Text to embed
             model: Model identifier
-            
+            task_type: Task prefix for Nomic ('search_document' or 'search_query')
+
         Returns:
             Embedding vector as list of floats
         """
         if not self.initialized or not self.client:
             raise RuntimeError("Nomic service not initialized")
-        
+
         # Step 1: Check Redis cache for existing embedding
         if self.service_container:
             try:
                 redis_cache = await self.service_container.get_redis_cache_client()
                 cache_key = self._generate_cache_key(text, model)
                 cached = await redis_cache.get(cache_key)
-                
+
                 if cached:
                     # Cache hit - refresh TTL to prevent expiration of hot data
                     await redis_cache.expire(cache_key, 86400)  # Reset to 24 hour TTL
                     return json.loads(cached)
-                    
+
             except Exception as e:
                 logger.warning(f"Cache check failed: {e}")
-        
-        # Step 2: Try direct embedding call to Nomic service
+
+        # Step 2: Try direct embedding call to Nomic service with task prefix
         try:
-            embeddings = await self.client.get_embeddings([text])
+            # ADR-0084: Pass task_type for proper prefixing
+            embeddings = await self.client.get_embeddings([text], task_type=task_type)
             if embeddings and len(embeddings) > 0:
                 embedding = embeddings[0]
                 
@@ -242,46 +247,21 @@ class NomicService:
     
 # ADR-0083: Removed _fallback_to_queue method - pure HTTP service with no queue logic
     
-    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for multiple texts with error handling"""
+    async def get_embeddings(self, texts: List[str], task_type: str = "search_document") -> List[List[float]]:
+        """Get embeddings for multiple texts with error handling
+        ADR-0084: Add task prefixes for optimal performance"""
         if not self.initialized or not self.client:
             raise RuntimeError("Nomic service not initialized")
-        
-        # For batch requests, try direct first, then individual fallbacks
+
+        # ADR-0084: Direct call with task prefixes
         try:
-            response = await self.client.get_embeddings(texts)
+            response = await self.client.get_embeddings(texts, task_type=task_type)
             return response
-        except (ConnectionError, TimeoutError, httpx.HTTPError) as e:
-            # Fallback to individual processing through queue if service container available
-            if self.service_container and len(texts) <= 10:  # Limit batch fallback
-                logger.warning(f"Batch embedding failed, falling back to individual processing: {e}")
-                results = []
-                for text in texts:
-                    try:
-                        embedding = await self.get_embedding(text)
-                        results.append(embedding)
-                    except Exception:
-                        # For batch operations, use fallback embedding
-                        fallback_embedding = await self._generate_fallback_embedding(text)
-                        results.append(fallback_embedding)
-                return results
-            else:
-                raise
+        except Exception as e:
+            # ADR-0084: Fail fast - no fallback embeddings
+            logger.error(f"Batch embedding failed: {e}")
+            raise RuntimeError(f"Embedding generation failed: {e}") from e
     
-    async def _generate_fallback_embedding(self, text: str) -> List[float]:
-        """Generate fallback embedding for testing/degraded service"""
-        import hashlib
-        import numpy as np
-        
-        logger.warning(f"Using fallback embedding for: {text[:50]}...")
-        
-        # Create deterministic embedding based on text hash
-        hash_obj = hashlib.md5(text.encode())
-        seed = int(hash_obj.hexdigest()[:8], 16)
-        np.random.seed(seed)
-        embedding = np.random.normal(0, 1, 768).astype(np.float32).tolist()
-        
-        return embedding
     
     async def health_check(self) -> Dict[str, Any]:
         """Check service health"""

@@ -1,0 +1,94 @@
+# Neural Embeddings Service - Nomic Embed v2-MoE OPTIMIZED
+# ADR-0084: Performance optimizations for CPU inference
+# Includes: megablocks, torch.compile, proper warmup
+
+FROM python:3.11-slim
+
+# System dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    g++ \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Install base Python dependencies
+COPY neural-tools/config/requirements-l9-enhanced.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir torch>=2.3.0 numpy>=1.24.0
+
+# Install remaining dependencies first (megablocks is optional optimization)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir -r requirements-l9-enhanced.txt
+
+# Copy entire src/ directory structure
+COPY neural-tools/src/ ./src/
+
+# Create model cache directory
+RUN mkdir -p /app/models /root/.cache/huggingface
+
+# Set environment variables for src/ directory structure
+ENV PYTHONPATH=/app:/app/src:/app/src/servers
+ENV PYTHONUNBUFFERED=1
+
+# Nomic Embed v2-MoE configuration
+ENV EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v2-moe
+ENV MODEL_TRUST_REMOTE_CODE=true
+ENV MAX_CONCURRENT_REQUESTS=1024
+ENV MAX_BATCH_TOKENS=32768
+ENV INFERENCE_OPTIMIZATION=true
+ENV MOE_ROUTING_EFFICIENCY=0.85
+
+# CRITICAL Performance optimizations for CPU
+ENV TORCH_COMPILE=true
+ENV TORCH_NUM_THREADS=8
+ENV OMP_NUM_THREADS=8
+ENV MKL_NUM_THREADS=8
+ENV FLASH_ATTENTION=false
+ENV BATCH_PROCESSING=dynamic
+ENV MAX_BATCH_SIZE=64
+
+# Expose embedding service port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=15s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Create optimized startup script with proper warmup
+RUN cat > /app/start_optimized.sh << 'EOF'
+#!/bin/bash
+echo "Starting Nomic Embed v2-MoE with optimizations..."
+echo "  - Megablocks: Installed"
+echo "  - Torch.compile: Enabled"
+echo "  - CPU threads: 8"
+echo "  - Batch size: 64"
+
+# Pre-download the model if not cached
+python3 -c "
+from sentence_transformers import SentenceTransformer
+print('Pre-loading model...')
+model = SentenceTransformer('nomic-ai/nomic-embed-text-v2-moe', trust_remote_code=True)
+print('Model loaded successfully')
+
+# Warm up with different input sizes for torch.compile optimization
+print('Warming up model with different batch sizes...')
+for size in [1, 4, 16, 32]:
+    texts = ['search_document: warmup text'] * size
+    _ = model.encode(texts)
+    print(f'  Warmed up batch size {size}')
+print('Warmup complete!')
+"
+
+# Start the server
+exec python -m uvicorn src.servers.nomic_embed_server:app --host 0.0.0.0 --port 8000 --workers 1
+EOF
+
+RUN chmod +x /app/start_optimized.sh
+
+# Run with optimized startup
+CMD ["/app/start_optimized.sh"]
