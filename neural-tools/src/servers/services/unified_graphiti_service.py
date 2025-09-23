@@ -293,10 +293,84 @@ class UnifiedIndexerService:
 
     async def search_unified_knowledge(self, query: str, limit: int = 10) -> Dict[str, Any]:
         """
-        Search unified Neo4j + Graphiti knowledge graph
-        ADR-66: Single storage system, ADR-67: Temporal knowledge
+        ADR-0066: Elite GraphRAG search using Neo4j vector indexes + hybrid capabilities
+        Direct Neo4j access for optimal performance, bypassing HTTP overhead
         """
-        return await self.graphiti_client.search_knowledge_graph(query, limit)
+        try:
+            # Initialize Neo4j service for direct vector search
+            from servers.services.neo4j_service import Neo4jService
+            from servers.services.nomic_local_service import NomicService
+
+            neo4j_service = Neo4jService(self.project_name)
+            nomic_service = NomicService()
+
+            # Initialize services
+            neo4j_init = await neo4j_service.initialize()
+            nomic_init = await nomic_service.initialize()
+
+            if not neo4j_init.get("success") or not nomic_init.get("success"):
+                logger.warning("Falling back to Graphiti HTTP search due to service initialization failure")
+                return await self.graphiti_client.search_knowledge_graph(query, limit)
+
+            # Get embedding for the query using Nomic
+            query_embeddings = await nomic_service.get_embeddings([query])
+            if not query_embeddings or len(query_embeddings) == 0:
+                logger.warning("Failed to get query embedding, falling back to text search")
+                return {
+                    "status": "partial_success",
+                    "results": await neo4j_service.semantic_search(query, limit),
+                    "search_type": "text_only",
+                    "query": query
+                }
+
+            query_embedding = query_embeddings[0]
+
+            # ADR-0066: Use Neo4j hybrid search for elite performance
+            hybrid_results = await neo4j_service.hybrid_search(
+                query_text=query,
+                query_embedding=query_embedding,
+                limit=limit,
+                vector_weight=0.7  # Prioritize semantic similarity
+            )
+
+            # Format results for compatibility
+            formatted_results = []
+            for result in hybrid_results:
+                node = result["node"]
+                formatted_result = {
+                    "content": node.get("content", node.get("text", "")),
+                    "file_path": node.get("path", node.get("file_path", "")),
+                    "chunk_id": node.get("chunk_id"),
+                    "similarity_score": result["combined_score"],
+                    "vector_score": result["vector_score"],
+                    "text_score": result["text_score"],
+                    "node_type": result["node_type"],
+                    "search_method": "neo4j_hybrid_vector",
+                    "metadata": {
+                        "line_start": node.get("start_line"),
+                        "line_end": node.get("end_line"),
+                        "chunk_type": node.get("chunk_type"),
+                        "language": node.get("language"),
+                        "project": node.get("project")
+                    }
+                }
+                formatted_results.append(formatted_result)
+
+            logger.info(f"✅ ADR-0066 elite search completed: {len(formatted_results)} results with Neo4j vector indexes")
+
+            return {
+                "status": "success",
+                "results": formatted_results,
+                "search_type": "neo4j_elite_hybrid",
+                "query": query,
+                "total_results": len(formatted_results),
+                "performance_note": "Using HNSW vector indexes for O(log n) similarity search"
+            }
+
+        except Exception as e:
+            logger.error(f"Elite GraphRAG search failed, falling back to Graphiti: {e}")
+            # Fallback to original Graphiti search
+            return await self.graphiti_client.search_knowledge_graph(query, limit)
 
     async def get_status(self) -> Dict[str, Any]:
         """Get unified indexer service status"""

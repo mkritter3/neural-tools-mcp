@@ -1466,6 +1466,83 @@ async def backfill_metadata_impl(arguments: dict) -> List[types.TextContent]:
         }))]
 
 
+async def enrich_with_graph_context(neo4j_service, search_results: List[Dict], project_name: str) -> Dict[str, Any]:
+    """ADR-0075: Enrich vector search results with graph context"""
+    try:
+        if not search_results:
+            return {}
+
+        # Extract chunk IDs from vector results
+        chunk_ids = [r["node"].get("chunk_id") for r in search_results if r["node"].get("chunk_id")]
+
+        if not chunk_ids:
+            return {}
+
+        # Graph context enrichment query - work with existing Function/Module structure
+        graph_query = """
+        // Map chunk IDs to file paths, then find graph context
+        WITH $chunk_ids as target_chunks, $project as proj
+
+        // Find Functions and Modules from files that match chunk patterns
+        MATCH (f:Function)-[:DEFINED_IN]->(file:File)
+        WHERE file.project = proj
+
+        // Also find imported modules
+        OPTIONAL MATCH (file)-[:IMPORTS]->(imported:Module)
+
+        // Find files that import from this file's modules
+        OPTIONAL MATCH (this_module:Module)-[:DEFINED_IN]->(file)
+        OPTIONAL MATCH (other_file:File)<-[:DEFINED_IN]-(other_module:Module)-[:IMPORTS]->(this_module)
+
+        // Return context for all chunks (we'll filter by availability)
+        RETURN file.path as file_path,
+               collect(DISTINCT f.name)[0..5] as related_functions,
+               collect(DISTINCT imported.name)[0..5] as imported_modules,
+               collect(DISTINCT other_file.path)[0..3] as related_files
+        """
+
+        context_result = await neo4j_service.execute_cypher(graph_query, {
+            'chunk_ids': chunk_ids,
+            'project': project_name
+        })
+
+        if context_result.get('status') == 'success':
+            # Build file_path -> context mapping first
+            file_context = {}
+            for record in context_result['result']:
+                file_path = record['file_path']
+                file_context[file_path] = {
+                    'related_functions': [f for f in record.get('related_functions', []) if f and f.strip()],
+                    'imported_modules': [m for m in record.get('imported_modules', []) if m and m.strip()],
+                    'related_files': [f for f in record.get('related_files', []) if f and f.strip()]
+                }
+
+            # Map to chunk_ids using search results
+            context_map = {}
+            for result in search_results:
+                node = result["node"]
+                chunk_id = node.get("chunk_id")
+                file_path = node.get("file_path") or node.get("path")
+
+                if chunk_id and file_path:
+                    # Try exact match first
+                    if file_path in file_context:
+                        context_map[chunk_id] = file_context[file_path]
+                    else:
+                        # Try partial path matching
+                        for fp, context in file_context.items():
+                            if file_path in fp or fp in file_path:
+                                context_map[chunk_id] = context
+                                break
+
+            return context_map
+
+        return {}
+
+    except Exception as e:
+        logger.warning(f"Graph context enrichment failed: {e}")
+        return {}
+
 async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextContent]:
     try:
         # ADR-0074: Direct Neo4j vector search (no Graphiti, no old container dependencies)
@@ -1506,34 +1583,51 @@ async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextCo
             min_score=0.5
         )
 
-        # Format results for MCP compatibility
+        # ADR-0075: Graph context enrichment
+        graph_context = await enrich_with_graph_context(neo4j, search_results, project_name)
+        logger.info(f"🕸️ Graph context: {len(graph_context)} enriched results")
+
+        # Format results for MCP compatibility with graph context
         formatted = []
         for result in search_results:
             node = result["node"]
             content = node.get("text", "")
-            formatted.append({
+            chunk_id = node.get("chunk_id")
+
+            # Get graph context for this chunk
+            context = graph_context.get(chunk_id, {})
+
+            result_data = {
                 "score": result["similarity_score"],
                 "file_path": node.get("file_path", node.get("path", "")),
                 "snippet": (content[:200] + "...") if len(content) > 200 else content,
-                "search_method": "neo4j_elite_hnsw",
+                "search_method": "neo4j_elite_hnsw_graph",
                 "metadata": {
-                    "chunk_id": node.get("chunk_id"),
+                    "chunk_id": chunk_id,
                     "start_line": node.get("start_line"),
                     "end_line": node.get("end_line"),
                     "node_type": result["node_type"]
                 }
-            })
+            }
+
+            # ADR-0075: Add graph context if available
+            if context:
+                result_data["graph_context"] = context
+                logger.debug(f"📊 Added graph context for {chunk_id}: {len(context.get('related_functions', []))} functions, {len(context.get('imported_modules', []))} modules, {len(context.get('related_files', []))} files")
+
+            formatted.append(result_data)
 
         response = {
             "status": "success",
             "query": query,
             "results": formatted,
             "total_found": len(formatted),
-            "architecture": "neo4j_elite_hnsw_direct",
-            "performance_note": "Using O(log n) HNSW vector indexes with direct Neo4j access"
+            "architecture": "neo4j_elite_hnsw_graph",
+            "graph_context_enabled": len(graph_context) > 0,
+            "performance_note": "Using O(log n) HNSW vector indexes with graph context traversal"
         }
 
-        logger.info(f"🎯 Elite search completed: {len(formatted)} results")
+        logger.info(f"🎯 Graph-aware elite search completed: {len(formatted)} results with {len(graph_context)} enriched")
 
         # Add instance metadata in verbose mode
         response = add_instance_metadata(response, project_name=project_name)
