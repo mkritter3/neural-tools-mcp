@@ -1,195 +1,114 @@
-# .canon.yaml - Canonical Knowledge Configuration for L9 Neural GraphRAG
-# ADR-0031: Canonical Knowledge Management System
-version: "1.0"
-updated: "2025-09-13"
+# .canon.yaml - User-defined source of truth for claude-l9-template
+# September 2025 Standards - ADR-0076
 
-# Primary sources of truth (highest authority)
-primary:
-  - path: "CLAUDE.md"
+canonical_sources:
+  documentation:
     weight: 1.0
-    description: "L9 Truth-First Engineering Contract - Prime directive"
+    patterns: ["README.md", "docs/**/*.md", "*.md", "CLAUDE.md"]
+    trust_level: "high"
+    description: "Primary documentation and specifications"
 
-  - pattern: "docs/adr/*.md"
-    weight: 0.95
-    description: "Architecture Decision Records - Design rationale"
-
-  - pattern: "docs/reference-knowledge/anthropic-official-documentation/03-claude-code/**/*"
-    weight: 0.95
-    description: "Official Anthropic Claude Code documentation - Latest protocols and standards"
-
-  - pattern: "docs/reference-knowledge/anthropic-official-documentation/04-mcps/**/*"
-    weight: 0.95
-    description: "Official Anthropic MCP documentation - Protocol specifications and best practices"
-
-  - pattern: "docs/reference-knowledge/anthropic-official-documentation/01-developer-guide/**/*"
-    weight: 0.95
-    description: "Official Anthropic developer guide - Core development principles"
-
-  - path: ".mcp.json"
+  configuration:
     weight: 0.9
-    description: "MCP server configuration - Source of truth for connections"
-  
-  # Example: Add your project's main README as primary source
-  # - path: "README.md"
-  #   weight: 0.95
-  #   description: "Project documentation and setup instructions"
+    patterns: ["*.config.js", "package.json", "pyproject.toml", "CLAUDE.md", ".mcp.json", "docker-compose.yml"]
+    trust_level: "high"
+    description: "Project configuration and build files"
 
-# Secondary sources (high trust but not absolute)
-secondary:
-  - pattern: "neural-tools/src/servers/services/*.py"
-    weight: 0.75
-    description: "Core service implementations"
-  
-  # Example: Add your main application code
-  # - pattern: "src/core/**/*.py"
-  #   weight: 0.8
-  #   description: "Core business logic"
-  
-  # Example: Add API definitions
-  # - pattern: "src/api/routes/*.py"
-  #   weight: 0.75
-  #   description: "API endpoint definitions"
-  
-  # Example: Add entire directories
-  # - pattern: "src/core/**/*"        # All files in src/core subdirectories (not direct files)
-  #   weight: 0.8
-  #   description: "Core application directory"
-  #
-  # To include EVERYTHING in a directory (direct files + all subdirs):
-  # - pattern: "src/core/*"           # Direct files in src/core
-  #   weight: 0.8
-  #   description: "Core files"
-  # - pattern: "src/core/**/*"        # All files in subdirectories
-  #   weight: 0.8  
-  #   description: "Core subdirectories"
-  
-  # - pattern: "docs/**/*.md"         # All .md files in docs directory
-  #   weight: 0.7
-  #   description: "Documentation directory"
-  
-  # - pattern: "src/utils/*"          # Only direct files in src/utils (no subdirs)
-  #   weight: 0.65
-  #   description: "Utility functions"
-    
-  - pattern: "neural-tools/src/neural_mcp/*.py"
-    weight: 0.7
-    description: "MCP server implementation"
-    
-  - pattern: "neural-tools/src/infrastructure/**/*"
-    weight: 0.7
-    description: "Infrastructure components (PRISM, RRF) - entire directory"
-    
-  - path: "docker-compose.yml"
-    weight: 0.65
-    description: "Container orchestration configuration"
-
-# Reference material (useful but lower priority)
-reference:
-  - pattern: "scripts/*.py"
-    weight: 0.4
-    description: "Utility scripts and tools"
-    
-  - pattern: "tests/**/*.py"
-    weight: 0.35
-    description: "Test cases showing usage patterns"
-    
-  - pattern: "examples/*.py"
-    weight: 0.3
-    description: "Usage examples"
-
-# Deprecated or low-trust sources
-deprecated:
-  - pattern: "**/deprecated_*.py"
-    weight: 0.1
-    description: "Deprecated modules - do not use"
-    
-  - pattern: "**/legacy/**/*"
-    weight: 0.05
-    description: "Legacy code - for reference only"
-
-# Experimental/volatile code
-experimental:
-  - pattern: "experiments/**/*"
-    weight: 0.2
-    volatile: true
-    description: "Experimental features - may change"
-    
-  - pattern: "**/poc_*.py"
-    weight: 0.15
-    volatile: true
-    description: "Proof of concept implementations"
-
-# Authority metadata for inline markers
-inline_markers:
-  - marker: "@canon"
-    weight_boost: 0.3
-    description: "Inline canon marker in comments"
-    
-  - marker: "@authority"
-    weight_boost: 0.25
-    description: "Authority marker for important code"
-    
-  - marker: "@source-of-truth"
-    weight_boost: 0.35
-    description: "Explicit source of truth marker"
-    
-  - marker: "@deprecated"
-    weight_penalty: 0.8
-    description: "Inline deprecation marker"
-    
-  - marker: "@experimental"
-    weight_penalty: 0.5
-    description: "Inline experimental marker"
-    
-  - marker: "@legacy"
-    weight_penalty: 0.7
-    description: "Legacy code marker"
-
-# Foundational knowledge (critical for understanding the system)
-foundational:
-  # Architecture and system design - highest weight
-  - pattern: "docs/adr/*.md"
+  architecture_decisions:
     weight: 0.95
-    description: "Architecture Decision Records - explains WHY we built it this way"
-    
-  - path: "ARCHITECTURE.md"
-    weight: 0.9
-    description: "System architecture overview - MUST read before making changes"
-    
-  # Domain and business knowledge - high weight
-  - pattern: "docs/domain/**/*"
+    patterns: ["docs/adr/*.md"]
+    trust_level: "high"
+    description: "Architecture Decision Records - critical design decisions"
+
+  implementation:
+    weight: 0.7
+    patterns: ["src/**/*.py", "lib/**/*.js", "neural-tools/**/*.py"]
+    trust_level: "medium"
+    description: "Core implementation files"
+
+  scripts:
     weight: 0.8
-    description: "Domain model and business concepts"
-    
-  # Integration and external dependencies - medium-high weight  
-  - pattern: "docs/integrations/**/*"
-    weight: 0.75
-    description: "How we connect to external systems"
-    
-  # Learning resources - medium weight
-  - pattern: "docs/guides/**/*.md"
-    weight: 0.65
-    description: "Implementation guides and best practices"
-    
-  - pattern: "examples/**/*"
+    patterns: ["scripts/*.sh", "ci/*.py"]
+    trust_level: "medium"
+    description: "Deployment and operational scripts"
+
+  tests:
     weight: 0.6
-    description: "Reference implementations and patterns"
-    
-  # Background material - lower weight
-  - pattern: "docs/research/**/*"
-    weight: 0.45
-    description: "Research and background material"
+    patterns: ["test/**/*", "spec/**/*", "**/test_*.py", "tests/**/*"]
+    trust_level: "medium"
+    description: "Test files and specifications"
 
-# Special patterns for this project
-special:
-  - pattern: "neural-tools/src/servers/services/indexer_service.py"
-    weight: 0.85
-    description: "Core indexer with all optimizations - critical component"
-    
-  - pattern: "neural-tools/src/servers/services/service_container.py"
-    weight: 0.8
-    description: "Service orchestration - connection management"
-    
-  - path: "neural-tools/src/infrastructure/prism_scorer.py"
-    weight: 0.8
-    description: "PRISM scoring algorithm - intelligent file importance"
+  legacy:
+    weight: 0.2
+    patterns: ["legacy/**/*", "deprecated/**/*", "old/**/*"]
+    trust_level: "low"
+    description: "Legacy code marked for deprecation"
+
+# User-specific importance overrides
+user_overrides:
+  "CLAUDE.md": 1.0                               # Critical project instructions
+  "docs/adr/*.md": 0.95                         # Architecture decisions
+  "neural-tools/src/neural_mcp/neural_server_stdio.py": 0.9  # Core MCP server
+  "neural-tools/src/servers/services/neo4j_service.py": 0.9  # Core service
+  "scripts/deploy-to-global-mcp.sh": 0.85       # Critical deployment script
+  "docker-compose.yml": 0.8                     # Infrastructure definition
+  "pyproject.toml": 0.8                         # Python project configuration
+  ".mcp.json": 0.8                             # MCP configuration
+  "legacy/**/*": 0.1                           # Deprecate legacy code
+  "test_*.py": 0.8                             # Important test patterns
+  "*.test.js": 0.7                             # JavaScript tests
+
+# Microsoft GraphRAG 2025 community clustering configuration
+community_clustering:
+  enabled: true
+  algorithm: "leiden"                           # Microsoft GraphRAG standard
+  min_cluster_size: 3
+  resolution: 1.0
+  max_cluster_size: 50
+
+# Metadata tracking configuration
+metadata_tracking:
+  recency_decay: 0.95                          # Weight recent changes higher
+  complexity_threshold: 100                    # Lines of code complexity scoring
+  git_commit_weight: 0.8                       # Recent commits indicate importance
+  dependency_weight: 0.9                       # High-dependency files are important
+  todo_penalty: 0.1                           # TODOs reduce canonical weight
+  fixme_penalty: 0.2                          # FIXMEs reduce canonical weight more
+
+# Project-specific canonical knowledge rules
+project_rules:
+  # L9 Neural GraphRAG specific patterns
+  critical_components:
+    - "neural-tools/src/neural_mcp/"           # Core MCP implementation
+    - "docs/adr/"                              # Architecture decisions
+    - "scripts/"                               # Operational scripts
+    - "CLAUDE.md"                              # Project instructions
+
+  # Patterns that indicate high importance
+  importance_indicators:
+    - contains: "class.*Service"               # Service classes
+      weight_boost: 0.1
+    - contains: "ADR-"                         # Architecture decisions
+      weight_boost: 0.2
+    - contains: "async def.*_impl"             # MCP tool implementations
+      weight_boost: 0.1
+    - filename_pattern: "*server*.py"         # Server implementations
+      weight_boost: 0.1
+
+  # Patterns that indicate low importance
+  deprecation_indicators:
+    - contains: "# TODO: remove"
+      weight_penalty: 0.3
+    - contains: "# DEPRECATED"
+      weight_penalty: 0.5
+    - filename_pattern: "*_old.*"
+      weight_penalty: 0.4
+    - filename_pattern: "*_backup.*"
+      weight_penalty: 0.5
+
+# Integration settings
+integration:
+  neo4j_sync: true                             # Sync weights to Neo4j canon_weight property
+  auto_update: true                            # Auto-update weights when files change
+  cache_duration: 3600                         # Cache canon weights for 1 hour
+  batch_size: 100                             # Process files in batches

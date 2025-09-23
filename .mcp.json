@@ -2,7 +2,7 @@
   "mcpServers": {
     "neural-tools": {
       "command": "python3",
-      "args": ["/Users/mkr/local-coding/claude-l9-template/neural-tools/run_mcp_server.py"],
+      "args": ["-m", "neural_mcp.server"],
       "cwd": "/Users/mkr/local-coding/claude-l9-template",
       "env": {
         "PYTHONPATH": "/Users/mkr/local-coding/claude-l9-template/neural-tools/src",
