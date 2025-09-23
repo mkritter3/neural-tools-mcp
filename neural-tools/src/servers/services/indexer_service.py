@@ -19,7 +19,7 @@ import json
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from threading import Timer, Lock
-from qdrant_client import models
+# ADR-0075: Removed qdrant_client import - Neo4j-only architecture
 
 # CRITICAL: DO NOT REMOVE - Required for imports to work (see ADR-0056)
 # These sys.path modifications compensate for mixed import patterns across the codebase
@@ -172,7 +172,7 @@ class DebouncedEventHandler(FileSystemEventHandler):
 class IncrementalIndexer(FileSystemEventHandler):
     """
     Handles file system events and performs incremental indexing
-    Integrates with Neo4j GraphRAG, Qdrant vectors, and Nomic embeddings
+    ADR-0075: Neo4j-only architecture with HNSW vectors and Nomic embeddings
     """
     
     def __init__(self, project_path: str, project_name: str = "default", container: ServiceContainer = None):
@@ -182,7 +182,7 @@ class IncrementalIndexer(FileSystemEventHandler):
         # ADR-0057: Fixed collection naming to use hyphens (project-name format)
         self.collection_prefix = f"project-{project_name}"
         
-        # Service container for accessing Neo4j, Qdrant, Nomic
+        # Service container for accessing Neo4j and Nomic (ADR-0075: Neo4j-only)
         self.container = container
         self.services_initialized = False
 
@@ -325,10 +325,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 if not self.container.nomic:
                     raise RuntimeError("Nomic service is unavailable - cannot proceed with semantic embeddings")
 
-                # Qdrant eliminated per ADR-0066 - Neo4j handles all storage
-
-                # Ensure collections exist
-                await self._ensure_collections()
+                # ADR-0075: Neo4j handles all storage - no collection setup needed
 
                 # Capture actual embedding dimension for dynamic alignment
                 try:
@@ -361,26 +358,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 else:
                     raise RuntimeError(f"All initialization attempts failed: {e}")
     
-    async def _ensure_collections(self):
-        """Ensure required collections exist - ADR-0075: Neo4j-only, skip Qdrant"""
-        # ADR-0075: Neo4j-only architecture - Qdrant collections not required
-        if hasattr(self.container, 'qdrant') and self.container.qdrant:
-            try:
-                # Use centralized collection management if Qdrant available
-                success = await self.collection_manager.ensure_collection_exists(
-                    CollectionType.CODE,
-                    self.container.qdrant
-                )
-                if success:
-                    logger.info("✅ Qdrant collections ready (optional)")
-                else:
-                    logger.warning("⚠️ Qdrant collection creation failed (continuing with Neo4j-only)")
-            except Exception as e:
-                logger.warning(f"⚠️ Qdrant collection setup failed (continuing with Neo4j-only): {e}")
-        else:
-            logger.info("ℹ️ Qdrant not available - using Neo4j-only storage per ADR-0075")
-
-        # Always succeed - Neo4j handles vector storage per ADR-0075
+    # ADR-0075: Removed _ensure_collections() - Neo4j-only architecture needs no Qdrant collections
     
     def should_index(self, file_path: str) -> bool:
         """Check if file should be indexed with security filters"""
@@ -425,7 +403,7 @@ class IncrementalIndexer(FileSystemEventHandler):
     async def index_file(self, file_path: str, action: str = "update"):
         """
         Index a single file with graceful degradation and performance tracking
-        Integrates with Neo4j, Qdrant, and Nomic based on availability
+        ADR-0075: Neo4j-only architecture with HNSW vectors and Nomic embeddings
         """
         if not self.should_index(file_path):
             return
@@ -495,10 +473,9 @@ class IncrementalIndexer(FileSystemEventHandler):
             # Use comprehensive error handling
             self._handle_error_metrics(error_category)
             
-            # Attempt service recovery for service-related errors
+            # Attempt service recovery for service-related errors (ADR-0075: Neo4j-only)
             service_errors = {
                 'neo4j': 'neo4j',
-                'qdrant': 'qdrant', 
                 'embedding': 'nomic',
                 'embedding_generation': 'nomic',
                 'connectivity': None  # Could be any service
@@ -525,8 +502,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             return 'authentication'
         if 'neo4j' in error_msg:
             return 'neo4j'
-        if 'qdrant' in error_msg:
-            return 'qdrant'
+        # ADR-0075: Removed Qdrant error detection - Neo4j-only architecture
         if 'embedding' in error_msg or 'nomic' in error_msg:
             return 'embedding'
             
@@ -1060,73 +1036,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             logger.error(f"Neo4j unified storage error: {e}")
             return False
 
-    # Legacy method removed - ADR-0066 unified indexing eliminates semantic/graph split
-    async def _index_keywords(self, file_path: str, relative_path: Path, chunks: List[Dict]):
-        """Fallback: Index with keywords only (no embeddings)"""
-        try:
-            # Create keyword-only entries
-            points = []
-            for i, chunk in enumerate(chunks):
-                point_id = abs(hash(f"{file_path}_{i}_{datetime.now()}")) % (10**15)
-                
-                # Extract keywords for sparse vector
-                sparse_indices, sparse_values = self._extract_keywords(chunk['text'])
-                
-                # Use zero vector for dense (required by schema)
-                zero_vector = [0.0] * 768
-                
-                point = {
-                    'id': point_id,
-                    'vector': zero_vector,
-                    'sparse_vector': {
-                        'indices': sparse_indices,
-                        'values': sparse_values
-                    },
-                    'payload': {
-                        'file_path': str(relative_path),
-                        'full_path': file_path,
-                        'chunk_index': i,
-                        'content': chunk['text'][:1000],
-                        'indexed_at': datetime.now().isoformat(),
-                        'index_type': 'keyword_only'
-                    }
-                }
-                points.append(point)
-            
-            collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-            await self.container.qdrant.upsert_points(collection_name, points)
-            
-        except Exception as e:
-            error_category = self._categorize_error(e, file_path)
-            logger.error(f"Keyword indexing failed for {file_path} ({error_category}): {e}")
-            self.metrics['service_failures']['qdrant'] += 1
-            self._handle_error_metrics(error_category)
-            raise RuntimeError(f"Keyword indexing failed for {file_path}: {e}")
-    
-    def _extract_keywords(self, text: str, max_keywords: int = 100) -> Tuple[List[int], List[float]]:
-        """Extract keywords for sparse vector representation"""
-        # Simple TF-based keyword extraction
-        words = text.lower().split()
-        word_freq = {}
-        
-        for word in words:
-            # Filter short words and common stop words
-            if len(word) > 2 and word not in {'the', 'and', 'for', 'with', 'from', 'this', 'that'}:
-                word = ''.join(c for c in word if c.isalnum())  # Clean punctuation
-                if word:
-                    word_freq[word] = word_freq.get(word, 0) + 1
-        
-        # Convert to sparse vector format
-        vocab_size = 10000
-        sparse_indices = []
-        sparse_values = []
-        
-        for word, freq in sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:max_keywords]:
-            idx = hash(word) % vocab_size
-            sparse_indices.append(idx)
-            sparse_values.append(float(freq))
-        
-        return sparse_indices, sparse_values
+    # ADR-0075: Removed legacy Qdrant methods - Neo4j-only architecture
     def _detect_chunk_type(self, text: str) -> str:
         """Detect the type of code chunk (function, class, import, etc.)"""
         lines = text.strip().split('\n')
@@ -1157,7 +1067,7 @@ class IncrementalIndexer(FileSystemEventHandler):
     
     async def _update_neo4j_chunks(self, file_path: str, relative_path: Path, chunk_ids: List[Dict], symbols_data: Optional[List[Dict]] = None):
         """
-        Create Chunk nodes in Neo4j with Qdrant cross-references
+        Create Chunk nodes in Neo4j (ADR-0075: Neo4j-only architecture)
         ADR-0050: Fixed to create proper Chunk nodes with File→HAS_CHUNK→Chunk relationships
         """
         try:
@@ -1174,7 +1084,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                     c.end_line = $end_line,
                     c.chunk_type = $chunk_type,
                     c.file_path = $file_path,
-                    c.qdrant_id = $qdrant_id,
+                    # ADR-0075: Removed qdrant_id - Neo4j-only architecture
                     c.collection_name = $collection_name,
                     c.embedding_status = 'completed',
                     c.indexed_at = datetime(),
@@ -1191,8 +1101,7 @@ class IncrementalIndexer(FileSystemEventHandler):
 
                 # ADR-0050: Use chunk_id consistently across both databases
                 result = await self.container.neo4j.execute_cypher(cypher, {
-                    'chunk_id': chunk_info['id'],  # This should be the same 64-char hex ID used in Qdrant
-                    'qdrant_id': chunk_info.get('qdrant_id', chunk_info['id']),  # Fallback to same ID
+                    'chunk_id': chunk_info['id'],  # ADR-0075: Neo4j-only chunk ID
                     'file_path': str(relative_path),
                     'start_line': chunk_info.get('start_line', 0),
                     'end_line': chunk_info.get('end_line', 0),
@@ -1337,66 +1246,24 @@ class IncrementalIndexer(FileSystemEventHandler):
         return imports[:20]  # Limit to prevent explosion
     
     async def remove_file_from_index(self, file_path: str):
-        """Remove file from all indices when deleted (GraphRAG-aware)"""
+        """Remove file from Neo4j index when deleted (ADR-0075: Neo4j-only)"""
         try:
             path = Path(file_path)
             relative_path = path.relative_to(self.project_path)
-            
-            # First, get chunk IDs from Neo4j to ensure complete removal
-            chunk_ids_to_remove = []
-            # ADR-0050: Get all Chunk nodes for this file using correct relationship
+
+            # ADR-0075: Neo4j-only removal - delete file with all chunks and relationships
             cypher = """
-                MATCH (f:File {path: $path, project: $project})-[:HAS_CHUNK]->(c:Chunk)
-                RETURN c.qdrant_id AS qdrant_id, c.chunk_id AS chunk_id
+                MATCH (f:File {path: $path, project: $project})
+                OPTIONAL MATCH (f)-[:HAS_CHUNK]->(c:Chunk)
+                OPTIONAL MATCH (f)-[:HAS_SYMBOL]->(s)
+                DETACH DELETE f, c, s
                 """
-            result = await self.container.neo4j.execute_cypher(cypher, {
+            await self.container.neo4j.execute_cypher(cypher, {
                 'path': str(relative_path),
                 'project': self.project_name
             })
+            logger.info(f"✅ Removed {file_path} and all related data from Neo4j")
 
-            if result:
-                chunk_ids_to_remove = [(r['qdrant_id'], r['chunk_id']) for r in result if r.get('qdrant_id')]
-            
-            # Remove from Qdrant
-            collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
-
-            if chunk_ids_to_remove:
-                # Remove specific chunks by ID (more precise)
-                qdrant_ids = [qid for qid, _ in chunk_ids_to_remove if qid]
-                if qdrant_ids:
-                    await self.container.qdrant.delete_points(
-                        collection_name,
-                        points_selector=models.PointIdsList(points=qdrant_ids)
-                    )
-                    logger.info(f"Removed {len(qdrant_ids)} chunks from Qdrant for {file_path}")
-            else:
-                # Fallback: Delete by file path filter (use Qdrant models)
-                file_filter = models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key='full_path',
-                            match=models.MatchValue(value=file_path)
-                        )
-                    ]
-                )
-                await self.container.qdrant.delete_points(
-                    collection_name,
-                    filter_conditions=file_filter
-                )
-                logger.info(f"Removed {file_path} from Qdrant")
-
-            # Remove from Neo4j (including chunks and file)
-            # Delete chunks and file in one transaction
-            cypher = """
-                MATCH (f:File {path: $path})
-                OPTIONAL MATCH (c:CodeChunk)-[:PART_OF]->(f)
-                DETACH DELETE c, f
-                """
-            await self.container.neo4j.execute_cypher(cypher, {
-                'path': str(relative_path)
-            })
-            logger.info(f"Removed {file_path} and its chunks from Neo4j")
-            
             # Remove from tracking
             self.file_hashes.pop(file_path, None)
             self.file_cooldowns.pop(file_path, None)
