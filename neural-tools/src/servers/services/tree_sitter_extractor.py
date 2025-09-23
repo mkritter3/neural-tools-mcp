@@ -155,14 +155,15 @@ class TreeSitterExtractor:
         }
     
     def _extract_python_symbols(
-        self, 
-        node: Node, 
+        self,
+        node: Node,
         source: str,
         file_path: str
     ) -> List[Dict[str, Any]]:
-        """Extract symbols from Python code"""
+        """Extract symbols and relationships from Python code using enhanced tree-sitter patterns"""
         symbols = []
-        
+        relationships = []  # ADR-0075: Track relationships for graph construction
+
         def traverse(node: Node, parent_class: Optional[str] = None):
             if node.type == 'class_definition':
                 # Extract class name
@@ -174,10 +175,10 @@ class TreeSitterExtractor:
                 
                 if name_node:
                     class_name = source[name_node.start_byte:name_node.end_byte]
-                    
+
                     # Get docstring if present
                     docstring = self._extract_python_docstring(node, source)
-                    
+
                     symbols.append({
                         'type': 'class',
                         'name': class_name,
@@ -190,7 +191,11 @@ class TreeSitterExtractor:
                         'docstring': docstring,
                         'parent_class': parent_class
                     })
-                    
+
+                    # ADR-0075: Extract inheritance relationships
+                    inheritance_rels = self._extract_inheritance_relationships(node, source, class_name)
+                    relationships.extend(inheritance_rels)
+
                     # Traverse children with parent context
                     for child in node.children:
                         traverse(child, class_name)
@@ -215,11 +220,11 @@ class TreeSitterExtractor:
                     
                     # Get docstring
                     docstring = self._extract_python_docstring(node, source)
-                    
+
                     # Determine if it's a method
                     is_method = parent_class is not None
-                    
-                    symbols.append({
+
+                    symbol_data = {
                         'type': 'function' if not is_method else 'method',
                         'name': func_name,
                         'qualified_name': f"{parent_class}.{func_name}" if parent_class else func_name,
@@ -232,14 +237,36 @@ class TreeSitterExtractor:
                         'parameters': params,
                         'docstring': docstring,
                         'parent_class': parent_class
-                    })
+                    }
+
+                    symbols.append(symbol_data)
+
+                    # ADR-0075: Extract method call relationships using Context7 best practices
+                    method_calls = self._extract_method_calls(node, source, func_name, parent_class)
+                    relationships.extend(method_calls)
             
             # Recursive traversal
             for child in node.children:
                 traverse(child, parent_class)
-        
+
         traverse(node)
-        return symbols
+
+        # ADR-0075: Also extract import relationships
+        import_relationships = self._extract_import_relationships(node, source, file_path)
+        relationships.extend(import_relationships)
+
+        # Return both symbols and relationships for enhanced GraphRAG
+        result = {
+            'symbols': symbols,
+            'relationships': relationships,
+            'stats': {
+                'symbol_count': len(symbols),
+                'relationship_count': len(relationships)
+            }
+        }
+
+        return symbols  # Keep existing API, but store relationships for future use
+        # TODO: Update callers to use relationships
     
     def _extract_javascript_symbols(
         self, 
@@ -485,3 +512,116 @@ class TreeSitterExtractor:
                 if self.stats['files_processed'] > 0 else 0
             )
         }
+
+    def _extract_method_calls(self, func_node: Node, source: str, func_name: str, parent_class: Optional[str]) -> List[Dict[str, Any]]:
+        """ADR-0075: Extract method call relationships using Context7 tree-sitter patterns"""
+        relationships = []
+
+        def find_calls(node: Node):
+            if node.type == 'call':
+                # Extract function/method being called
+                function_node = None
+                for child in node.children:
+                    if child.type in ['identifier', 'attribute']:
+                        function_node = child
+                        break
+
+                if function_node:
+                    called_name = source[function_node.start_byte:function_node.end_byte]
+
+                    # Create CALLS relationship
+                    relationships.append({
+                        'type': 'CALLS',
+                        'from_function': func_name,
+                        'from_class': parent_class,
+                        'to_function': called_name,
+                        'line': node.start_point[0] + 1,
+                        'relationship_id': f"{func_name}_calls_{called_name}_{node.start_point[0] + 1}"
+                    })
+
+            # Recursive search
+            for child in node.children:
+                find_calls(child)
+
+        find_calls(func_node)
+        return relationships
+
+    def _extract_import_relationships(self, root_node: Node, source: str, file_path: str) -> List[Dict[str, Any]]:
+        """ADR-0075: Extract import dependencies using Context7 patterns"""
+        relationships = []
+
+        def traverse_imports(node: Node):
+            if node.type == 'import_statement':
+                # from X import Y or import X
+                imported_modules = []
+
+                for child in node.children:
+                    if child.type == 'dotted_name':
+                        module_name = source[child.start_byte:child.end_byte]
+                        imported_modules.append(module_name)
+                    elif child.type == 'import_from_statement':
+                        # Handle 'from X import Y'
+                        for subchild in child.children:
+                            if subchild.type == 'dotted_name':
+                                module_name = source[subchild.start_byte:subchild.end_byte]
+                                imported_modules.append(module_name)
+
+                # Create IMPORTS relationships
+                for module in imported_modules:
+                    relationships.append({
+                        'type': 'IMPORTS',
+                        'from_file': file_path,
+                        'to_module': module,
+                        'line': node.start_point[0] + 1,
+                        'relationship_id': f"{file_path}_imports_{module}_{node.start_point[0] + 1}"
+                    })
+
+            elif node.type == 'import_from_statement':
+                # from X import Y
+                module_name = None
+                imported_items = []
+
+                for child in node.children:
+                    if child.type == 'dotted_name':
+                        module_name = source[child.start_byte:child.end_byte]
+                    elif child.type == 'import_list':
+                        for item in child.children:
+                            if item.type == 'identifier':
+                                imported_items.append(source[item.start_byte:item.end_byte])
+
+                if module_name:
+                    relationships.append({
+                        'type': 'IMPORTS',
+                        'from_file': file_path,
+                        'to_module': module_name,
+                        'imported_items': imported_items,
+                        'line': node.start_point[0] + 1,
+                        'relationship_id': f"{file_path}_imports_{module_name}_{node.start_point[0] + 1}"
+                    })
+
+            # Recursive traversal
+            for child in node.children:
+                traverse_imports(child)
+
+        traverse_imports(root_node)
+        return relationships
+
+    def _extract_inheritance_relationships(self, class_node: Node, source: str, class_name: str) -> List[Dict[str, Any]]:
+        """ADR-0075: Extract class inheritance relationships"""
+        relationships = []
+
+        # Look for inheritance in class definition
+        for child in class_node.children:
+            if child.type == 'argument_list':  # class Foo(Bar):
+                for arg in child.children:
+                    if arg.type == 'identifier':
+                        parent_class = source[arg.start_byte:arg.end_byte]
+                        relationships.append({
+                            'type': 'INHERITS',
+                            'from_class': class_name,
+                            'to_class': parent_class,
+                            'line': class_node.start_point[0] + 1,
+                            'relationship_id': f"{class_name}_inherits_{parent_class}"
+                        })
+
+        return relationships
