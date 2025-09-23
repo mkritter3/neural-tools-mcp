@@ -1,311 +1,218 @@
+#!/usr/bin/env python3
 """
-L9 2025 Circuit Breaker for Graceful Service Degradation
-Implements ADR-054 for self-healing operations with safety limits
-Prevents cascade failures and enables fallback mechanisms
+ADR-0084 Phase 3: Circuit Breaker Pattern for Service Resilience
+Prevents cascade failures by opening circuit after repeated failures
 """
 
 import time
-import logging
 import asyncio
-from typing import Dict, Any, Optional, Callable
+import logging
+from typing import Optional, Any, Callable
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
+
 class CircuitState(Enum):
-    CLOSED = "closed"        # Normal operation
-    OPEN = "open"            # Circuit open, failing fast
-    HALF_OPEN = "half_open"  # Testing if service recovered
+    """Circuit breaker states"""
+    CLOSED = "CLOSED"      # Normal operation
+    OPEN = "OPEN"          # Failures exceeded threshold, rejecting calls
+    HALF_OPEN = "HALF_OPEN"  # Testing if service recovered
+
 
 class CircuitBreaker:
-    """Circuit breaker for service protection"""
-    
+    """
+    Circuit breaker implementation for service resilience
+
+    ADR-0084 Phase 3: Prevents cascade failures by:
+    - Opening after failure_threshold failures within timeout period
+    - Rejecting calls when OPEN to prevent overload
+    - Testing recovery in HALF_OPEN state
+    - Auto-recovering to CLOSED when service is healthy
+    """
+
     def __init__(
         self,
-        service_name: str,
+        name: str = "default",
         failure_threshold: int = 5,
-        recovery_timeout: int = 60,
-        expected_exception: type = Exception
+        timeout: int = 60,
+        recovery_timeout: int = 30
     ):
-        self.service_name = service_name
+        """
+        Initialize circuit breaker
+
+        Args:
+            name: Circuit breaker name for logging
+            failure_threshold: Number of failures to open circuit
+            timeout: Time window for counting failures (seconds)
+            recovery_timeout: Time to wait before attempting recovery (seconds)
+        """
+        self.name = name
         self.failure_threshold = failure_threshold
+        self.timeout = timeout
         self.recovery_timeout = recovery_timeout
-        self.expected_exception = expected_exception
-        
-        self.failure_count = 0
-        self.last_failure_time = None
+
+        # State tracking
         self.state = CircuitState.CLOSED
-        
-    async def call(self, func: Callable, *args, **kwargs):
-        """Execute function with circuit breaker protection"""
-        
+        self.failure_count = 0
+        self.last_failure_time: Optional[float] = None
+        self.circuit_opened_time: Optional[float] = None
+
+        # Metrics
+        self.total_calls = 0
+        self.successful_calls = 0
+        self.failed_calls = 0
+        self.rejected_calls = 0
+
+    async def call(self, func: Callable, *args, **kwargs) -> Any:
+        """
+        Execute function through circuit breaker
+
+        Args:
+            func: Async function to execute
+            *args: Function arguments
+            **kwargs: Function keyword arguments
+
+        Returns:
+            Function result
+
+        Raises:
+            RuntimeError: When circuit is OPEN
+            Exception: Original exception from function
+        """
+        self.total_calls += 1
+
+        # Check if circuit is OPEN
         if self.state == CircuitState.OPEN:
-            if self._should_attempt_reset():
+            # Check if recovery timeout has passed
+            if self.circuit_opened_time and \
+               time.time() - self.circuit_opened_time > self.recovery_timeout:
+                # Transition to HALF_OPEN for testing
                 self.state = CircuitState.HALF_OPEN
-                logger.info(f"🔄 Circuit breaker for {self.service_name} entering HALF_OPEN state")
+                self.failure_count = 0
+                logger.info(f"🔄 Circuit breaker '{self.name}' transitioning to HALF_OPEN")
             else:
-                raise Exception(f"Circuit breaker OPEN for {self.service_name} - failing fast")
-        
+                # Still in timeout period, reject call
+                self.rejected_calls += 1
+                time_left = self.recovery_timeout - (time.time() - self.circuit_opened_time)
+                raise RuntimeError(
+                    f"Circuit breaker '{self.name}' is OPEN - "
+                    f"service unavailable (recovery in {time_left:.0f}s)"
+                )
+
+        # Execute the function
         try:
-            result = await func(*args, **kwargs) if asyncio.iscoroutinefunction(func) else func(*args, **kwargs)
-            self._on_success()
+            result = await func(*args, **kwargs)
+
+            # Success - update state
+            self.successful_calls += 1
+
+            if self.state == CircuitState.HALF_OPEN:
+                # Service recovered, close circuit
+                self.state = CircuitState.CLOSED
+                self.failure_count = 0
+                self.last_failure_time = None
+                logger.info(f"✅ Circuit breaker '{self.name}' CLOSED - service recovered")
+            elif self.state == CircuitState.CLOSED:
+                # Reset failure count if outside timeout window
+                if self.last_failure_time and \
+                   time.time() - self.last_failure_time > self.timeout:
+                    self.failure_count = 0
+                    self.last_failure_time = None
+
             return result
-            
-        except self.expected_exception as e:
-            self._on_failure()
-            raise e
-    
-    def _should_attempt_reset(self) -> bool:
-        """Check if we should attempt to reset the circuit"""
-        if self.last_failure_time is None:
-            return True
-        return time.time() - self.last_failure_time >= self.recovery_timeout
-    
-    def _on_success(self):
-        """Handle successful operation"""
-        if self.state == CircuitState.HALF_OPEN:
-            logger.info(f"✅ Circuit breaker for {self.service_name} reset to CLOSED")
-            
-        self.failure_count = 0
-        self.state = CircuitState.CLOSED
-        self.last_failure_time = None
-    
-    def _on_failure(self):
-        """Handle failed operation"""
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-        
-        if self.failure_count >= self.failure_threshold:
-            if self.state != CircuitState.OPEN:
-                logger.error(f"🚨 Circuit breaker for {self.service_name} opened (failures: {self.failure_count})")
-                self.state = CircuitState.OPEN
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get circuit breaker status"""
+
+        except Exception as e:
+            # Failure - update state
+            self.failed_calls += 1
+            self.failure_count += 1
+            self.last_failure_time = time.time()
+
+            # Check if we should open the circuit
+            if self.failure_count >= self.failure_threshold:
+                if self.state != CircuitState.OPEN:
+                    self.state = CircuitState.OPEN
+                    self.circuit_opened_time = time.time()
+                    logger.error(
+                        f"🚨 Circuit breaker '{self.name}' OPENED after "
+                        f"{self.failure_count} failures - {str(e)}"
+                    )
+
+            # Re-raise the original exception
+            raise
+
+    def get_state(self) -> dict:
+        """Get current circuit breaker state and metrics"""
+        success_rate = (
+            self.successful_calls / self.total_calls * 100
+            if self.total_calls > 0 else 0
+        )
+
         return {
-            "service": self.service_name,
+            "name": self.name,
             "state": self.state.value,
             "failure_count": self.failure_count,
             "failure_threshold": self.failure_threshold,
-            "last_failure": datetime.fromtimestamp(self.last_failure_time).isoformat() if self.last_failure_time else None,
-            "recovery_timeout": self.recovery_timeout
-        }
-
-
-class ServiceFallbackManager:
-    """Manages fallback strategies for services"""
-    
-    def __init__(self):
-        self.circuit_breakers: Dict[str, CircuitBreaker] = {}
-        self.fallback_strategies: Dict[str, Callable] = {}
-        
-    def register_service(
-        self, 
-        service_name: str, 
-        failure_threshold: int = 5,
-        recovery_timeout: int = 60,
-        fallback_func: Optional[Callable] = None
-    ):
-        """Register a service with circuit breaker protection"""
-        self.circuit_breakers[service_name] = CircuitBreaker(
-            service_name, failure_threshold, recovery_timeout
-        )
-        
-        if fallback_func:
-            self.fallback_strategies[service_name] = fallback_func
-            
-        logger.info(f"🛡️ Registered circuit breaker for {service_name}")
-    
-    async def execute_with_fallback(
-        self, 
-        service_name: str, 
-        primary_func: Callable,
-        *args, 
-        **kwargs
-    ):
-        """Execute function with circuit breaker and fallback"""
-        
-        circuit_breaker = self.circuit_breakers.get(service_name)
-        if not circuit_breaker:
-            # No circuit breaker registered, execute directly
-            return await primary_func(*args, **kwargs) if asyncio.iscoroutinefunction(primary_func) else primary_func(*args, **kwargs)
-        
-        try:
-            return await circuit_breaker.call(primary_func, *args, **kwargs)
-            
-        except Exception as e:
-            logger.warning(f"Primary service {service_name} failed: {e}")
-            
-            # Try fallback if available
-            fallback_func = self.fallback_strategies.get(service_name)
-            if fallback_func:
-                logger.info(f"🔄 Using fallback for {service_name}")
-                try:
-                    result = await fallback_func(*args, **kwargs) if asyncio.iscoroutinefunction(fallback_func) else fallback_func(*args, **kwargs)
-                    # Add fallback indicator to result
-                    if isinstance(result, dict):
-                        result["fallback_used"] = True
-                        result["fallback_service"] = service_name
-                    return result
-                except Exception as fallback_error:
-                    logger.error(f"Fallback for {service_name} also failed: {fallback_error}")
-                    raise fallback_error
-            else:
-                # No fallback available
-                raise e
-    
-    def get_all_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all circuit breakers"""
-        return {
-            name: breaker.get_status() 
-            for name, breaker in self.circuit_breakers.items()
-        }
-    
-    def reset_circuit_breaker(self, service_name: str) -> bool:
-        """Manually reset a circuit breaker"""
-        circuit_breaker = self.circuit_breakers.get(service_name)
-        if circuit_breaker:
-            circuit_breaker.failure_count = 0
-            circuit_breaker.state = CircuitState.CLOSED
-            circuit_breaker.last_failure_time = None
-            logger.info(f"🔄 Manually reset circuit breaker for {service_name}")
-            return True
-        return False
-
-
-# L9 2025: Self-Healing Circuit Breakers (ADR-054)
-
-class SelfHealingCircuitBreaker(CircuitBreaker):
-    """
-    Specialized circuit breaker for self-healing operations.
-    Prevents reconciliation loops with additional safety mechanisms.
-    """
-
-    def __init__(
-        self,
-        service_name: str,
-        failure_threshold: int = 3,  # Per ADR-054: Open after 3 failures
-        recovery_timeout: int = 60,  # Per ADR-054: 60 second recovery
-        max_repair_rate: int = 100,  # Per ADR-054: 100 repairs/minute
-        expected_exception: type = Exception
-    ):
-        super().__init__(service_name, failure_threshold, recovery_timeout, expected_exception)
-        self.max_repair_rate = max_repair_rate
-        self.repair_count = 0
-        self.repair_window_start = time.time()
-        self.consecutive_loop_detections = 0
-
-    async def call_with_rate_limit(self, func: Callable, *args, **kwargs):
-        """Execute with both circuit breaker and rate limiting"""
-
-        # Check rate limit
-        current_time = time.time()
-        if current_time - self.repair_window_start >= 60:
-            # Reset window
-            self.repair_count = 0
-            self.repair_window_start = current_time
-
-        if self.repair_count >= self.max_repair_rate:
-            logger.warning(
-                f"Rate limit exceeded for {self.service_name}: "
-                f"{self.repair_count}/{self.max_repair_rate} repairs/min"
+            "total_calls": self.total_calls,
+            "successful_calls": self.successful_calls,
+            "failed_calls": self.failed_calls,
+            "rejected_calls": self.rejected_calls,
+            "success_rate": f"{success_rate:.1f}%",
+            "last_failure_time": (
+                datetime.fromtimestamp(self.last_failure_time).isoformat()
+                if self.last_failure_time else None
+            ),
+            "circuit_opened_time": (
+                datetime.fromtimestamp(self.circuit_opened_time).isoformat()
+                if self.circuit_opened_time else None
             )
-            raise Exception(f"Rate limit exceeded: max {self.max_repair_rate} repairs/minute")
+        }
 
-        # Execute with circuit breaker
-        try:
-            result = await self.call(func, *args, **kwargs)
-            self.repair_count += 1
-            return result
-        except Exception as e:
-            # Check for reconciliation loop pattern
-            if self._is_reconciliation_loop(e):
-                self.consecutive_loop_detections += 1
-                if self.consecutive_loop_detections >= 2:
-                    logger.error(
-                        f"🚨 Reconciliation loop detected in {self.service_name}! "
-                        f"Opening circuit immediately."
-                    )
-                    self.state = CircuitState.OPEN
-                    self.last_failure_time = time.time()
-            else:
-                self.consecutive_loop_detections = 0
-            raise e
-
-    def _is_reconciliation_loop(self, error: Exception) -> bool:
-        """Detect if error indicates a reconciliation loop"""
-        error_msg = str(error).lower()
-        loop_indicators = [
-            "already repaired",
-            "duplicate repair",
-            "repair in progress",
-            "concurrent repair",
-            "idempotency key exists"
-        ]
-        return any(indicator in error_msg for indicator in loop_indicators)
+    def reset(self):
+        """Reset circuit breaker to initial state"""
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.circuit_opened_time = None
+        self.total_calls = 0
+        self.successful_calls = 0
+        self.failed_calls = 0
+        self.rejected_calls = 0
+        logger.info(f"🔄 Circuit breaker '{self.name}' reset")
 
 
-# L9 2025: Fallback Functions for Neural GraphRAG Services
+class CircuitBreakerManager:
+    """Manage multiple circuit breakers for different services"""
 
-async def neo4j_fallback(*args, **kwargs):
-    """Fallback for Neo4j graph queries"""
-    logger.warning("Using Neo4j fallback - returning cached/simplified results")
-    return {
-        "status": "fallback",
-        "message": "Neo4j service unavailable - using cached data",
-        "data": [],
-        "fallback_used": True
-    }
+    def __init__(self):
+        self.breakers = {}
 
-async def qdrant_fallback(query: str = "", limit: int = 10, **kwargs):
-    """Fallback for Qdrant vector search - simple text matching"""
-    logger.warning("Using Qdrant fallback - simple text search")
-    return {
-        "status": "fallback",
-        "message": "Vector search unavailable - using basic text matching",
-        "results": [],
-        "query": query,
-        "limit": limit,
-        "fallback_used": True
-    }
+    def get_breaker(
+        self,
+        name: str,
+        failure_threshold: int = 5,
+        timeout: int = 60,
+        recovery_timeout: int = 30
+    ) -> CircuitBreaker:
+        """Get or create a circuit breaker"""
+        if name not in self.breakers:
+            self.breakers[name] = CircuitBreaker(
+                name=name,
+                failure_threshold=failure_threshold,
+                timeout=timeout,
+                recovery_timeout=recovery_timeout
+            )
+        return self.breakers[name]
 
-async def redis_fallback(*args, **kwargs):
-    """Fallback for Redis operations - in-memory cache"""
-    logger.warning("Using Redis fallback - in-memory operation")
-    return {
-        "status": "fallback",
-        "message": "Redis unavailable - using in-memory fallback",
-        "fallback_used": True
-    }
+    def get_all_states(self) -> dict:
+        """Get states of all circuit breakers"""
+        return {
+            name: breaker.get_state()
+            for name, breaker in self.breakers.items()
+        }
 
-async def nomic_fallback(texts: list = None, **kwargs):
-    """Fallback for Nomic embeddings - simple hash-based vectors"""
-    import hashlib
-    
-    logger.warning("Using Nomic fallback - hash-based embeddings")
-    
-    if texts is None:
-        texts = [""]
-    
-    # Simple hash-based embedding fallback
-    embeddings = []
-    for text in texts:
-        # Create a simple hash-based vector
-        hash_obj = hashlib.md5(text.encode())
-        hash_hex = hash_obj.hexdigest()
-        
-        # Convert to 768-dimension vector (matching Nomic dimensions)
-        vector = []
-        for i in range(0, len(hash_hex), 2):
-            val = int(hash_hex[i:i+2], 16) / 255.0  # Normalize to 0-1
-            vector.extend([val] * 24)  # Repeat to get 768 dims (32 * 24 = 768)
-        
-        embeddings.append(vector[:768])  # Ensure exactly 768 dimensions
-    
-    return {
-        "embeddings": embeddings,
-        "status": "fallback",
-        "message": "Using hash-based embedding fallback",
-        "fallback_used": True
-    }
+    def reset_all(self):
+        """Reset all circuit breakers"""
+        for breaker in self.breakers.values():
+            breaker.reset()

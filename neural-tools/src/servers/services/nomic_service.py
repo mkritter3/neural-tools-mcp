@@ -2,6 +2,7 @@
 """
 Nomic Embedding Service - Extracted from monolithic neural-mcp-server-enhanced.py
 Provides embedding generation using Nomic Embed v2-MoE with Context7 patterns
+ADR-0084 Phase 3: Added circuit breaker for resilience
 """
 
 import os
@@ -9,6 +10,7 @@ import logging
 import asyncio
 import hashlib
 import json
+import time
 from typing import List, Dict, Any
 from dataclasses import dataclass
 import httpx
@@ -150,6 +152,8 @@ class NomicService:
         self.client = None
         self.initialized = False
         self.service_container = None  # Will be set by service container
+        self.circuit_breaker = None  # ADR-0084 Phase 3: Circuit breaker for resilience
+        self.monitoring = None  # ADR-0084 Phase 3: Monitoring service
         
     async def initialize(self) -> Dict[str, Any]:
         """Initialize the Nomic service with health check"""
@@ -165,6 +169,26 @@ class NomicService:
                 except Exception as e:
                     logger.warning(f"Could not initialize service container for cache: {e}")
                     # Continue without cache - not critical
+
+            # ADR-0084 Phase 3: Initialize circuit breaker for resilience
+            from servers.services.circuit_breaker import CircuitBreaker
+            self.circuit_breaker = CircuitBreaker(
+                name="nomic_embeddings",
+                failure_threshold=5,     # Open after 5 failures
+                timeout=60,              # Within 60 second window
+                recovery_timeout=30      # Try recovery after 30 seconds
+            )
+            logger.info("🔌 Circuit breaker initialized for Nomic service")
+
+            # ADR-0084 Phase 3: Register with monitoring service
+            try:
+                from servers.services.monitoring_service import monitoring_service
+                monitoring_service.register_service("nomic", self)
+                self.monitoring = monitoring_service
+                logger.info("📊 Registered with monitoring service")
+            except Exception as e:
+                logger.warning(f"Could not register with monitoring: {e}")
+                # Continue without monitoring - not critical
 
             # Test the service with a simple embedding
             test_response = await self.client.get_embeddings(["test initialization"])
@@ -241,34 +265,74 @@ class NomicService:
             except Exception as e:
                 logger.warning(f"Cache check failed: {e}")
 
-        # Step 2: Try direct embedding call to Nomic service with task prefix
+        # Step 2: Try direct embedding call to Nomic service with circuit breaker
+        start_time = time.time()
         try:
-            # ADR-0084: Pass task_type for proper prefixing
-            embeddings = await self.client.get_embeddings([text], task_type=task_type)
-            if embeddings and len(embeddings) > 0:
-                embedding = embeddings[0]
-                
-                # Step 3: Cache the result for future requests
-                if self.service_container:
-                    try:
-                        redis_cache = await self.service_container.get_redis_cache_client()
-                        cache_key = self._generate_cache_key(text, model, task_type)
+            # ADR-0084 Phase 3: Use circuit breaker for resilient embedding generation
+            async def _generate_embedding():
+                """Inner function to generate embedding"""
+                embeddings = await self.client.get_embeddings([text], task_type=task_type)
+                if embeddings and len(embeddings) > 0:
+                    return embeddings[0]
+                else:
+                    raise ValueError("Empty embedding response")
 
-                        # Store with 24-hour TTL
-                        await redis_cache.setex(cache_key, 86400, json.dumps(embedding))
-                    except Exception as e:
-                        # Cache failure is non-critical - log and continue
-                        logger.warning(f"Cache store failed: {e}")
-                
-                return embedding
+            # Call through circuit breaker if available
+            if self.circuit_breaker:
+                embedding = await self.circuit_breaker.call(_generate_embedding)
             else:
-                raise ValueError("Empty embedding response")
-                
+                # Fallback to direct call if circuit breaker not initialized
+                embedding = await _generate_embedding()
+
+            # Record success metric
+            latency_ms = (time.time() - start_time) * 1000
+            if self.monitoring:
+                self.monitoring.record_request("nomic", True, latency_ms)
+
+            # Step 3: Cache the result for future requests
+            if self.service_container:
+                try:
+                    redis_cache = await self.service_container.get_redis_cache_client()
+                    cache_key = self._generate_cache_key(text, model, task_type)
+
+                    # Store with 24-hour TTL
+                    await redis_cache.setex(cache_key, 86400, json.dumps(embedding))
+                except Exception as e:
+                    # Cache failure is non-critical - log and continue
+                    logger.warning(f"Cache store failed: {e}")
+
+            return embedding
+
+        except RuntimeError as e:
+            # Record failure metric
+            latency_ms = (time.time() - start_time) * 1000
+            if self.monitoring:
+                self.monitoring.record_request("nomic", False, latency_ms, str(e))
+
+            # Circuit breaker is OPEN - service is unavailable
+            if "Circuit breaker" in str(e) and "is OPEN" in str(e):
+                logger.error(f"🚨 Nomic service circuit breaker is OPEN: {e}")
+                # Could implement fallback strategy here
+                raise
+            else:
+                # Other runtime errors
+                logger.error(f"Embedding generation failed: {e}")
+                raise
         except (ConnectionError, TimeoutError, httpx.HTTPError) as e:
-            # ADR-0083: Simplified to pure HTTP service - no queue logic
+            # Record failure metric
+            latency_ms = (time.time() - start_time) * 1000
+            if self.monitoring:
+                self.monitoring.record_request("nomic", False, latency_ms, str(e))
+
+            # Network errors - will trigger circuit breaker
             logger.error(f"Nomic HTTP connection failed for {model}: {e}")
             raise
         except Exception as e:
+            # Record failure metric
+            latency_ms = (time.time() - start_time) * 1000
+            if self.monitoring:
+                self.monitoring.record_request("nomic", False, latency_ms, str(e))
+
             # Other errors - propagate immediately
             logger.error(f"Embedding generation failed: {e}")
             raise
@@ -277,32 +341,88 @@ class NomicService:
     
     async def get_embeddings(self, texts: List[str], task_type: str = "search_document") -> List[List[float]]:
         """Get embeddings for multiple texts with error handling
-        ADR-0084: Add task prefixes for optimal performance"""
+        ADR-0084: Add task prefixes for optimal performance
+        ADR-0084 Phase 3: Protected by circuit breaker"""
         if not self.initialized or not self.client:
             raise RuntimeError("Nomic service not initialized")
 
-        # ADR-0084: Direct call with task prefixes
         try:
-            response = await self.client.get_embeddings(texts, task_type=task_type)
+            # ADR-0084 Phase 3: Use circuit breaker for batch calls
+            async def _generate_batch_embeddings():
+                """Inner function for batch embedding generation"""
+                return await self.client.get_embeddings(texts, task_type=task_type)
+
+            # Call through circuit breaker if available
+            if self.circuit_breaker:
+                response = await self.circuit_breaker.call(_generate_batch_embeddings)
+            else:
+                response = await _generate_batch_embeddings()
+
             return response
+
+        except RuntimeError as e:
+            # Circuit breaker is OPEN
+            if "Circuit breaker" in str(e) and "is OPEN" in str(e):
+                logger.error(f"🚨 Batch embedding failed - circuit breaker OPEN: {e}")
+                raise
+            else:
+                logger.error(f"Batch embedding failed: {e}")
+                raise RuntimeError(f"Embedding generation failed: {e}") from e
         except Exception as e:
-            # ADR-0084: Fail fast - no fallback embeddings
+            # Other errors
             logger.error(f"Batch embedding failed: {e}")
             raise RuntimeError(f"Embedding generation failed: {e}") from e
     
     
     async def health_check(self) -> Dict[str, Any]:
-        """Check service health"""
+        """Check service health including circuit breaker status"""
         try:
             if not self.initialized:
                 return {"healthy": False, "message": "Service not initialized"}
-                
+
+            # Get circuit breaker status
+            circuit_status = None
+            if self.circuit_breaker:
+                circuit_status = self.circuit_breaker.get_state()
+
             # Simple health check
-            test_embedding = await self.get_embeddings(["health check"])
-            return {
-                "healthy": True,
-                "embedding_dim": len(test_embedding[0]) if test_embedding else 0,
+            try:
+                test_embedding = await self.get_embeddings(["health check"])
+                healthy = True
+                error = None
+            except RuntimeError as e:
+                if "Circuit breaker" in str(e) and "is OPEN" in str(e):
+                    # Circuit is open but service is configured
+                    healthy = False
+                    error = "Circuit breaker OPEN - service temporarily unavailable"
+                else:
+                    healthy = False
+                    error = str(e)
+            except Exception as e:
+                healthy = False
+                error = str(e)
+
+            result = {
+                "healthy": healthy,
+                "embedding_dim": 768 if healthy else 0,  # Nomic v2 is always 768
                 "service_url": self.client.base_url if self.client else "unknown"
             }
+
+            # Add circuit breaker status if available
+            if circuit_status:
+                result["circuit_breaker"] = circuit_status
+
+            if error:
+                result["error"] = error
+
+            return result
+
         except Exception as e:
             return {"healthy": False, "error": str(e)}
+
+    def get_circuit_breaker_status(self) -> Dict[str, Any]:
+        """Get detailed circuit breaker status
+        ADR-0084 Phase 3: Monitoring for circuit breaker"""
+        if not self.circuit_breaker:
+            return {"status": "Not initialized"}
+        return self.circuit_breaker.get_state()
