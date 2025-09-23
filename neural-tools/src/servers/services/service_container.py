@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class ConnectionState(Enum):
     """Connection state for progressive initialization"""
     DISCONNECTED = "disconnected"  # No services connected
-    DEGRADED = "degraded"          # Only essential services (Neo4j + Qdrant)
+    DEGRADED = "degraded"          # Only essential services (Neo4j only per ADR-0080)
     PARTIAL = "partial"             # Essential + some optional services
     FULL = "full"                   # All services connected
 
@@ -58,7 +58,7 @@ class ServiceContainer:
         
         # Core database clients - initialized lazily when needed
         self.neo4j_client = None  # Neo4j driver for graph operations
-        self.qdrant_client = None  # Qdrant client for vector search
+        # ADR-0080: Qdrant completely removed from production architecture
         self.initialized = False  # Track if container is fully initialized
         
         # Circuit breakers for resilient connections (ADR 0018 Phase 4)
@@ -68,7 +68,7 @@ class ServiceContainer:
         # Service instances expected by MCP server protocol
         # These provide the actual functionality for each service
         self.neo4j = None     # Neo4jService wrapper for async operations
-        self.qdrant = None    # QdrantService wrapper for vector operations
+        # ADR-0080: Qdrant completely removed from production architecture
         self.nomic = None     # NomicService for text embeddings (768-dim)
         
         # Redis clients for resilience architecture (Phase 2)
@@ -208,7 +208,7 @@ class ServiceContainer:
         # Get pool sizes from environment with L9-tuned defaults
         # These defaults are based on load testing with 15+ concurrent sessions
         neo4j_pool_size = int(os.getenv('NEO4J_POOL_SIZE', '50'))      # Graph queries are complex
-        qdrant_pool_size = int(os.getenv('QDRANT_POOL_SIZE', '30'))    # Vector ops are fast
+        # ADR-0080: Qdrant pool configuration removed
         redis_cache_pool_size = int(os.getenv('REDIS_CACHE_POOL_SIZE', '25'))  # Cache ops are lightweight
         redis_queue_pool_size = int(os.getenv('REDIS_QUEUE_POOL_SIZE', '15'))  # Queue ops less frequent
         
@@ -225,12 +225,7 @@ class ServiceContainer:
                 'active': 0,
                 'connections': {}  # session_id -> connection mapping
             },
-            'qdrant': {
-                'max_size': qdrant_pool_size,
-                'min_idle': max(3, qdrant_pool_size // 10),
-                'active': 0,
-                'connections': {}
-            },
+            # ADR-0080: Qdrant pool removed from production architecture
             'redis_cache': {
                 'max_size': redis_cache_pool_size,
                 'min_idle': max(2, redis_cache_pool_size // 10),
@@ -254,7 +249,7 @@ class ServiceContainer:
         self.pool_monitor = PoolMonitor(self)
         await self.pool_monitor.initialize()
         
-        logger.info(f"✅ L9 connection pools initialized: Neo4j={neo4j_pool_size}, Qdrant={qdrant_pool_size}, Redis={redis_cache_pool_size}/{redis_queue_pool_size}")
+        logger.info(f"✅ L9 connection pools initialized: Neo4j={neo4j_pool_size}, Redis={redis_cache_pool_size}/{redis_queue_pool_size} [ADR-0080: Qdrant removed]")
         self._pool_initialized = True
     
     async def initialize_security_services(self):
@@ -341,8 +336,7 @@ class ServiceContainer:
             # Each service has its own connection creation logic
             if service == 'neo4j':
                 connection = await self._create_neo4j_connection()
-            elif service == 'qdrant':
-                connection = await self._create_qdrant_connection()
+            # ADR-0080: Qdrant connection creation removed
             elif service == 'redis_cache':
                 connection = await self._create_redis_cache_connection()
             elif service == 'redis_queue':
@@ -397,16 +391,7 @@ class ServiceContainer:
         # Create Neo4j driver with connection pooling
         return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     
-    async def _create_qdrant_connection(self):
-        """Create new Qdrant connection"""
-        from qdrant_client import QdrantClient
-        
-        # Use exposed port 46333 (not internal 6333)
-        QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-        QDRANT_PORT = int(os.getenv("QDRANT_PORT", "46333"))
-        
-        # Create Qdrant client with timeout for resilience
-        return QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=5.0)
+    # ADR-0080: _create_qdrant_connection method removed from production architecture
     
     async def _create_redis_cache_connection(self):
         """Create new Redis cache connection"""
@@ -483,37 +468,7 @@ class ServiceContainer:
             logger.error(f"Failed to connect to REAL Neo4j: {e}")
             return False
     
-    def ensure_qdrant_client(self):
-        """Initialize REAL Qdrant vector database connection"""
-        try:
-            # Import Qdrant client for vector operations
-            from qdrant_client import QdrantClient
-            
-            # L9 2025: Use exposed ports for host-to-container communication
-            # CRITICAL: Use localhost:46333, NOT qdrant:6333 or Docker IPs
-            QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
-            QDRANT_PORT = int(os.getenv("QDRANT_PORT", "46333"))  # Exposed port, not 6333
-            
-            logger.info(f"L9 MCP: Using Qdrant at {QDRANT_HOST}:{QDRANT_PORT} (MCP container ports)")
-
-            # Perform connectivity check to verify Qdrant is accessible
-            logger.info(f"Connecting to Qdrant for connectivity check at {QDRANT_HOST}:{QDRANT_PORT}")
-            tmp_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=3.0)
-            
-            # Test connection by fetching collections
-            _ = tmp_client.get_collections()
-            logger.info("✅ Qdrant connectivity check succeeded")
-            
-            # Store the client for direct use
-            self.qdrant_client = tmp_client
-            return True
-            
-        except ImportError:
-            logger.error("Qdrant client not available - install with 'pip install qdrant-client'")
-            return False
-        except Exception as e:
-            logger.error(f"Failed to connect to REAL Qdrant: {e}")
-            return False
+    # ADR-0080: ensure_qdrant_client method completely removed from production architecture
     
     async def _check_neo4j_health(self) -> bool:
         """Check if Neo4j is healthy and responsive"""
@@ -527,17 +482,7 @@ class ServiceContainer:
             logger.debug(f"Neo4j health check failed: {e}")
             return False
     
-    async def _check_qdrant_health(self) -> bool:
-        """Check if Qdrant is healthy and responsive"""
-        try:
-            if not self.qdrant_client:
-                return False
-            # Try to get collections as health check
-            collections = self.qdrant_client.get_collections()
-            return collections is not None
-        except Exception as e:
-            logger.debug(f"Qdrant health check failed: {e}")
-            return False
+    # ADR-0080: _check_qdrant_health method removed from production architecture
     
     async def _check_redis_cache_health(self) -> bool:
         """Check if Redis cache is healthy"""
@@ -581,7 +526,7 @@ class ServiceContainer:
         
         health_status = {
             'neo4j': False,
-            'qdrant': False,
+            # ADR-0080: Qdrant removed from production health checks
             'redis_cache': False,
             'redis_queue': False,
             'nomic': False
@@ -591,7 +536,7 @@ class ServiceContainer:
             # Check all services in parallel
             health_checks = await asyncio.gather(
                 self._check_neo4j_health(),
-                self._check_qdrant_health(),
+                # ADR-0080: Qdrant health check removed
                 self._check_redis_cache_health(),
                 self._check_redis_queue_health(),
                 self._check_nomic_health(),
@@ -600,14 +545,14 @@ class ServiceContainer:
             
             health_status = {
                 'neo4j': health_checks[0] if not isinstance(health_checks[0], Exception) else False,
-                'qdrant': health_checks[1] if not isinstance(health_checks[1], Exception) else False,
-                'redis_cache': health_checks[2] if not isinstance(health_checks[2], Exception) else False,
-                'redis_queue': health_checks[3] if not isinstance(health_checks[3], Exception) else False,
-                'nomic': health_checks[4] if not isinstance(health_checks[4], Exception) else False
+                # ADR-0080: Qdrant removed from production health status
+                'redis_cache': health_checks[1] if not isinstance(health_checks[1], Exception) else False,
+                'redis_queue': health_checks[2] if not isinstance(health_checks[2], Exception) else False,
+                'nomic': health_checks[3] if not isinstance(health_checks[3], Exception) else False
             }
             
-            # Check if essential services are ready
-            essential_ready = health_status['neo4j'] and health_status['qdrant']
+            # Check if essential services are ready - ADR-0080: Neo4j only
+            essential_ready = health_status['neo4j']
             
             if essential_ready:
                 optional_ready = sum([health_status['redis_cache'], health_status['redis_queue'], health_status['nomic']])
@@ -627,11 +572,11 @@ class ServiceContainer:
     
     async def progressive_initialization(self, essential_timeout: int = 30, optional_timeout: int = 10) -> ConnectionState:
         """Initialize services progressively with different timeouts
-        
+
         Args:
-            essential_timeout: Max time to wait for essential services (Neo4j, Qdrant)
+            essential_timeout: Max time to wait for essential services (Neo4j only per ADR-0080)
             optional_timeout: Max time to wait for optional services
-            
+
         Returns:
             ConnectionState indicating level of connectivity
         """
@@ -639,21 +584,21 @@ class ServiceContainer:
         
         logger.info("Starting progressive service initialization...")
         
-        # Phase 1: Connect essential services (Neo4j + Qdrant)
+        # Phase 1: Connect essential services (Neo4j only per ADR-0080)
         essential_start = time.time()
         essential_connected = False
-        
+
         while time.time() - essential_start < essential_timeout:
             neo4j_ok = self.ensure_neo4j_client()
-            qdrant_ok = self.ensure_qdrant_client()
-            
-            if neo4j_ok and qdrant_ok:
+            # ADR-0080: Qdrant connection completely removed
+
+            if neo4j_ok:
                 essential_connected = True
-                logger.info("✅ Essential services connected (Neo4j + Qdrant)")
+                logger.info("✅ Essential services connected (Neo4j only per ADR-0080)")
                 break
-                
+
             await asyncio.sleep(2)
-            logger.debug(f"Waiting for essential services... Neo4j: {neo4j_ok}, Qdrant: {qdrant_ok}")
+            logger.debug(f"Waiting for essential services... Neo4j: {neo4j_ok}")
         
         if not essential_connected:
             logger.error("Failed to connect essential services")
@@ -661,13 +606,12 @@ class ServiceContainer:
         
         # Initialize essential service wrappers
         from servers.services.neo4j_service import Neo4jService
-        from servers.services.qdrant_service import QdrantService
-        
+        # ADR-0080: QdrantService import and initialization removed
+
         self.neo4j = Neo4jService(self.project_name)
         self.neo4j.set_service_container(self)
-        
-        self.qdrant = QdrantService(self.project_name)
-        self.qdrant.set_service_container(self)
+
+        # ADR-0080: Qdrant service wrapper removed from production architecture
         
         # Phase 2: Try to connect optional services with shorter timeout
         optional_start = time.time()
@@ -738,26 +682,16 @@ class ServiceContainer:
             for attempt in range(max_retries):
                 neo4j_ok = self.ensure_neo4j_client()
 
-                # ADR-0075: Neo4j-only architecture - Qdrant not required
-                # Support both ADR-0074 and ADR-0075 environment variables
-                skip_qdrant = (
-                    os.getenv("ADR_074_NEO4J_ONLY", "false").lower() == "true" or
-                    os.getenv("ADR_075_NEO4J_ONLY", "true").lower() == "true"  # Default to true for ADR-0075
-                )
+                # ADR-0080: Complete Qdrant removal - no conditional logic needed
+                logger.info("🎯 ADR-0080: Neo4j-only production architecture, Qdrant completely removed")
 
-                if skip_qdrant:
-                    logger.info("🎯 ADR-0075: Neo4j-only architecture enabled, skipping Qdrant requirement")
-                    qdrant_ok = True  # Bypass Qdrant requirement per ADR-0075
-                else:
-                    qdrant_ok = self.ensure_qdrant_client()
-
-                if neo4j_ok and qdrant_ok:
+                if neo4j_ok:
                     logger.info(f"✅ Services connected on attempt {attempt + 1}/{max_retries}")
                     break
-                    
+
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)  # 2, 4, 8, 16 seconds
-                    logger.warning(f"⏳ Services not ready (Neo4j: {neo4j_ok}, Qdrant: {qdrant_ok}), retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(f"⏳ Services not ready (Neo4j: {neo4j_ok}), retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
                     # IMPORTANT: Using synchronous sleep here because this is called from sync context
                     # The async version is in initialize_with_retry() method
                     time.sleep(delay)
@@ -767,17 +701,8 @@ class ServiceContainer:
             # Single attempt without retry
             neo4j_ok = self.ensure_neo4j_client()
 
-            # ADR-0075: Neo4j-only architecture - Qdrant not required
-            skip_qdrant = (
-                os.getenv("ADR_074_NEO4J_ONLY", "false").lower() == "true" or
-                os.getenv("ADR_075_NEO4J_ONLY", "true").lower() == "true"  # Default to true for ADR-0075
-            )
-
-            if skip_qdrant:
-                logger.info("🎯 ADR-0075: Neo4j-only architecture enabled, skipping Qdrant requirement")
-                qdrant_ok = True  # Bypass Qdrant requirement per ADR-0075
-            else:
-                qdrant_ok = self.ensure_qdrant_client()
+            # ADR-0080: Complete Qdrant removal - no conditional logic needed
+            logger.info("🎯 ADR-0080: Neo4j-only production architecture, Qdrant completely removed")
         
         # Initialize REAL service wrappers - NO MOCKS!
         if neo4j_ok:
@@ -789,14 +714,7 @@ class ServiceContainer:
         else:
             self.neo4j = None
             
-        if qdrant_ok:
-            from servers.services.qdrant_service import QdrantService
-            self.qdrant = QdrantService(self.project_name)
-            # Connect service to container for cache access
-            self.qdrant.set_service_container(self)
-            # Initialize the service asynchronously later
-        else:
-            self.qdrant = None
+        # ADR-0080: Qdrant service initialization completely removed from production architecture
         
         # Initialize REAL Nomic embedding service (service wrapper)
         try:
@@ -810,7 +728,7 @@ class ServiceContainer:
             self.nomic = None
         
         self.initialized = True
-        return neo4j_ok and qdrant_ok
+        return neo4j_ok  # ADR-0080: Only Neo4j required for success
     
     async def initialize_all_services(self) -> bool:
         """Async version of initialize for MCP server compatibility
@@ -828,11 +746,7 @@ class ServiceContainer:
                 logger.warning(f"Neo4j service initialization failed: {neo4j_result.get('message')}")
                 self.neo4j = None
                 
-        if self.qdrant and hasattr(self.qdrant, 'initialize'):
-            qdrant_result = await self.qdrant.initialize()
-            if not qdrant_result.get('success'):
-                logger.warning(f"Qdrant service initialization failed: {qdrant_result.get('message')}")
-                self.qdrant = None
+        # ADR-0080: Qdrant service initialization removed from async method
         # Initialize Nomic service wrapper
         if self.nomic and hasattr(self.nomic, 'initialize'):
             nomic_result = await self.nomic.initialize()
@@ -841,13 +755,13 @@ class ServiceContainer:
                 self.nomic = None
 
         # Return a dictionary for compatibility with the caller
-        # ADR-0075: Neo4j-only architecture - Qdrant not required
+        # ADR-0080: Neo4j-only production architecture - Qdrant completely removed
         return {
             "success": base_init and self.neo4j is not None and self.nomic is not None,
             "services": {
                 "neo4j": self.neo4j is not None,
                 "nomic": self.nomic is not None,
-                "qdrant": "not_required_per_adr_0075"  # Document why absent
+                "qdrant": "removed_per_adr_0080"  # Document complete removal
             }
         }
     
@@ -857,11 +771,7 @@ class ServiceContainer:
             self.ensure_neo4j_client()
         return self.neo4j_client
     
-    def get_qdrant_client(self):
-        """Get Qdrant client, initializing if needed"""
-        if not self.qdrant_client:
-            self.ensure_qdrant_client()
-        return self.qdrant_client
+    # ADR-0080: get_qdrant_client method removed from production architecture
     
     async def ensure_indexer_running(self, project_path: str = None):
         """
@@ -963,18 +873,7 @@ class ServiceContainer:
         except Exception as e:
             logger.error(f"Failed to close Neo4j connection: {e}")
 
-        # Close Qdrant client (Grok: handle both sync and async)
-        try:
-            if hasattr(self, 'qdrant') and self.qdrant:
-                if hasattr(self.qdrant, 'close'):
-                    # Check if async client
-                    if 'Async' in str(type(self.qdrant)):
-                        await self.qdrant.close()
-                    else:
-                        self.qdrant.close()
-                    logger.info("Qdrant client closed")
-        except Exception as e:
-            logger.error(f"Failed to close Qdrant client: {e}")
+        # ADR-0080: Qdrant client cleanup removed from production architecture
 
         # Clear caches
         if hasattr(self, 'cache'):
@@ -1014,7 +913,7 @@ class ServiceContainer:
 
         # Clear all references
         self.neo4j = None
-        self.qdrant = None
+        # ADR-0080: Qdrant reference removal not needed in production
         self.nomic = None
         self._redis_cache_client = None
         self._redis_queue_client = None
@@ -1029,8 +928,8 @@ class ServiceContainer:
         logger.info("Service container teardown complete")
 
 
-# ALL MOCKS REMOVED! 
-# This service container now uses ONLY REAL service connections:
-# - REAL Neo4j GraphDatabase connection via docker-compose  
-# - REAL Qdrant vector database connection via docker-compose
-# - REAL Nomic embedding service connection via HTTP API
+# ADR-0080: PRODUCTION-READY NEO4J-ONLY ARCHITECTURE
+# This service container uses ONLY REAL service connections:
+# - REAL Neo4j GraphDatabase connection via docker-compose (unified graph+vector storage)
+# - REAL Nomic embedding service connection via HTTP API (768-dim vectors)
+# - Qdrant COMPLETELY REMOVED per ADR-0080 for production simplicity

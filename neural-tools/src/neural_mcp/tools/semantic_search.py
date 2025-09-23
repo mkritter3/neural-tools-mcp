@@ -189,36 +189,23 @@ async def _execute_semantic_search_with_vector_fallback(
 
     logger.info(f"🔍 ADR-0079: Vector search for '{query}' (mode: {mode})")
 
-    # Try vector search first (new capability)
-    try:
-        query_embedding = await _generate_query_embedding(query, project_name)
-        if query_embedding and len(query_embedding) == 768:
-            logger.info(f"🚀 ADR-0079: Using vector search for '{query}'")
-            return await _execute_vector_search(
-                neo4j_service,
-                query,
-                query_embedding,
-                mode,
-                limit,
-                include_graph_context,
-                max_hops,
-                vector_weight,
-                min_similarity,
-                project_name,
-            )
-    except (ConnectionError, TimeoutError, ValueError) as e:
-        logger.warning(
-            f"Vector search failed ({type(e).__name__}), falling back to text search: {e}"
-        )
-    except Exception as e:
-        logger.warning(
-            f"Unexpected vector search error, falling back to text search: {e}"
-        )
+    # Execute vector search (no fallback - fail fast if not working)
+    query_embedding = await _generate_query_embedding(query, project_name)
+    if not query_embedding or len(query_embedding) != 768:
+        raise RuntimeError(f"Failed to generate valid embedding for query: '{query}'. Vector search requires working embedding service.")
 
-    # Fallback to existing text search (preserve existing functionality)
-    logger.info(f"📝 ADR-0079: Using text search fallback for '{query}'")
-    return await _execute_text_search(
-        neo4j_service, query, mode, limit, include_graph_context, max_hops, project_name
+    logger.info(f"🚀 ADR-0079: Using vector search for '{query}'")
+    return await _execute_vector_search(
+        neo4j_service,
+        query,
+        query_embedding,
+        mode,
+        limit,
+        include_graph_context,
+        max_hops,
+        vector_weight,
+        min_similarity,
+        project_name,
     )
 
 

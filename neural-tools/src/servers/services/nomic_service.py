@@ -232,67 +232,15 @@ class NomicService:
                 raise ValueError("Empty embedding response")
                 
         except (ConnectionError, TimeoutError, httpx.HTTPError) as e:
-            # Network/service errors - use queue fallback if available
-            if self.service_container:
-                return await self._fallback_to_queue(text, model, e)
-            else:
-                raise
+            # ADR-0083: Simplified to pure HTTP service - no queue logic
+            logger.error(f"Nomic HTTP connection failed for {model}: {e}")
+            raise
         except Exception as e:
             # Other errors - propagate immediately
             logger.error(f"Embedding generation failed: {e}")
             raise
     
-    async def _fallback_to_queue(self, text: str, model: str, original_error: Exception) -> Dict[str, Any]:
-        """
-        Fallback to job queue when direct embedding fails
-        
-        Args:
-            text: Text to embed
-            model: Model identifier
-            original_error: The original error that triggered fallback
-            
-        Returns:
-            Queue response with job information
-        """
-        try:
-            job_queue = await self.service_container.get_job_queue()
-            job_id = self._generate_job_id(text, model)
-            
-            logger.info(f"Direct embedding failed ({original_error}), falling back to queue for job {job_id}")
-            
-            # Check if job already exists/completed
-            redis_cache = await self.service_container.get_redis_cache_client()
-            result_key = f"l9:prod:neural_tools:job_result:{job_id}"
-            cached_result = await redis_cache.get(result_key)
-            
-            if cached_result:
-                result_data = json.loads(cached_result)
-                if result_data.get('status') == 'success':
-                    return result_data['embedding']
-            
-            # Enqueue with deduplication
-            from arq.jobs import Job
-            job: Job = await job_queue.enqueue_job(
-                'process_embedding_job',
-                text,
-                model,
-                _job_id=job_id,  # ARQ deduplication
-                _job_timeout=300,
-                _defer_until=None
-            )
-            
-            logger.info(f"Job {job_id} enqueued for resilient processing")
-            
-            # Return async response - client should poll for completion
-            raise ConnectionError(
-                f"Service temporarily unavailable. Job {job_id} queued for processing. "
-                f"Original error: {original_error}"
-            )
-            
-        except Exception as queue_error:
-            logger.error(f"Queue fallback failed for {text[:50]}...: {queue_error}")
-            # Both direct and queue failed - raise original error
-            raise original_error
+# ADR-0083: Removed _fallback_to_queue method - pure HTTP service with no queue logic
     
     async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for multiple texts with error handling"""

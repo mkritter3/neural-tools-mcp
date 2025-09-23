@@ -100,6 +100,66 @@ async def process_embedding_job(ctx: Dict[str, Any], text: str, model: str = "no
         # Re-raise for ARQ retry logic
         raise
 
+async def process_embedding_batch(ctx: Dict[str, Any], payload: List[Dict]) -> Dict[str, Any]:
+    """
+    ADR-0083: ARQ worker function for processing batch of chunks with full lifecycle management
+
+    Args:
+        ctx: ARQ context containing initialized services
+        payload: List of {"chunk_id": str, "text": str} items
+
+    Returns:
+        Success response with processing stats
+    """
+    logger.info(f"🔄 Processing embedding batch of {len(payload)} chunks")
+
+    # Get services from context
+    nomic_service = ctx.get("nomic")
+    neo4j_service = ctx.get("neo4j")
+
+    if not nomic_service or not neo4j_service:
+        raise RuntimeError("Required services not available in worker context")
+
+    chunk_ids = [item["chunk_id"] for item in payload]
+    texts = [item["text"] for item in payload]
+
+    try:
+        # Get embeddings from Nomic in single API call
+        embeddings = await nomic_service.get_embeddings(texts)
+
+        if not embeddings or len(embeddings) != len(texts):
+            raise RuntimeError(f"Embedding count mismatch: expected {len(texts)}, got {len(embeddings) if embeddings else 0}")
+
+        # Update all chunks in single Neo4j transaction
+        update_data = [
+            {"chunk_id": cid, "embedding": emb}
+            for cid, emb in zip(chunk_ids, embeddings)
+        ]
+
+        # Use Neo4j transaction to update all chunks atomically
+        cypher = """
+        UNWIND $batch as row
+        MATCH (c:Chunk {id: row.chunk_id})
+        SET c.embedding = row.embedding
+        RETURN count(c) as updated_count
+        """
+
+        result = await neo4j_service.execute_cypher(cypher, {"batch": update_data})
+        updated_count = result.get("data", [{}])[0].get("updated_count", 0)
+
+        logger.info(f"✅ Successfully processed embeddings for {updated_count} chunks")
+
+        return {
+            "status": "success",
+            "chunks_processed": len(chunk_ids),
+            "embeddings_generated": len(embeddings),
+            "chunks_updated": updated_count
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Batch embedding processing failed: {e}")
+        raise
+
 class EmbeddingWorker:
     """
     ARQ Worker manager for embedding processing
@@ -190,7 +250,7 @@ async def create_embedding_worker(project_name: str = "default") -> Worker:
     
     # Create worker with production configuration
     worker = Worker(
-        functions=[process_embedding_job],
+        functions=[process_embedding_job, process_embedding_batch],
         redis_settings=redis_settings,
         on_startup=worker_instance.startup,
         on_shutdown=worker_instance.shutdown,
