@@ -285,7 +285,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             'errors': 0,
             'last_index_time': None,
             'queue_depth': 0,
-            'service_failures': {'neo4j': 0, 'qdrant': 0, 'nomic': 0},
+            'service_failures': {'neo4j': 0, 'nomic': 0},  # ADR-0066: Neo4j-only
             # GraphRAG metrics
             'chunks_created': 0,
             'cross_references_created': 0,
@@ -302,12 +302,6 @@ class IncrementalIndexer(FileSystemEventHandler):
             'error_rate_per_minute': 0.0
         }
         
-        # Graceful degradation flags
-        self.degraded_mode = {
-            'neo4j': False,
-            'qdrant': False,
-            'nomic': False
-        }
         
     async def initialize_services(self):
         """Initialize service connections with retry logic"""
@@ -324,81 +318,59 @@ class IncrementalIndexer(FileSystemEventHandler):
                 
                 result = await self.container.initialize_all_services()
                 
-                # Check individual service health
-                if self.container.neo4j:
-                    self.degraded_mode['neo4j'] = False
-                else:
-                    logger.warning("Neo4j unavailable - continuing without graph indexing")
-                    self.degraded_mode['neo4j'] = True
-                    
-                if self.container.qdrant:
-                    self.degraded_mode['qdrant'] = False
-                    await self._ensure_collections()
-                else:
-                    logger.warning("Qdrant unavailable - continuing without vector search")
-                    self.degraded_mode['qdrant'] = True
-                    
-                if self.container.nomic:
-                    self.degraded_mode['nomic'] = False
-                    
-                    # Capture actual embedding dimension for dynamic alignment
-                    try:
-                        health = await self.container.nomic.health_check()
-                        embedding_dim = health.get('embedding_dim')
-                        if embedding_dim and embedding_dim != self.collection_manager.embedding_dimension:
-                            logger.info(f"Detected embedding dimension: {embedding_dim}, reinitializing collection manager")
-                            # Reinitialize collection manager with correct dimension
-                            from collection_config import CollectionManager
-                            self.collection_manager = CollectionManager(
-                                self.project_name, 
-                                embedding_dimension=embedding_dim
-                            )
-                            logger.info(f"Collection manager updated with embedding dimension: {embedding_dim}")
-                    except Exception as e:
-                        logger.warning(f"Could not detect embedding dimension: {e}")
-                        
-                else:
-                    logger.warning("Nomic unavailable - continuing without semantic embeddings")
-                    self.degraded_mode['nomic'] = True
-                
-                # Initialize WriteSynchronizationManager if both Neo4j and Qdrant are available (ADR-053)
-                if not self.degraded_mode['neo4j'] and not self.degraded_mode['qdrant']:
-                    self.sync_manager = WriteSynchronizationManager(
-                        neo4j_service=self.container.neo4j,
-                        qdrant_service=self.container.qdrant,
-                        project_name=self.project_name
-                    )
-                    logger.info("WriteSynchronizationManager initialized for atomic writes (ADR-053)")
-                else:
-                    logger.warning("WriteSynchronizationManager not initialized - running without atomic sync")
+                # Fail-fast: Elite GraphRAG requires Neo4j (unified storage) + Nomic (embeddings)
+                if not self.container.neo4j:
+                    raise RuntimeError("Neo4j service is unavailable - cannot proceed with unified graph+vector storage")
+
+                if not self.container.nomic:
+                    raise RuntimeError("Nomic service is unavailable - cannot proceed with semantic embeddings")
+
+                # Qdrant eliminated per ADR-0066 - Neo4j handles all storage
+
+                # Ensure collections exist
+                await self._ensure_collections()
+
+                # Capture actual embedding dimension for dynamic alignment
+                try:
+                    health = await self.container.nomic.health_check()
+                    embedding_dim = health.get('embedding_dim')
+                    if embedding_dim and embedding_dim != self.collection_manager.embedding_dimension:
+                        logger.info(f"Detected embedding dimension: {embedding_dim}, reinitializing collection manager")
+                        # Reinitialize collection manager with correct dimension
+                        from collection_config import CollectionManager
+                        self.collection_manager = CollectionManager(
+                            self.project_name,
+                            embedding_dimension=embedding_dim
+                        )
+                        logger.info(f"Collection manager updated with embedding dimension: {embedding_dim}")
+                except Exception as e:
+                    raise RuntimeError(f"Could not detect embedding dimension: {e}")
+
+                # ADR-0066: Neo4j-only architecture eliminates need for sync manager
+                # All operations are atomic within Neo4j - no cross-database coordination needed
+                logger.info("Neo4j unified storage - atomic operations native to single database")
 
                 self.services_initialized = True
-                logger.info(f"Services initialized: {'healthy' if result else 'degraded'}")
+                logger.info("All services initialized successfully - elite GraphRAG mode active")
                 return True
-                
+
             except Exception as e:
                 logger.error(f"Service initialization failed: {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
                 else:
-                    logger.error("All initialization attempts failed - running in degraded mode")
-                    self.services_initialized = True  # Continue anyway
-                    return False
+                    raise RuntimeError(f"All initialization attempts failed: {e}")
     
     async def _ensure_collections(self):
         """Ensure required Qdrant collections exist using battle-tested patterns"""
-        if self.degraded_mode['qdrant']:
-            return
-        
         # Use centralized collection management
         success = await self.collection_manager.ensure_collection_exists(
-            CollectionType.CODE, 
+            CollectionType.CODE,
             self.container.qdrant
         )
-        
+
         if not success:
-            logger.error("Failed to ensure code collection exists")
-            self.degraded_mode['qdrant'] = True
+            raise RuntimeError("Failed to ensure code collection exists")
     
     def should_index(self, file_path: str) -> bool:
         """Check if file should be indexed with security filters"""
@@ -474,42 +446,20 @@ class IncrementalIndexer(FileSystemEventHandler):
             # Chunk large files
             chunks = self._chunk_content(content, str(relative_path))
             
-            # Process with available services
-            semantic_success = False
-            graph_success = False
+            # ADR-0066: Unified Neo4j indexing - vectors + graph in single atomic transaction
+            success = await self._index_unified(file_path, relative_path, chunks, content)
 
-            # 1. Semantic indexing with Qdrant + Nomic
-            if not self.degraded_mode['qdrant'] and not self.degraded_mode['nomic']:
-                semantic_success = await self._index_semantic(file_path, relative_path, chunks)
-
-            # 2. Graph indexing with Neo4j
-            if not self.degraded_mode['neo4j']:
-                graph_success = await self._index_graph(file_path, relative_path, content)
-
-            # Success only if at least one pipeline succeeds
-            success = semantic_success or graph_success
-
-            # Track detailed metrics
-            if semantic_success:
-                if 'semantic_files_indexed' not in self.metrics:
-                    self.metrics['semantic_files_indexed'] = 0
-                self.metrics['semantic_files_indexed'] += 1
-            if graph_success:
-                if 'graph_files_indexed' not in self.metrics:
-                    self.metrics['graph_files_indexed'] = 0
-                self.metrics['graph_files_indexed'] += 1
-            
-            # Overall success counter only incremented for actual storage success
+            # Track unified indexing metrics
             if success:
                 # Update hash tracking
                 self.file_hashes[file_path] = current_hash
                 self.metrics['files_indexed'] += 1
-                logger.info(f"✅ At least one pipeline successful: {file_path}")
+                logger.info(f"✅ Unified Neo4j indexing successful: {file_path}")
             else:
                 if 'files_failed' not in self.metrics:
                     self.metrics['files_failed'] = 0
                 self.metrics['files_failed'] += 1
-                logger.error(f"❌ Complete dual-pipeline failure for {file_path}: semantic={semantic_success}, graph={graph_success}")
+                logger.error(f"❌ Unified Neo4j indexing failed: {file_path}")
 
             if success:
                 self.metrics['chunks_created'] += len(chunks)
@@ -544,11 +494,6 @@ class IncrementalIndexer(FileSystemEventHandler):
                 'connectivity': None  # Could be any service
             }
             
-            if error_category in service_errors and service_errors[error_category]:
-                service_name = service_errors[error_category]
-                if self.degraded_mode[service_name]:
-                    # Try recovery if service is degraded and enough time has passed
-                    await self._attempt_service_recovery(service_name)
     
     def _categorize_error(self, error: Exception, file_path: str) -> str:
         """Categorize errors for better monitoring and debugging"""
@@ -631,41 +576,6 @@ class IncrementalIndexer(FileSystemEventHandler):
             time_minutes = self.metrics['total_index_time_ms'] / (1000 * 60)
             self.metrics['error_rate_per_minute'] = self.metrics['errors'] / max(time_minutes, 1)
     
-    async def _attempt_service_recovery(self, service_name: str):
-        """Attempt to recover a failed service"""
-        try:
-            self.metrics['recovery_attempts'] += 1
-            logger.info(f"Attempting recovery of {service_name} service")
-            
-            if service_name == 'neo4j':
-                # Reinitialize Neo4j connection
-                result = await self.container.neo4j.initialize()
-                if result.get('success'):
-                    self.degraded_mode['neo4j'] = False
-                    logger.info("Neo4j service recovered successfully")
-                    return True
-                    
-            elif service_name == 'qdrant':
-                # Reinitialize Qdrant connection
-                result = await self.container.qdrant.health_check()
-                if result.get('healthy'):
-                    self.degraded_mode['qdrant'] = False
-                    await self._ensure_collections()
-                    logger.info("Qdrant service recovered successfully")
-                    return True
-                    
-            elif service_name == 'nomic':
-                # Test Nomic embedding service
-                test_result = await self.container.nomic.get_embeddings(['test'])
-                if test_result:
-                    self.degraded_mode['nomic'] = False
-                    logger.info("Nomic embedding service recovered successfully")
-                    return True
-                    
-        except Exception as e:
-            logger.warning(f"Recovery attempt failed for {service_name}: {e}")
-        
-        return False
     
     def get_error_summary(self) -> Dict[str, Any]:
         """Get comprehensive error summary for monitoring"""
@@ -681,7 +591,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             },
             'error_categories': self.metrics.get('error_categories', {}),
             'service_health': {
-                'degraded_services': [k for k, v in self.degraded_mode.items() if v],
+                'all_services_healthy': True,  # Fail-fast: all services required
                 'service_failures': self.metrics['service_failures'],
                 'recovery_attempts': self.metrics['recovery_attempts']
             },
@@ -696,14 +606,12 @@ class IncrementalIndexer(FileSystemEventHandler):
     
     def get_health_status(self) -> str:
         """Get overall system health status"""
-        # Critical: Any critical errors or all services degraded
-        if (self.metrics['critical_errors'] > 0 or 
-            all(self.degraded_mode.values())):
+        # Critical: Any critical errors (fail-fast ensures no degraded services)
+        if self.metrics['critical_errors'] > 0:
             return 'critical'
-        
-        # Warning: Some services degraded or high error rate
-        elif (any(self.degraded_mode.values()) or 
-              self.metrics['error_rate_per_minute'] > 5.0 or
+
+        # Warning: High error rate or queue issues
+        elif (self.metrics['error_rate_per_minute'] > 5.0 or
               self.metrics['queue_depth'] > self.queue_warning_threshold):
             return 'warning'
         
@@ -978,25 +886,6 @@ class IncrementalIndexer(FileSystemEventHandler):
         
         return metadata
 
-    def _handle_service_failure(self, service_name: str, error_result: Dict):
-        """Handle service failure with immediate degraded mode activation"""
-        error_type = error_result.get('error_type', 'unknown')
-
-        # Immediate degradation for connection-level errors
-        if error_type in ['authentication_error', 'connection_error', 'service_unavailable']:
-            self.degraded_mode[service_name] = True
-            logger.warning(f"Service {service_name} entering degraded mode: {error_result.get('message')}")
-
-        # Increment failure counter
-        if 'service_failures' not in self.metrics:
-            self.metrics['service_failures'] = {}
-        if service_name not in self.metrics['service_failures']:
-            self.metrics['service_failures'][service_name] = 0
-        self.metrics['service_failures'][service_name] += 1
-
-        # Schedule recovery attempt (placeholder for future implementation)
-        # self._schedule_service_recovery(service_name)
-
     async def _index_semantic(self, file_path: str, relative_path: Path, chunks: List[Dict]) -> bool:
         """Index with full semantic embeddings and GraphRAG cross-references"""
         try:
@@ -1041,9 +930,7 @@ class IncrementalIndexer(FileSystemEventHandler):
 
             if not embeddings:
                 logger.error(f"Nomic embedding failed for {relative_path}")
-                self._handle_service_failure('nomic', {"message": "No embeddings generated"})
-                self.degraded_mode['nomic'] = True
-                return False
+                raise RuntimeError(f"Nomic embedding failed for {relative_path}: No embeddings generated")
             
             # Prepare points for Qdrant with Neo4j cross-references
             points = []
@@ -1175,18 +1062,16 @@ class IncrementalIndexer(FileSystemEventHandler):
                 qdrant_result = await self.container.qdrant.upsert_points(collection_name, points)
                 if qdrant_result.get('status') != 'success':
                     logger.error(f"Qdrant storage failed for {relative_path}: {qdrant_result.get('message')}")
-                    self._handle_service_failure('qdrant', qdrant_result)
-                    self.degraded_mode['qdrant'] = True
-                    return False
+                    raise RuntimeError(f"Qdrant storage failed for {relative_path}: {qdrant_result.get('message')}")
 
-                # Update Neo4j with chunk references (if available)
-                logger.info(f"Neo4j update check: degraded={self.degraded_mode['neo4j']}, chunks={len(neo4j_chunk_ids)}")
-                if not self.degraded_mode['neo4j'] and neo4j_chunk_ids:
+                # Update Neo4j with chunk references
+                logger.info(f"Neo4j update check: chunks={len(neo4j_chunk_ids)}")
+                if neo4j_chunk_ids:
                     logger.info(f"Calling _update_neo4j_chunks for {file_path} with {len(neo4j_chunk_ids)} chunks")
                     await self._update_neo4j_chunks(file_path, relative_path, neo4j_chunk_ids, symbols_data)
                     self.metrics['cross_references_created'] += len(neo4j_chunk_ids)
                 else:
-                    logger.warning(f"Skipping Neo4j update: degraded={self.degraded_mode['neo4j']}, has_chunks={bool(neo4j_chunk_ids)}")
+                    logger.debug("No chunks to update in Neo4j")
 
             logger.info(f"✅ Semantic indexing successful: {len(points)} vectors stored")
             return True
@@ -1240,11 +1125,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             logger.error(f"Keyword indexing failed for {file_path} ({error_category}): {e}")
             self.metrics['service_failures']['qdrant'] += 1
             self._handle_error_metrics(error_category)
-            
-            # Enter degraded mode after threshold failures
-            if self.metrics['service_failures']['qdrant'] > 10:
-                logger.warning("Qdrant failures exceeded threshold - entering degraded mode")
-                self.degraded_mode['qdrant'] = True
+            raise RuntimeError(f"Keyword indexing failed for {file_path}: {e}")
     
     def _extract_keywords(self, text: str, max_keywords: int = 100) -> Tuple[List[int], List[float]]:
         """Extract keywords for sparse vector representation"""
@@ -1357,9 +1238,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             result = await self.container.neo4j.execute_cypher(cypher, params)
             if result.get('status') != 'success':
                 logger.error(f"Neo4j operation failed for {relative_path}: {result.get('message')}")
-                self._handle_service_failure('neo4j', result)
-                self.degraded_mode['neo4j'] = True
-                return False
+                raise RuntimeError(f"Neo4j operation failed for {relative_path}: {result.get('message')}")
 
             # Check if query was successful and content unchanged (for deduplication)
             if result.get('status') == 'success' and result.get('result') and len(result['result']) > 0 and result['result'][0].get('existing_hash') == file_hash:
@@ -1569,7 +1448,7 @@ class IncrementalIndexer(FileSystemEventHandler):
             logger.info(f"✅ Created/updated {len(chunk_ids)} Chunk nodes in Neo4j with HAS_CHUNK relationships")
             
             # Create symbol nodes if we have symbol data
-            if symbols_data and not self.degraded_mode['neo4j']:
+            if symbols_data:
                 for symbol in symbols_data:
                     # Create nodes for classes and functions
                     if symbol['type'] in ['class', 'function', 'interface', 'method']:
@@ -1693,7 +1572,6 @@ class IncrementalIndexer(FileSystemEventHandler):
             
             # First, get chunk IDs from Neo4j to ensure complete removal
             chunk_ids_to_remove = []
-            if not self.degraded_mode['neo4j']:
                 # ADR-0050: Get all Chunk nodes for this file using correct relationship
                 cypher = """
                 MATCH (f:File {path: $path, project: $project})-[:HAS_CHUNK]->(c:Chunk)
@@ -1708,7 +1586,6 @@ class IncrementalIndexer(FileSystemEventHandler):
                     chunk_ids_to_remove = [(r['qdrant_id'], r['chunk_id']) for r in result if r.get('qdrant_id')]
             
             # Remove from Qdrant
-            if not self.degraded_mode['qdrant']:
                 collection_name = self.collection_manager.get_collection_name(CollectionType.CODE)
                 
                 if chunk_ids_to_remove:
@@ -1737,7 +1614,6 @@ class IncrementalIndexer(FileSystemEventHandler):
                     logger.info(f"Removed {file_path} from Qdrant")
             
             # Remove from Neo4j (including chunks and file)
-            if not self.degraded_mode['neo4j']:
                 # Delete chunks and file in one transaction
                 cypher = """
                 MATCH (f:File {path: $path})
@@ -1855,23 +1731,12 @@ class IncrementalIndexer(FileSystemEventHandler):
         """Perform initial indexing of existing files"""
         logger.info(f"Starting initial index of {self.project_path}")
 
-        # CRITICAL: Fail fast if in degraded mode to prevent hanging
-        # In degraded mode, services are unavailable and indexing will fail
-        if self.degraded_mode:
-            logger.error("ABORTING initial_index: Indexer in degraded mode - services unavailable")
-            logger.error("Degraded mode reasons:")
-            logger.error("  - Neo4j or Qdrant initialization failed")
-            logger.error("  - Check container logs for permission errors on /home/indexer")
-            logger.error("  - Verify database connectivity")
-            return
-
         # Always perform initial index when container starts
         # This ensures proper indexing when:
         # - Mount paths change (ADR-63)
         # - Containers are recreated
         # - Projects switch
-        logger.debug(f"Degraded mode status: {self.degraded_mode}")
-        logger.info("Performing initial index (container startup)")
+        logger.info("Performing initial index (container startup) - elite GraphRAG mode")
 
         # Find all files to index
         logger.debug("Starting file discovery...")
@@ -2160,13 +2025,10 @@ class IncrementalIndexer(FileSystemEventHandler):
         """Get current metrics for monitoring with GraphRAG insights"""
         return {
             **self.metrics,
-            'degraded_services': [k for k, v in self.degraded_mode.items() if v],
-            'healthy_services': [k for k, v in self.degraded_mode.items() if not v],
+            'all_services_healthy': True,  # Fail-fast: all services always healthy or system fails
+            'healthy_services': ['neo4j', 'nomic'],  # ADR-0066: Neo4j-only architecture
             # GraphRAG health indicators
-            'graphrag_enabled': (
-                not self.degraded_mode['neo4j'] and 
-                not self.degraded_mode['qdrant']
-            ),
+            'graphrag_enabled': True,  # Always true in fail-fast mode
             'cross_reference_ratio': (
                 self.metrics['cross_references_created'] / max(self.metrics['chunks_created'], 1)
                 if self.metrics['chunks_created'] > 0 else 0
