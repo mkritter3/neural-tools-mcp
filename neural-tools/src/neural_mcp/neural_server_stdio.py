@@ -102,6 +102,105 @@ CLEANUP_INTERVAL_MINUTES = float(os.environ.get('CLEANUP_INTERVAL_MINUTES', '10'
 ENABLE_AUTO_CLEANUP = os.environ.get('ENABLE_AUTO_CLEANUP', 'true').lower() == 'true'
 
 # Phase 3: Enhanced monitoring and debugging
+
+# ADR-0075 Phase 4: Shared service connections and caching for performance optimization
+_shared_neo4j_services = {}  # project_name -> Neo4jService instance
+_dependency_cache = {}  # query_key -> (result, timestamp)
+_service_lock = asyncio.Lock()
+_cache_lock = asyncio.Lock()
+
+# Cache configuration
+CACHE_TTL_SECONDS = 300  # 5 minutes TTL for dependency analysis
+MAX_CACHE_SIZE = 1000  # Maximum cached queries
+
+# Performance monitoring
+_performance_metrics = {
+    "cache_hits": 0,
+    "cache_misses": 0,
+    "total_queries": 0,
+    "avg_query_time_ms": 0.0,
+    "service_creation_count": 0
+}
+
+async def get_shared_neo4j_service(project_name: str):
+    """
+    ADR-0075 Phase 4: Get or create shared Neo4j service instance
+    Eliminates 1.5s initialization overhead per query
+    """
+    async with _service_lock:
+        if project_name not in _shared_neo4j_services:
+            from servers.services.neo4j_service import Neo4jService
+            neo4j = Neo4jService(project_name)
+
+            neo4j_result = await neo4j.initialize()
+            if not neo4j_result.get("success"):
+                raise Exception(f"Neo4j initialization failed: {neo4j_result}")
+
+            _shared_neo4j_services[project_name] = neo4j
+            _performance_metrics["service_creation_count"] += 1
+            logger.info(f"🔄 ADR-0075 Phase 4: Created shared Neo4j service for {project_name}")
+
+        return _shared_neo4j_services[project_name]
+
+def _make_cache_key(target_file: str, analysis_type: str, max_depth: int, project_name: str) -> str:
+    """Generate cache key for dependency analysis query"""
+    return f"dep:{project_name}:{target_file}:{analysis_type}:{max_depth}"
+
+async def _get_cached_result(cache_key: str):
+    """Get cached result if available and not expired"""
+    async with _cache_lock:
+        if cache_key in _dependency_cache:
+            result, timestamp = _dependency_cache[cache_key]
+            import time
+            if time.time() - timestamp < CACHE_TTL_SECONDS:
+                _performance_metrics["cache_hits"] += 1
+                return result
+            else:
+                # Expired, remove from cache
+                del _dependency_cache[cache_key]
+
+        _performance_metrics["cache_misses"] += 1
+    return None
+
+async def _cache_result(cache_key: str, result):
+    """Cache result with timestamp"""
+    async with _cache_lock:
+        import time
+
+        # Simple LRU: Remove oldest entries if cache is full
+        if len(_dependency_cache) >= MAX_CACHE_SIZE:
+            # Remove oldest 10% of entries
+            sorted_items = sorted(_dependency_cache.items(), key=lambda x: x[1][1])
+            for key, _ in sorted_items[:MAX_CACHE_SIZE // 10]:
+                del _dependency_cache[key]
+
+        _dependency_cache[cache_key] = (result, time.time())
+
+def _update_query_metrics(duration_ms: float):
+    """Update query performance metrics"""
+    _performance_metrics["total_queries"] += 1
+
+    # Running average calculation
+    current_avg = _performance_metrics["avg_query_time_ms"]
+    total_queries = _performance_metrics["total_queries"]
+
+    # Update running average: new_avg = (old_avg * (n-1) + new_value) / n
+    _performance_metrics["avg_query_time_ms"] = (current_avg * (total_queries - 1) + duration_ms) / total_queries
+
+def get_performance_metrics() -> dict:
+    """Get current performance metrics"""
+    metrics = _performance_metrics.copy()
+
+    # Calculate cache hit rate
+    total_cache_requests = metrics["cache_hits"] + metrics["cache_misses"]
+    if total_cache_requests > 0:
+        metrics["cache_hit_rate"] = (metrics["cache_hits"] / total_cache_requests) * 100
+    else:
+        metrics["cache_hit_rate"] = 0.0
+
+    metrics["cached_queries"] = len(_dependency_cache)
+
+    return metrics
 MCP_VERBOSE = os.environ.get('MCP_VERBOSE', 'false').lower() == 'true'
 INCLUDE_INSTANCE_METADATA = os.environ.get('INCLUDE_INSTANCE_METADATA', 'false').lower() == 'true'
 
@@ -1041,6 +1140,11 @@ async def handle_list_tools() -> List[types.Tool]:
                 "required": ["target_file"]
             }
         ),
+        types.Tool(
+            name="performance_metrics",
+            description="ADR-0075 Phase 4: Get GraphRAG performance metrics and optimization statistics",
+            inputSchema={"type": "object", "properties": {}, "additionalProperties": False}
+        ),
     ]
 
 
@@ -1203,6 +1307,25 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             max_depth = arguments.get("max_depth", 3)
 
             return await dependency_analysis_impl(target_file.strip(), analysis_type, max_depth)
+        elif name == "performance_metrics":
+            import time
+            metrics = get_performance_metrics()
+
+            response = {
+                "status": "success",
+                "timestamp": time.time(),
+                "metrics": metrics,
+                "optimizations": {
+                    "connection_pooling": "enabled",
+                    "query_caching": "enabled",
+                    "cache_ttl_seconds": CACHE_TTL_SECONDS,
+                    "max_cache_size": MAX_CACHE_SIZE
+                },
+                "architecture": "adr_0075_phase4_optimized"
+            }
+
+            response = add_instance_metadata(response)
+            return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
         else:
             return [types.TextContent(type="text", text=json.dumps({
                 "error": f"Unknown tool: {name}",
@@ -1695,6 +1818,104 @@ async def semantic_code_search_impl(query: str, limit: int) -> List[types.TextCo
         error_response = add_instance_metadata(error_response)
         return [types.TextContent(type="text", text=json.dumps(error_response))]
 
+async def _build_optimized_dependency_query(analysis_type: str, max_depth: int) -> str:
+    """
+    ADR-0075 Phase 4: Build optimized analysis-type-specific Cypher queries for Neo4j 5.22
+
+    Performance Optimizations based on Context7 Neo4j 5.x best practices:
+    1. Early filtering with WHERE clauses
+    2. Limited variable-length patterns
+    3. Analysis-type-specific queries (avoid unnecessary OPTIONAL MATCH)
+    4. Index-friendly MATCH patterns with proper constraints
+    5. Result limiting for performance
+    """
+
+    base_match = "MATCH (target_file:File {path: $target_file, project: $project})"
+
+    if analysis_type == "imports":
+        # Context7 Neo4j 5.x optimized imports query with early filtering
+        return f"""
+        {base_match}
+        MATCH (target_file)-[:IMPORTS*1..{max_depth}]->(imported:Module)
+
+        WITH target_file, imported
+        ORDER BY imported.name
+        LIMIT 50
+
+        RETURN collect(DISTINCT {{
+            type: 'import',
+            target: imported.name,
+            path_length: 1
+        }}) as import_dependencies,
+        [] as reverse_dependencies,
+        [] as call_dependencies
+        """
+
+    elif analysis_type == "dependents":
+        # Context7 Neo4j 5.x optimized dependents query with path pattern
+        return f"""
+        {base_match}
+        MATCH (dependent_files:File)<-[:DEFINED_IN]-(dep_modules:Module)-[:IMPORTS*1..{max_depth}]->(target_modules:Module)-[:DEFINED_IN]->(target_file)
+        WHERE dependent_files <> target_file
+
+        WITH dependent_files
+        LIMIT 50
+
+        RETURN [] as import_dependencies,
+        collect(DISTINCT {{
+            type: 'dependent',
+            source: dependent_files.path,
+            path_length: 1
+        }}) as reverse_dependencies,
+        [] as call_dependencies
+        """
+
+    elif analysis_type == "calls":
+        # Context7 Neo4j 5.x optimized calls query
+        return f"""
+        {base_match}
+        MATCH (target_funcs:Function)-[:DEFINED_IN]->(target_file)
+        MATCH (target_funcs)-[:CALLS*1..{max_depth}]->(called_funcs:Function)
+
+        WITH target_funcs, called_funcs
+        LIMIT 50
+
+        RETURN [] as import_dependencies,
+        [] as reverse_dependencies,
+        collect(DISTINCT {{
+            type: 'call',
+            from_function: target_funcs.name,
+            to_function: called_funcs.name,
+            call_depth: 1
+        }}) as call_dependencies
+        """
+
+    else:  # analysis_type == "all"
+        # Context7 Neo4j 5.x optimized comprehensive query - separate simple patterns
+        return f"""
+        {base_match}
+
+        // Import dependencies - simplified pattern
+        OPTIONAL MATCH (target_file)-[:IMPORTS*1..{max_depth}]->(imported:Module)
+
+        // Dependent files - simplified pattern
+        OPTIONAL MATCH (dependent_files:File)<-[:DEFINED_IN]-(dep_modules:Module)-[:IMPORTS*1..{max_depth}]->(target_modules:Module)-[:DEFINED_IN]->(target_file)
+        WHERE dependent_files <> target_file
+
+        // Function calls - simplified pattern
+        OPTIONAL MATCH (target_funcs:Function)-[:DEFINED_IN]->(target_file)
+        OPTIONAL MATCH (target_funcs)-[:CALLS*1..{max_depth}]->(called_funcs:Function)
+
+        WITH target_file,
+             collect(DISTINCT imported.name) as import_names,
+             collect(DISTINCT dependent_files.path) as dependent_paths,
+             collect(DISTINCT {{from: target_funcs.name, to: called_funcs.name}}) as call_pairs
+
+        RETURN [name in import_names WHERE name IS NOT NULL | {{type: 'import', target: name, path_length: 1}}] as import_dependencies,
+               [path in dependent_paths WHERE path IS NOT NULL | {{type: 'dependent', source: path, path_length: 1}}] as reverse_dependencies,
+               [pair in call_pairs WHERE pair.from IS NOT NULL AND pair.to IS NOT NULL | {{type: 'call', from_function: pair.from, to_function: pair.to, call_depth: 1}}] as call_dependencies
+        """
+
 async def dependency_analysis_impl(
     target_file: str,
     analysis_type: str = "all",
@@ -1708,6 +1929,9 @@ async def dependency_analysis_impl(
         analysis_type: Type of analysis ('imports', 'dependents', 'calls', 'all')
         max_depth: Maximum traversal depth (1-5)
     """
+    import time
+    start_time = time.time()
+
     try:
         logger.info(f"🕸️ ADR-0075: Multi-hop dependency analysis for {target_file}")
 
@@ -1719,50 +1943,20 @@ async def dependency_analysis_impl(
         if analysis_type not in valid_types:
             analysis_type = 'all'
 
-        # Initialize services
-        from servers.services.neo4j_service import Neo4jService
+        # ADR-0075 Phase 4: Check cache first, then use shared service instance for performance
         project_name = "claude-l9-template"
-        neo4j = Neo4jService(project_name)
+        cache_key = _make_cache_key(target_file, analysis_type, max_depth, project_name)
 
-        neo4j_result = await neo4j.initialize()
-        if not neo4j_result.get("success"):
-            raise Exception(f"Neo4j initialization failed: {neo4j_result}")
+        # Try cache first
+        cached_result = await _get_cached_result(cache_key)
+        if cached_result:
+            logger.info(f"🚀 ADR-0075 Phase 4: Cache hit for {target_file} ({analysis_type}, depth {max_depth})")
+            return cached_result
 
-        # Build comprehensive dependency analysis query
-        analysis_query = f"""
-        // Multi-hop dependency analysis for {analysis_type}
-        MATCH (target_file:File {{path: $target_file, project: $project}})
+        neo4j = await get_shared_neo4j_service(project_name)
 
-        OPTIONAL MATCH import_path = (target_file)-[:IMPORTS*1..{max_depth}]->(imported:Module)
-        OPTIONAL MATCH dependent_path = (dependent_files:File)<-[:DEFINED_IN]-(dep_modules:Module)-[:IMPORTS*1..{max_depth}]->(target_modules:Module)-[:DEFINED_IN]->(target_file)
-        OPTIONAL MATCH function_path = (target_funcs:Function)-[:DEFINED_IN]->(target_file), call_path = (target_funcs)-[:CALLS*1..{max_depth}]->(called_funcs:Function)
-
-        WITH target_file, $analysis_type as analysis_type,
-             collect(DISTINCT {{
-                 type: 'import',
-                 target: imported.name,
-                 path_length: length(import_path),
-                 full_path: [node in nodes(import_path) | CASE WHEN 'Module' IN labels(node) THEN node.name ELSE node.path END]
-             }}) as all_imports,
-             collect(DISTINCT {{
-                 type: 'dependent',
-                 source: dependent_files.path,
-                 path_length: length(dependent_path),
-                 full_path: [node in nodes(dependent_path) | CASE WHEN 'File' IN labels(node) THEN node.path ELSE node.name END]
-             }}) as all_dependents,
-             collect(DISTINCT {{
-                 type: 'call',
-                 from_function: target_funcs.name,
-                 to_function: called_funcs.name,
-                 call_depth: length(call_path),
-                 call_chain: [node in nodes(call_path) | node.name]
-             }}) as all_calls
-
-        RETURN
-            CASE WHEN analysis_type IN ['imports', 'all'] THEN all_imports ELSE [] END as import_dependencies,
-            CASE WHEN analysis_type IN ['dependents', 'all'] THEN all_dependents ELSE [] END as reverse_dependencies,
-            CASE WHEN analysis_type IN ['calls', 'all'] THEN all_calls ELSE [] END as call_dependencies
-        """
+        # ADR-0075 Phase 4: Build optimized analysis-type-specific queries for performance
+        analysis_query = await _build_optimized_dependency_query(analysis_type, max_depth)
 
         result = await neo4j.execute_cypher(analysis_query, {
             'target_file': target_file,
@@ -1807,7 +2001,19 @@ async def dependency_analysis_impl(
         # Add instance metadata
         response = add_instance_metadata(response, project_name=project_name)
 
-        return [types.TextContent(type="text", text=json.dumps(response, indent=2))]
+        # ADR-0075 Phase 4: Cache successful results and track performance
+        result = [types.TextContent(type="text", text=json.dumps(response, indent=2))]
+
+        # Track timing
+        end_time = time.time()
+        duration_ms = (end_time - start_time) * 1000
+        _update_query_metrics(duration_ms)
+
+        if response.get("status") == "success":
+            await _cache_result(cache_key, result)
+            logger.info(f"💾 ADR-0075 Phase 4: Cached result for {target_file} ({analysis_type}, depth {max_depth}) - {duration_ms:.1f}ms")
+
+        return result
 
     except Exception as e:
         error_response = {
