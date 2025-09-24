@@ -1137,7 +1137,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 try:
                     # Check if we're using Tree-sitter or AST fallback
                     if hasattr(self.tree_sitter_extractor, "extract_symbols_from_file"):
-                        # Tree-sitter path
+                        # Tree-sitter path - ADR-0093: Extract both symbols and relationships
                         symbols_result = (
                             await self.tree_sitter_extractor.extract_symbols_from_file(
                                 file_path, content, timeout=5.0
@@ -1145,8 +1145,9 @@ class IncrementalIndexer(FileSystemEventHandler):
                         )
                         if symbols_result and not symbols_result.get("error"):
                             symbols_data = symbols_result.get("symbols", [])
+                            relationships_data = symbols_result.get("relationships", [])  # ADR-0093: Get relationships
                             logger.info(
-                                f"✓ Tree-sitter extracted {len(symbols_data)} symbols from {file_path}"
+                                f"✓ Tree-sitter extracted {len(symbols_data)} symbols and {len(relationships_data or [])} relationships from {file_path}"
                             )
                     else:
                         # AST-based fallback (SymbolExtractorFactory)
@@ -1480,6 +1481,8 @@ class IncrementalIndexer(FileSystemEventHandler):
                         )
 
                         # Create Variable and USES relationship
+                        # ADR-0093: Support both field naming conventions from tree-sitter
+                        var_name = rel.get("variable_name") or rel.get("to_variable")
                         uses_cypher = """
                         MERGE (v:Variable {name: $var_name, project: $project})
                         WITH v
@@ -1489,7 +1492,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                         result = await self.container.neo4j.execute_cypher(
                             uses_cypher,
                             {
-                                "var_name": rel.get("variable_name"),
+                                "var_name": var_name,
                                 "func_name": rel.get("from_function"),
                                 "project": self.project_name,
                                 "file_path": str(relative_path),

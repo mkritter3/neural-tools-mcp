@@ -137,19 +137,28 @@ class TreeSitterExtractor:
         root = tree.root_node
         
         symbols = []
-        
+        relationships = []
+
         if ext == '.py':
-            symbols = self._extract_python_symbols(root, content, file_path)
+            # ADR-0093: Extract both symbols and relationships from Python
+            result = self._extract_python_symbols(root, content, file_path)
+            if isinstance(result, dict):
+                symbols = result.get('symbols', [])
+                relationships = result.get('relationships', [])
+            else:
+                symbols = result  # Backwards compatibility
         elif ext in ['.js', '.jsx']:
             symbols = self._extract_javascript_symbols(root, content, file_path)
         elif ext in ['.ts', '.tsx']:
             symbols = self._extract_typescript_symbols(root, content, file_path)
-        
+
         return {
             'symbols': symbols,
+            'relationships': relationships,  # ADR-0093: Include relationships
             'error': None,
             'stats': {
                 'symbol_count': len(symbols),
+                'relationship_count': len(relationships),
                 'language': ext.lstrip('.')
             }
         }
@@ -273,8 +282,11 @@ class TreeSitterExtractor:
             }
         }
 
-        return symbols  # Keep existing API, but store relationships for future use
-        # TODO: Update callers to use relationships
+        # ADR-0093: Return both symbols and relationships for GraphRAG
+        return {
+            'symbols': symbols,
+            'relationships': relationships
+        }
     
     def _extract_javascript_symbols(
         self, 
