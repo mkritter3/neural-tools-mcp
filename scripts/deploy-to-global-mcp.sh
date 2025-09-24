@@ -166,6 +166,8 @@ run_local_validation() {
     CRITICAL_TESTS=(
         "test_indexer_mount_validation.py"     # ADR-64: Unit tests for mount validation
         "integration/test_indexer_mount_validation.py"  # ADR-64: Integration tests
+        "test_contract_validation.py"          # ADR-96: Schema contract validation
+        "pre_deployment_validation.py"         # ADR-96: Comprehensive pre-deployment checks
     )
 
     # Track test results

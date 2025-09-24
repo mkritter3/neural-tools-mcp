@@ -5,7 +5,7 @@ ADR-0096: Implements the VectorCypherRetriever pattern
 
 from typing import List, Dict, Any, Optional
 import logging
-from chunk_schema import ChunkSchema
+from .chunk_schema import ChunkSchema
 
 logger = logging.getLogger(__name__)
 

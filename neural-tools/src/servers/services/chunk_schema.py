@@ -60,6 +60,20 @@ class ChunkSchema:
             'size': self.size or len(self.content)
         }
 
+    def to_dict(self) -> dict:
+        """Convert to regular dictionary for JSON serialization"""
+        return {
+            'chunk_id': self.chunk_id,
+            'file_path': self.file_path,
+            'content': self.content,
+            'embedding': self.embedding,
+            'project': self.project,
+            'created_at': self.created_at,
+            'start_line': self.start_line,
+            'end_line': self.end_line,
+            'size': self.size
+        }
+
     @classmethod
     def from_neo4j_node(cls, node: dict) -> 'ChunkSchema':
         """Create from Neo4j node result"""
