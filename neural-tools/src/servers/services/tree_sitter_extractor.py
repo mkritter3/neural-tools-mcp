@@ -244,6 +244,14 @@ class TreeSitterExtractor:
                     # ADR-0075: Extract method call relationships using Context7 best practices
                     method_calls = self._extract_method_calls(node, source, func_name, parent_class)
                     relationships.extend(method_calls)
+
+                    # ADR-0090 Phase 3: Extract USES relationships (variables/attributes)
+                    uses_rels = self._extract_uses_relationships(node, source, func_name, parent_class)
+                    relationships.extend(uses_rels)
+
+                    # ADR-0090 Phase 3: Extract INSTANTIATES relationships (class instantiation)
+                    instantiates_rels = self._extract_instantiates_relationships(node, source, func_name, parent_class)
+                    relationships.extend(instantiates_rels)
             
             # Recursive traversal
             for child in node.children:
@@ -624,4 +632,104 @@ class TreeSitterExtractor:
                             'relationship_id': f"{class_name}_inherits_{parent_class}"
                         })
 
+        return relationships
+
+    def _extract_uses_relationships(self, func_node: Node, source: str, func_name: str, parent_class: Optional[str]) -> List[Dict[str, Any]]:
+        """ADR-0090 Phase 3: Extract USES relationships for variables and attributes"""
+        relationships = []
+        used_variables = set()
+
+        def find_uses(node: Node):
+            # Look for variable/attribute usage
+            if node.type == 'identifier':
+                var_name = source[node.start_byte:node.end_byte]
+                # Skip self, common builtins, and function names
+                if var_name not in ['self', 'cls', 'super', 'True', 'False', 'None', func_name]:
+                    if var_name not in used_variables:
+                        used_variables.add(var_name)
+                        relationships.append({
+                            'type': 'USES',
+                            'from_function': func_name,
+                            'from_class': parent_class,
+                            'to_variable': var_name,
+                            'line': node.start_point[0] + 1,
+                            'relationship_id': f"{func_name}_uses_{var_name}_{node.start_point[0] + 1}"
+                        })
+
+            elif node.type == 'attribute':
+                # Extract object.attribute patterns
+                attr_text = source[node.start_byte:node.end_byte]
+                if '.' in attr_text:
+                    parts = attr_text.split('.')
+                    if len(parts) == 2 and parts[0] not in ['self', 'cls']:
+                        obj_name, attr_name = parts
+                        if obj_name not in used_variables:
+                            used_variables.add(obj_name)
+                            relationships.append({
+                                'type': 'USES',
+                                'from_function': func_name,
+                                'from_class': parent_class,
+                                'to_variable': obj_name,
+                                'to_attribute': attr_name,
+                                'line': node.start_point[0] + 1,
+                                'relationship_id': f"{func_name}_uses_{obj_name}_{attr_name}_{node.start_point[0] + 1}"
+                            })
+
+            # Recursive search
+            for child in node.children:
+                find_uses(child)
+
+        find_uses(func_node)
+        return relationships
+
+    def _extract_instantiates_relationships(self, func_node: Node, source: str, func_name: str, parent_class: Optional[str]) -> List[Dict[str, Any]]:
+        """ADR-0090 Phase 3: Extract INSTANTIATES relationships for class instantiation"""
+        relationships = []
+
+        def find_instantiations(node: Node):
+            if node.type == 'call':
+                # Check if this is a class instantiation
+                function_node = None
+                for child in node.children:
+                    if child.type == 'identifier':
+                        function_node = child
+                        break
+                    elif child.type == 'attribute':
+                        # Handle module.Class() pattern
+                        attr_text = source[child.start_byte:child.end_byte]
+                        if '.' in attr_text:
+                            parts = attr_text.split('.')
+                            if len(parts) >= 2:
+                                class_name = parts[-1]
+                                # Check if it starts with uppercase (likely a class)
+                                if class_name and class_name[0].isupper():
+                                    relationships.append({
+                                        'type': 'INSTANTIATES',
+                                        'from_function': func_name,
+                                        'from_class': parent_class,
+                                        'to_class': class_name,
+                                        'module': '.'.join(parts[:-1]),
+                                        'line': node.start_point[0] + 1,
+                                        'relationship_id': f"{func_name}_instantiates_{class_name}_{node.start_point[0] + 1}"
+                                    })
+                        break
+
+                if function_node:
+                    class_name = source[function_node.start_byte:function_node.end_byte]
+                    # Check if it starts with uppercase (likely a class)
+                    if class_name and class_name[0].isupper():
+                        relationships.append({
+                            'type': 'INSTANTIATES',
+                            'from_function': func_name,
+                            'from_class': parent_class,
+                            'to_class': class_name,
+                            'line': node.start_point[0] + 1,
+                            'relationship_id': f"{func_name}_instantiates_{class_name}_{node.start_point[0] + 1}"
+                        })
+
+            # Recursive search
+            for child in node.children:
+                find_instantiations(child)
+
+        find_instantiations(func_node)
         return relationships
