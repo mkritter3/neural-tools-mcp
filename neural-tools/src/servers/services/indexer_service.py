@@ -1235,109 +1235,9 @@ class IncrementalIndexer(FileSystemEventHandler):
             file_hash = hashlib.sha256(content.encode()).hexdigest()
             metadata = await self._extract_metadata(file_path, content)
 
-            # Build single atomic Cypher transaction
-            cypher = """
-            // 1. Create or update File node
-            MERGE (f:File {path: $path, project: $project})
-            SET f += {
-                name: $name,
-                content_hash: $file_hash,
-                size: $size,
-                created_time: datetime(),
-                updated_time: datetime(),
-                indexed_time: datetime(),
-                project: $project,
-                file_type: $file_type,
-                language: $language,
-                is_test: $is_test,
-                is_config: $is_config,
-                is_docs: $is_docs,
-                complexity_score: $complexity_score,
-                importance: $importance
-            }
-
-            // 2. Remove old chunks
-            WITH f
-            MATCH (f)-[:HAS_CHUNK]->(old_chunk:Chunk)
-            DETACH DELETE old_chunk
-
-            // 3. Create new chunks with embeddings (ADR-0078: Simplified approach)
-            WITH f
-            UNWIND CASE
-                WHEN $chunks_data IS NULL OR size($chunks_data) = 0
-                THEN []
-                ELSE $chunks_data
-            END AS chunk_data
-            CREATE (c:Chunk {
-                chunk_id: chunk_data.chunk_id,
-                content: chunk_data.content,
-                start_line: chunk_data.start_line,
-                end_line: chunk_data.end_line,
-                size: chunk_data.size,
-                project: $project,
-                embedding: chunk_data.embedding,  // Store vector directly in Neo4j
-                created_time: datetime()
-            })
-            CREATE (f)-[:HAS_CHUNK]->(c)
-
-            // 4. Create symbol nodes if provided (ADR-0078: Simplified)
-            WITH f, collect(c) as chunks
-            UNWIND CASE
-                WHEN $symbols_data IS NULL OR size($symbols_data) = 0
-                THEN []
-                ELSE $symbols_data
-            END AS symbol
-
-            // Create appropriate node type based on symbol.type
-            MERGE (node:Symbol {
-                name: symbol.name,
-                type: symbol.type,
-                project: $project,
-                file_path: $path
-            })
-            SET node.start_line = symbol.start_line,
-                node.end_line = symbol.end_line
-
-            // Also create specific node types for functions and classes
-            FOREACH (ignore IN CASE WHEN symbol.type = 'function' THEN [1] ELSE [] END |
-                MERGE (func:Function {name: symbol.name, project: $project, file_path: $path})
-                SET func.start_line = symbol.start_line,
-                    func.end_line = symbol.end_line
-            )
-            FOREACH (ignore IN CASE WHEN symbol.type = 'class' THEN [1] ELSE [] END |
-                MERGE (cls:Class {name: symbol.name, project: $project, file_path: $path})
-                SET cls.start_line = symbol.start_line,
-                    cls.end_line = symbol.end_line
-            )
-            CREATE (f)-[:HAS_SYMBOL]->(node)
-
-            // 5. Create relationships (ADR-0093: USES and INSTANTIATES)
-            WITH f, chunks
-            UNWIND CASE
-                WHEN $uses_relationships IS NULL OR size($uses_relationships) = 0
-                THEN []
-                ELSE $uses_relationships
-            END AS uses_rel
-            MATCH (func:Function {name: uses_rel.from_function, project: $project, file_path: $path})
-            MERGE (var:Variable {name: uses_rel.variable_name, project: $project})
-            MERGE (func)-[:USES {line: uses_rel.line}]->(var)
-
-            WITH f, chunks
-            UNWIND CASE
-                WHEN $instantiates_relationships IS NULL OR size($instantiates_relationships) = 0
-                THEN []
-                ELSE $instantiates_relationships
-            END AS inst_rel
-            MATCH (func:Function {name: inst_rel.from_function, project: $project, file_path: $path})
-            MATCH (cls:Class {name: inst_rel.class_name, project: $project})
-            MERGE (func)-[:INSTANTIATES {line: inst_rel.line}]->(cls)
-
-            WITH f, chunks
-            RETURN f.path as file_path, size(chunks) as chunks_created,
-                   $symbols_count as symbols_created,
-                   $uses_count as uses_relationships_created,
-                   $instantiates_count as instantiates_relationships_created
-            """
+            # ADR-0089: Using batch processing implementation instead of single atomic transaction
+            # The unified cypher query was too large for Neo4j Bolt protocol limits
+            # Processing is done in batches below: file -> symbols -> relationships -> chunks
 
             # ADR-0078: Debug chunk preparation pipeline
             logger.info("🔍 ADR-0078 Pipeline Debug:")
@@ -1426,60 +1326,16 @@ class IncrementalIndexer(FileSystemEventHandler):
                         f"  - embedding sample: {first_chunk.get('embedding')[:3]}"
                     )
 
-            params = {
-                "path": str(relative_path),
-                "project": self.project_name,
-                "name": relative_path.name,
-                "file_hash": file_hash,
-                "size": len(content),
-                "file_type": metadata.get("file_type", "unknown"),
-                "language": metadata.get("language", "unknown"),
-                "is_test": metadata.get("is_test", False),
-                "is_config": metadata.get("is_config", False),
-                "is_docs": metadata.get("is_docs", False),
-                "complexity_score": metadata.get("complexity_score", 0),
-                "importance": metadata.get("importance", 1.0),
-                "chunks_data": chunks_data,
-                "symbols_data": symbols_data,
-                # ADR-0093: Process and add relationships data
-                "uses_relationships": [],
-                "instantiates_relationships": [],
-                "symbols_count": len(symbols_data) if symbols_data else 0,
-                "uses_count": 0,
-                "instantiates_count": 0,
-            }
-
-            # ADR-0093: Process relationships_data into separate lists
+            # ADR-0093: Log relationship counts if present (used later in batch processing)
             if relationships_data:
-                uses_rels = []
-                instantiates_rels = []
-                for rel in relationships_data:
-                    if rel.get("type") == "USES":
-                        uses_rels.append(
-                            {
-                                "from_function": rel.get("from_function"),
-                                "variable_name": rel.get("variable_name"),
-                                "line": rel.get("line", 0),
-                            }
-                        )
-                    elif rel.get("type") == "INSTANTIATES":
-                        instantiates_rels.append(
-                            {
-                                "from_function": rel.get("from_function"),
-                                "class_name": rel.get(
-                                    "class_name", rel.get("to_class")
-                                ),  # Handle both field names
-                                "line": rel.get("line", 0),
-                            }
-                        )
-
-                params["uses_relationships"] = uses_rels
-                params["instantiates_relationships"] = instantiates_rels
-                params["uses_count"] = len(uses_rels)
-                params["instantiates_count"] = len(instantiates_rels)
-
+                uses_count = sum(
+                    1 for r in relationships_data if r.get("type") == "USES"
+                )
+                inst_count = sum(
+                    1 for r in relationships_data if r.get("type") == "INSTANTIATES"
+                )
                 logger.info(
-                    f"📊 ADR-0093: Prepared {len(uses_rels)} USES and {len(instantiates_rels)} INSTANTIATES relationships"
+                    f"📊 ADR-0093: Processing {uses_count} USES and {inst_count} INSTANTIATES relationships"
                 )
 
             # ADR-0078: Enhanced debugging and validation
