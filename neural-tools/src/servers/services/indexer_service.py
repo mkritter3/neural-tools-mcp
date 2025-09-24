@@ -496,7 +496,7 @@ class IncrementalIndexer(FileSystemEventHandler):
 
             # Create executor with existing driver
             executor = Executor(
-                self.container.neo4j.driver,
+                self.container.neo4j.client,  # Neo4j driver is stored as 'client'
                 migrations_path=migrations_path,
                 project="graphrag"  # Use project namespace for migrations
             )
