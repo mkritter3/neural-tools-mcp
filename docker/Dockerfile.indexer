@@ -28,9 +28,18 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir fastapi uvicorn[standard] prometheus-client
 
-# Copy source code
-# Force rebuild: Sep 13 2025 v3
+# Copy source code with cache busting
+# ADR-0093: Fixed tree-sitter and relationship storage
+ARG CACHE_BUST=1
 COPY neural-tools/src/ ./src/
+
+# Validate tree-sitter parsers work in container
+RUN python -c "import tree_sitter_python as tsp; from tree_sitter import Language, Parser; \
+    lang = Language(tsp.language()); parser = Parser(lang); \
+    print('✅ Tree-sitter Python parser OK')" && \
+    python -c "import tree_sitter_javascript as tsjs; from tree_sitter import Language, Parser; \
+    lang = Language(tsjs.language()); parser = Parser(lang); \
+    print('✅ Tree-sitter JavaScript parser OK')"
 
 # Create directories with proper ownership
 RUN mkdir -p /app/state /app/logs /app/tmp /app/config && \
