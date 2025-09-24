@@ -592,18 +592,23 @@ class IndexerOrchestrator:
             environment={
                 'PROJECT_NAME': project_name,
                 'PROJECT_PATH': '/workspace',
-                # Use host.docker.internal for container->host communication
-                'NEO4J_URI': os.environ.get('NEO4J_URI', 'bolt://host.docker.internal:47687'),
+                # Use container name when on same network (l9-graphrag-network)
+                # Don't inherit from host environment - always use container name
+                'NEO4J_URI': 'bolt://claude-l9-template-neo4j-1:7687',
                 'NEO4J_USERNAME': os.environ.get('NEO4J_USERNAME', 'neo4j'),
                 'NEO4J_PASSWORD': os.environ.get('NEO4J_PASSWORD', 'graphrag-password'),
                 'QDRANT_HOST': os.environ.get('QDRANT_HOST', 'host.docker.internal'),
                 'QDRANT_PORT': os.environ.get('QDRANT_PORT', '46333'),
-                'REDIS_CACHE_HOST': os.environ.get('REDIS_CACHE_HOST', 'host.docker.internal'),
-                'REDIS_CACHE_PORT': os.environ.get('REDIS_CACHE_PORT', '46379'),
-                'REDIS_QUEUE_HOST': os.environ.get('REDIS_QUEUE_HOST', 'host.docker.internal'),
-                'REDIS_QUEUE_PORT': os.environ.get('REDIS_QUEUE_PORT', '46380'),
-                'EMBEDDING_SERVICE_HOST': os.environ.get('EMBEDDING_SERVICE_HOST', 'host.docker.internal'),
-                'EMBEDDING_SERVICE_PORT': os.environ.get('EMBEDDING_SERVICE_PORT', '48000'),
+                # Use container names since Redis is on same network (l9-graphrag-network)
+                # Don't use os.environ.get - always use container names for container-to-container communication
+                'REDIS_CACHE_HOST': 'claude-l9-template-redis-cache-1',
+                'REDIS_CACHE_PORT': '6379',  # Internal port
+                'REDIS_QUEUE_HOST': 'claude-l9-template-redis-queue-1',
+                'REDIS_QUEUE_PORT': '6379',  # Internal port
+                # Use container name since Nomic is on same network (l9-graphrag-network)
+                # Don't use os.environ.get - always use container name for container-to-container communication
+                'EMBEDDING_SERVICE_HOST': 'neural-flow-nomic-v2-production-optimized',
+                'EMBEDDING_SERVICE_PORT': '8000',  # Internal port, not exposed port
                 # Performance tuning
                 'BATCH_SIZE': '10',
                 'DEBOUNCE_INTERVAL': '2.0',
