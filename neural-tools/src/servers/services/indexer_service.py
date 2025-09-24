@@ -30,6 +30,7 @@ sys.path.insert(0, str(services_dir))  # Enables: from service_container import 
 
 from service_container import ServiceContainer
 from collection_config import get_collection_manager, CollectionType
+from tree_sitter_extractor import TreeSitterExtractor
 
 # CRITICAL: DO NOT REMOVE - Required for config imports (see ADR-0056)
 sys.path.insert(0, str(services_dir.parent))  # Enables: from config.collection_naming import ...
@@ -198,14 +199,32 @@ class IncrementalIndexer(FileSystemEventHandler):
         
         # Initialize code parser for structure extraction (ADR 0017)
         self.code_parser = None
-        self.tree_sitter_extractor = None  # Always initialize this attribute
-        
+        # Initialize Tree-sitter extractor for symbol extraction (ADR-0090)
+        try:
+            self.tree_sitter_extractor = TreeSitterExtractor()
+            logger.info("✓ Tree-sitter extractor initialized successfully")
+        except Exception as e:
+            logger.warning(f"Tree-sitter initialization failed, symbol extraction disabled: {e}")
+            self.tree_sitter_extractor = None
+
         if STRUCTURE_EXTRACTION_ENABLED:
             try:
                 self.code_parser = CodeParser()
                 logger.info("Code parser initialized for GraphRAG structure extraction")
+
+                # ADR-0090: Initialize Tree-sitter extractor for symbol extraction
+                # Fall back to AST-based extraction if Tree-sitter fails
+                try:
+                    from tree_sitter_extractor import TreeSitterExtractor
+                    self.tree_sitter_extractor = TreeSitterExtractor()
+                    logger.info("✅ Tree-sitter extractor initialized for symbol extraction")
+                except ImportError as ie:
+                    logger.warning(f"Tree-sitter not available, using AST-based extraction: {ie}")
+                    from symbol_extractor import SymbolExtractorFactory
+                    self.tree_sitter_extractor = SymbolExtractorFactory  # Use as fallback
+                    logger.info("✅ AST-based symbol extractor initialized as fallback")
             except Exception as e:
-                logger.warning(f"Failed to initialize tree-sitter extractor: {e}")
+                logger.warning(f"Failed to initialize code extraction: {e}")
                 self.code_parser = None
         
         # Initialize metadata extractors (ADR-0031)
@@ -891,14 +910,25 @@ class IncrementalIndexer(FileSystemEventHandler):
 
             # 2. Extract symbols for graph enrichment
             symbols_data = None
+            relationships_data = None
             if self.tree_sitter_extractor and str(file_path).endswith(('.py', '.js', '.jsx', '.ts', '.tsx')):
                 try:
-                    symbols_result = await self.tree_sitter_extractor.extract_symbols_from_file(
-                        file_path, content, timeout=5.0
-                    )
-                    if symbols_result and not symbols_result.get('error'):
-                        symbols_data = symbols_result.get('symbols', [])
-                        logger.info(f"✓ Extracted {len(symbols_data)} symbols from {file_path}")
+                    # Check if we're using Tree-sitter or AST fallback
+                    if hasattr(self.tree_sitter_extractor, 'extract_symbols_from_file'):
+                        # Tree-sitter path
+                        symbols_result = await self.tree_sitter_extractor.extract_symbols_from_file(
+                            file_path, content, timeout=5.0
+                        )
+                        if symbols_result and not symbols_result.get('error'):
+                            symbols_data = symbols_result.get('symbols', [])
+                            logger.info(f"✓ Tree-sitter extracted {len(symbols_data)} symbols from {file_path}")
+                    else:
+                        # AST-based fallback (SymbolExtractorFactory)
+                        result = self.tree_sitter_extractor.extract(content, str(file_path))
+                        symbols_data = result.get('symbols', [])
+                        relationships_data = result.get('relationships', [])
+                        if symbols_data:
+                            logger.info(f"✓ AST extracted {len(symbols_data)} symbols and {len(relationships_data or [])} relationships from {file_path}")
                 except Exception as e:
                     logger.warning(f"Symbol extraction failed for {file_path}: {e}")
 
