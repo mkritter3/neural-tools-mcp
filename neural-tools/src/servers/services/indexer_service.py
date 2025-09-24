@@ -494,23 +494,20 @@ class IncrementalIndexer(FileSystemEventHandler):
 
             logger.info(f"Applying migrations from: {migrations_path}")
 
-            # Create executor with existing driver
+            # Create executor with existing driver (expects Path object)
             executor = Executor(
                 self.container.neo4j.client,  # Neo4j driver is stored as 'client'
-                migrations_path=migrations_path,
-                project="graphrag"  # Use project namespace for migrations
+                migrations_path=migrations_path  # Pass Path object directly
             )
 
-            # Get pending migrations
-            pending = executor.pending_migrations()
-            if pending:
-                logger.info(f"Found {len(pending)} pending migrations: {[m.version for m in pending]}")
+            # Apply migrations directly (executor doesn't have pending_migrations method)
+            logger.info("Executing database migrations...")
+            result = executor.migrate()
 
-                # Apply migrations
-                executor.migrate()
-                logger.info("✅ Schema migrations applied successfully")
+            if result:
+                logger.info(f"✅ Schema migrations applied: {result}")
             else:
-                logger.info("No pending migrations")
+                logger.info("All migrations already applied")
 
         except ImportError:
             logger.warning("neo4j-python-migrations not installed, skipping migrations")
