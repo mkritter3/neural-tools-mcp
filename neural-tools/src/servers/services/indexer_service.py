@@ -1503,10 +1503,15 @@ class IncrementalIndexer(FileSystemEventHandler):
                             uses_count += 1
 
                     elif rel.get("type") == "INSTANTIATES" and rel.get("from_function"):
-                        # Create INSTANTIATES relationship (Class should already exist from symbols)
+                        # ADR-0094 Quick Fix: Support both Symbol and Class nodes
+                        # This handles the schema mismatch where symbols are stored as :Symbol {type:'class'}
+                        # but relationships expect :Class nodes
                         inst_cypher = """
                         MATCH (f:Function {name: $func_name, project: $project, file_path: $file_path})
-                        MATCH (c:Class {name: $class_name, project: $project})
+                        MATCH (c)
+                        WHERE (c:Class OR (c:Symbol AND c.type = 'class'))
+                          AND c.name = $class_name
+                          AND c.project = $project
                         MERGE (f)-[:INSTANTIATES {line: $line}]->(c)
                         """
                         result = await self.container.neo4j.execute_cypher(
