@@ -68,7 +68,16 @@ class ProjectContextManager:
         self.container = None  # Store ServiceContainer here (Gemini: correct pattern)
         self.container_registry: Dict[str, int] = {}  # Track container->port mappings (ADR-0044)
         self._load_registry()
-        logger.info("🎯 ProjectContextManager initialized")
+
+        # Check for CLAUDE_PROJECT_DIR immediately on startup
+        import os
+        if claude_dir := os.getenv("CLAUDE_PROJECT_DIR"):
+            logger.info(f"🎯 ProjectContextManager initialized with CLAUDE_PROJECT_DIR: {claude_dir}")
+            # Store for later async initialization
+            self._initial_project_dir = claude_dir
+        else:
+            self._initial_project_dir = None
+            logger.info("🎯 ProjectContextManager initialized (no CLAUDE_PROJECT_DIR set)")
     
     def set_instance_id(self, instance_id: str):
         """Set the MCP instance ID for logging"""
@@ -272,19 +281,35 @@ class ProjectContextManager:
     async def detect_project(self) -> Dict:
         """
         Auto-detect active project using heuristics.
-        
+
         Detection strategies:
-        1. Current working directory (highest priority for MCP)
+        0. CLAUDE_PROJECT_DIR environment variable (highest priority - set by Claude)
+        1. Current working directory (only if not in mcp-servers)
         2. Most recently accessed project
         3. Project containing recently accessed files
         4. Scan common directories for projects
         5. Fall back to "default"
         """
-        # Strategy 0: Always try current working directory first (critical for MCP)
+        # Strategy 0: Check CLAUDE_PROJECT_DIR first - Claude sets this when launching MCP
+        import os
+        if claude_dir := os.getenv("CLAUDE_PROJECT_DIR"):
+            logger.info(f"🎯 Using CLAUDE_PROJECT_DIR: {claude_dir}")
+            try:
+                # Set this as the active project
+                result = await self.set_project(claude_dir)
+                result["method"] = "claude_project_dir"
+                result["confidence"] = 1.0  # Highest confidence - directly from Claude
+                return result
+            except Exception as e:
+                logger.warning(f"Failed to use CLAUDE_PROJECT_DIR: {e}")
+
+        # Strategy 1: Try current working directory (but skip if we're in MCP server location)
         current_dir = Path.cwd()
-        try:
-            current_project_name = await self._detect_project_name(current_dir)
-            if current_project_name and current_project_name != "default":
+        # Skip if we're running from global MCP location
+        if "mcp-servers" not in str(current_dir) and ".claude" not in str(current_dir):
+            try:
+                current_project_name = await self._detect_project_name(current_dir)
+                if current_project_name and current_project_name != "default":
                 # Update state and registry
                 self.current_project = current_project_name
                 self.current_project_path = current_dir
