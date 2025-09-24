@@ -539,20 +539,36 @@ class IndexerOrchestrator:
             except Exception as e:
                 logger.warning(f"[ADR-0044] Discovery service error: {e}, falling back to direct creation")
 
+        # ADR-0098 Phase 1: Allocate port before container creation
+        # so we can include it in the labels
+        allocated_port = self._allocate_port()
+
         # Create container with unique name and labels
         container_name = self._generate_unique_container_name(project_name)
         container = await self._create_container(
             project_name=project_name,
             container_name=container_name,
-            project_path=project_path
+            project_path=project_path,
+            port=allocated_port  # Pass allocated port
         )
+
+        # Verify the port was used correctly
+        actual_port = container.attrs['HostConfig']['PortBindings']['8080/tcp'][0]['HostPort']
+        if int(actual_port) != allocated_port:
+            logger.warning(f"[ADR-0098] Port mismatch: allocated {allocated_port}, actual {actual_port}")
+            # Release the allocated port if not used
+            self._release_port(allocated_port)
+            allocated_port = int(actual_port)
+            self.allocated_ports.add(allocated_port)
+
+        logger.info(f"[ADR-0098] Container {container_name} using port {allocated_port}")
 
         # Update tracking
         self.active_indexers[project_name] = {
             'container_id': container.id,
             'last_activity': datetime.now(),
             'project_path': project_path,
-            'port': container.attrs['HostConfig']['PortBindings']['8080/tcp'][0]['HostPort']
+            'port': allocated_port
         }
 
         # ADR-0098 Phase 0: Observability - check for state divergence
@@ -602,22 +618,37 @@ class IndexerOrchestrator:
 
         return None
 
-    async def _create_container(self, project_name: str, container_name: str, project_path: str):
+    async def _create_container(self, project_name: str, container_name: str, project_path: str, port: int = None):
         """
         Create a new indexer container with ADR-0060 specifications
+        ADR-0098 Phase 1: Enhanced Docker labels for better observability
         """
-        # Let Docker allocate the port dynamically
-        logger.info(f"[ADR-0060] Creating container {container_name} for project {project_name}")
+        # Use provided port or let Docker allocate
+        if port:
+            logger.info(f"[ADR-0098] Creating container {container_name} for project {project_name} on port {port}")
+        else:
+            logger.info(f"[ADR-0060] Creating container {container_name} for project {project_name} (dynamic port)")
 
         # Detect if this is a test container
         test_patterns = ['test-', 'adr63-', 'adr60-', 'mount-test']
         is_test = any(pattern in project_name for pattern in test_patterns)
 
+        # ADR-0098 Phase 1: Enhanced labels for better state tracking
+        import hashlib
+        project_hash = hashlib.sha256(project_path.encode()).hexdigest()[:12]
+
         labels = {
             'com.l9.managed': 'true',
             'com.l9.project': project_name,
-            'com.l9.created': str(int(time.time()))
+            'com.l9.created': str(int(time.time())),
+            # ADR-0098 Phase 1: Additional metadata
+            'com.l9.project_hash': project_hash,  # Stable ID from path
+            'com.l9.project_path': project_path,  # Full path for reference
         }
+
+        # Add port label if we know it in advance
+        if port:
+            labels['com.l9.port'] = str(port)
 
         # Add test label if this is a test container
         if is_test:
@@ -663,7 +694,7 @@ class IndexerOrchestrator:
                 project_path: {'bind': '/workspace', 'mode': 'ro'}  # Read-only mount
             },
             ports={
-                '8080/tcp': None  # Let Docker allocate port dynamically
+                '8080/tcp': port if port else None  # Use specified port or let Docker allocate
             },
             network='l9-graphrag-network',
             detach=True,
