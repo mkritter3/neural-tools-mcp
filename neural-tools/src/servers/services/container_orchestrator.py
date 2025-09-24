@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Any
 
 import docker
 from docker.models.containers import Container
+import redis
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class ContainerOrchestrator:
         self.session_id = None
         self.accepting_requests = True
         self.health_monitor_task = None
+        self.redis_client = None  # For session counting
 
         # Container configuration
         self.essential_containers = [
@@ -100,6 +102,13 @@ class ContainerOrchestrator:
         """
         logger.info("🚀 Container Orchestrator initializing...")
 
+        # Check Docker daemon is accessible
+        try:
+            self.docker_client.ping()
+        except Exception as e:
+            logger.error(f"❌ Docker daemon not accessible: {e}")
+            raise RuntimeError("Docker daemon must be running for neural-tools to work")
+
         # 1. Detect project using CLAUDE_PROJECT_DIR
         self.project_path = os.getenv("CLAUDE_PROJECT_DIR")
         if not self.project_path:
@@ -111,6 +120,36 @@ class ContainerOrchestrator:
 
         logger.info(f"📁 Project: {self.project_path}")
         logger.info(f"🔑 Session: {self.session_id}")
+
+        # Initialize Redis for session counting
+        try:
+            # Try without password first (common for local dev)
+            self.redis_client = redis.Redis(
+                host='localhost',
+                port=46379,
+                decode_responses=True,
+                socket_connect_timeout=2
+            )
+            self.redis_client.ping()
+            logger.info("✅ Redis connected for session management")
+        except redis.AuthenticationError:
+            # Try with password if auth required
+            try:
+                self.redis_client = redis.Redis(
+                    host='localhost',
+                    port=46379,
+                    password='cache-password',
+                    decode_responses=True,
+                    socket_connect_timeout=2
+                )
+                self.redis_client.ping()
+                logger.info("✅ Redis connected with auth for session management")
+            except Exception as e:
+                logger.warning(f"⚠️ Redis not available for session counting: {e}")
+                self.redis_client = None
+        except Exception as e:
+            logger.warning(f"⚠️ Redis not available for session counting: {e}")
+            self.redis_client = None
 
         # 2. Start essential containers proactively
         results = {}
@@ -203,7 +242,7 @@ class ContainerOrchestrator:
             internal_port = self._get_internal_port(config["name"])
             port_bindings[f"{internal_port}/tcp"] = config["port"]
 
-        # Start container
+        # Start container with restart policy for auto-recovery
         try:
             container = self.docker_client.containers.run(
                 config["image"],
@@ -212,21 +251,35 @@ class ContainerOrchestrator:
                 ports=port_bindings,
                 environment=self._get_environment(config["name"]),
                 healthcheck=config.get("healthcheck"),
+                restart_policy={"Name": "unless-stopped"},  # Docker handles crashes
                 detach=True,
                 remove=False,
                 network_mode="bridge"
             )
             return container
         except docker.errors.APIError as e:
+            # Handle container name conflict (race condition)
+            if e.response and e.response.status_code == 409 and "is already in use by container" in str(e):
+                logger.info(f"Container {container_name} was created by another session. Re-fetching.")
+                return self.docker_client.containers.get(container_name)
+
+            # Handle port already allocated - find and adopt the real container
             if "port is already allocated" in str(e):
-                logger.warning(f"Port {config['port']} already in use, assuming service is running")
-                # Return a dummy container object that won't break the flow
-                class DummyContainer:
-                    id = f"existing-{config['name']}"
-                    name = config['name']
-                    status = "running"
-                    labels = labels
-                return DummyContainer()
+                logger.warning(f"Port {config['port']} is allocated. Finding and adopting existing container.")
+                # Find the real container using the port
+                all_containers = self.docker_client.containers.list()
+                for container in all_containers:
+                    ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+                    for port_bindings in ports.values():
+                        if port_bindings:
+                            for binding in port_bindings:
+                                if binding.get('HostPort') == str(config['port']):
+                                    logger.info(f"Adopted container {container.name} using port {config['port']}.")
+                                    return container  # Return the REAL container object
+
+                # If we can't find it, something is wrong
+                logger.error(f"Port {config['port']} is allocated, but could not find the container using it.")
+                raise e  # Re-raise the original exception
             raise
 
     def _get_internal_port(self, service: str) -> int:
@@ -331,17 +384,23 @@ class ContainerOrchestrator:
         logger.warning(f"⚠️ Some containers not healthy after {timeout}s")
 
     async def _register_session(self):
-        """Register this MCP session."""
+        """Register this MCP session using Redis."""
         logger.info(f"📝 Registering session {self.session_id}")
 
-        # Update session count on all managed containers
-        containers = self.docker_client.containers.list(
-            filters={"label": f"com.l9.project_hash={self.project_hash}"}
-        )
+        if self.redis_client:
+            try:
+                # Increment session count for this project
+                key = f"project:{self.project_hash}:sessions"
+                self.redis_client.sadd(key, self.session_id)
+                count = self.redis_client.scard(key)
+                logger.info(f"✅ Session registered. Active sessions for project: {count}")
 
-        for container in containers:
-            labels = container.labels
-            logger.debug(f"Container {container.name} has session count: {labels.get('com.l9.session_count', 0)}")
+                # Set expiry in case of ungraceful shutdown (24 hours)
+                self.redis_client.expire(key, 86400)
+            except Exception as e:
+                logger.error(f"Failed to register session in Redis: {e}")
+        else:
+            logger.warning("Redis not available, session counting disabled")
 
     async def _monitor_health(self):
         """Background task for health monitoring."""
@@ -403,8 +462,13 @@ class ContainerOrchestrator:
         if self.health_monitor_task:
             self.health_monitor_task.cancel()
 
-        # Unregister session
-        asyncio.run(self._unregister_session())
+        # Schedule unregister_session on the event loop (safe from signal handler)
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(self._unregister_session())
+        else:
+            # If no loop is running, we can use asyncio.run
+            asyncio.run(self._unregister_session())
 
         sys.exit(0)
 
@@ -412,14 +476,36 @@ class ContainerOrchestrator:
         """Unregister this MCP session and stop containers if needed."""
         logger.info(f"📝 Unregistering session {self.session_id}")
 
+        if self.redis_client:
+            try:
+                # Remove this session from the set
+                key = f"project:{self.project_hash}:sessions"
+                self.redis_client.srem(key, self.session_id)
+                remaining = self.redis_client.scard(key)
+
+                logger.info(f"Session unregistered. Remaining sessions: {remaining}")
+
+                # If no more sessions, stop containers
+                if remaining == 0:
+                    logger.info("🛑 Last session ended, stopping containers...")
+                    await self._stop_project_containers()
+            except Exception as e:
+                logger.error(f"Failed to unregister session: {e}")
+        else:
+            logger.warning("Redis not available, cannot track sessions")
+
+    async def _stop_project_containers(self):
+        """Stop all containers for this project."""
         containers = self.docker_client.containers.list(
             filters={"label": f"com.l9.project_hash={self.project_hash}"}
         )
 
         for container in containers:
-            # Note: In real implementation, we'd track session count
-            # and stop containers when count reaches 0
-            logger.debug(f"Would check session count for {container.name}")
+            try:
+                logger.info(f"Stopping container {container.name}")
+                container.stop(timeout=10)
+            except Exception as e:
+                logger.error(f"Failed to stop {container.name}: {e}")
 
     def _cleanup(self):
         """Cleanup on exit."""
