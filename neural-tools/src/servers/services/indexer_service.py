@@ -399,7 +399,7 @@ class IncrementalIndexer(FileSystemEventHandler):
         }
 
     async def initialize_services(self):
-        """Initialize service connections with retry logic"""
+        """Initialize service connections with retry logic and schema migrations"""
         max_retries = 3
         retry_delay = 5
 
@@ -414,6 +414,9 @@ class IncrementalIndexer(FileSystemEventHandler):
                     self.container = ServiceContainer(self.project_name)
 
                 result = await self.container.initialize_all_services()
+
+                # ADR-0095: Apply Neo4j migrations before starting indexer
+                await self._apply_schema_migrations()
 
                 # Fail-fast: Elite GraphRAG requires Neo4j (unified storage) + Nomic (embeddings)
                 if not self.container.neo4j:
@@ -471,6 +474,52 @@ class IncrementalIndexer(FileSystemEventHandler):
                     raise RuntimeError(f"All initialization attempts failed: {e}")
 
     # ADR-0075: Removed _ensure_collections() - Neo4j-only architecture needs no Qdrant collections
+
+    async def _apply_schema_migrations(self):
+        """Apply pending Neo4j schema migrations (ADR-0095)"""
+        if not self.container or not self.container.neo4j:
+            logger.warning("Neo4j not available, skipping migrations")
+            return
+
+        try:
+            from pathlib import Path
+            from neo4j_python_migrations.executor import Executor
+
+            # Find migrations directory
+            migrations_path = Path(__file__).parent.parent.parent.parent / "neo4j" / "migrations"
+
+            if not migrations_path.exists():
+                logger.warning(f"Migrations directory not found: {migrations_path}")
+                return
+
+            logger.info(f"Applying migrations from: {migrations_path}")
+
+            # Create executor with existing driver
+            executor = Executor(
+                self.container.neo4j.driver,
+                migrations_path=migrations_path,
+                project="graphrag"  # Use project namespace for migrations
+            )
+
+            # Get pending migrations
+            pending = executor.pending_migrations()
+            if pending:
+                logger.info(f"Found {len(pending)} pending migrations: {[m.version for m in pending]}")
+
+                # Apply migrations
+                executor.migrate()
+                logger.info("✅ Schema migrations applied successfully")
+            else:
+                logger.info("No pending migrations")
+
+        except ImportError:
+            logger.warning("neo4j-python-migrations not installed, skipping migrations")
+        except Exception as e:
+            logger.error(f"Migration error: {e}")
+            # Don't fail indexer startup if migrations fail
+            # Enter compatibility mode instead
+            logger.warning("Entering compatibility mode due to migration failure")
+            self.use_compatibility_mode = True
 
     def should_index(self, file_path: str) -> bool:
         """Check if file should be indexed with security filters"""
