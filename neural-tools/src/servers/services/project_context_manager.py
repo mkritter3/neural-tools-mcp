@@ -310,20 +310,20 @@ class ProjectContextManager:
             try:
                 current_project_name = await self._detect_project_name(current_dir)
                 if current_project_name and current_project_name != "default":
-                # Update state and registry
-                self.current_project = current_project_name
-                self.current_project_path = current_dir
-                self.project_registry[current_project_name] = current_dir
-                self.last_activity[current_project_name] = datetime.now()
-                self._save_registry()
-                
-                logger.info(f"🎯 Detected project from current directory: {current_project_name}")
-                return {
-                    "project": current_project_name,
-                    "path": str(current_dir),
-                    "method": "current_directory",
-                    "confidence": 0.95
-                }
+                    # Update state and registry
+                    self.current_project = current_project_name
+                    self.current_project_path = current_dir
+                    self.project_registry[current_project_name] = current_dir
+                    self.last_activity[current_project_name] = datetime.now()
+                    self._save_registry()
+
+                    logger.info(f"🎯 Detected project from current directory: {current_project_name}")
+                    return {
+                        "project": current_project_name,
+                        "path": str(current_dir),
+                        "method": "current_directory",
+                        "confidence": 0.95
+                    }
         except Exception as e:
             logger.debug(f"Failed to detect from current directory: {e}")
         
