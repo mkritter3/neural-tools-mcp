@@ -1584,17 +1584,8 @@ class IncrementalIndexer(FileSystemEventHandler):
                 f"✅ Neo4j unified storage complete: {chunks_created} chunks + {symbols_created} symbols"
             )
 
-            if result.get("status") == "success":
-                result_list = result.get("result", [])
-                if result_list:
-                    result_data = result_list[0]
-                    chunks_created = result_data.get("chunks_created", 0)
-                    symbols_created = result_data.get("symbols_created", 0)
-                else:
-                    # Empty result - no data returned from query
-                    logger.warning(f"Neo4j query returned empty result for {file_path}")
-                    chunks_created = 0
-                    symbols_created = 0
+            # ADR-0093: Removed dead code that referenced undefined 'result' variable
+            # The chunks_created and symbols_created values are already set from batch processing above
 
             # ADR-0089: Post-execution validation
             if chunks_created == 0 and len(chunks_data) > 0:
