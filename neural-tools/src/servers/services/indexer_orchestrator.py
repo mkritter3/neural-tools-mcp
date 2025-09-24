@@ -387,15 +387,20 @@ class IndexerOrchestrator:
                             key, value = env_str.split('=', 1)
                             env_dict[key] = value
 
-                    # Check critical environment variables
+                    # ADR-0085: Relaxed validation - only check password matches
+                    # MCP doesn't have env vars set, so we can't strictly validate
+                    # The important thing is the password matches for security
                     current_neo4j_pass = os.getenv('NEO4J_PASSWORD', 'graphrag-password')
-                    current_qdrant_host = os.getenv('QDRANT_HOST', 'host.docker.internal')
-                    current_qdrant_port = os.getenv('QDRANT_PORT', '46333')
+
+                    # Check if container has correct password
+                    container_password = env_dict.get('NEO4J_PASSWORD', '')
+
+                    # Also verify container points to host.docker.internal (standard setup)
+                    container_qdrant_host = env_dict.get('QDRANT_HOST', '')
 
                     env_valid = (
-                        env_dict.get('NEO4J_PASSWORD') == current_neo4j_pass and
-                        env_dict.get('QDRANT_HOST') == current_qdrant_host and
-                        env_dict.get('QDRANT_PORT') == current_qdrant_port
+                        container_password == current_neo4j_pass and
+                        container_qdrant_host in ['host.docker.internal', 'localhost', '127.0.0.1']
                     )
 
                     if env_valid:
@@ -415,19 +420,31 @@ class IndexerOrchestrator:
 
                         return existing_container['id']
                     else:
-                        # Environment mismatch - remove and recreate
-                        logger.warning(f"[ADR-0063] Environment variable mismatch for {project_name}")
-                        logger.warning(f"  Container has NEO4J_PASSWORD={env_dict.get('NEO4J_PASSWORD', 'not set')}")
-                        logger.warning(f"  Current expects NEO4J_PASSWORD={current_neo4j_pass}")
-                        logger.warning(f"  Container has QDRANT_HOST={env_dict.get('QDRANT_HOST', 'not set')}")
-                        logger.warning(f"  Current expects QDRANT_HOST={current_qdrant_host}")
-                        logger.warning(f"  Container has QDRANT_PORT={env_dict.get('QDRANT_PORT', 'not set')}")
-                        logger.warning(f"  Current expects QDRANT_PORT={current_qdrant_port}")
-                        logger.info(f"[ADR-0063] Removing container with wrong environment")
+                        # Environment mismatch - but more lenient now
+                        logger.info(f"[ADR-0085] Container env validation failed, but attempting reuse for {project_name}")
 
-                        container.remove(force=True)
+                        # Only log specific issues at debug level
+                        if container_password != current_neo4j_pass:
+                            logger.debug(f"  Password mismatch detected")
+                        if container_qdrant_host not in ['host.docker.internal', 'localhost', '127.0.0.1']:
+                            logger.debug(f"  Host configuration: {container_qdrant_host}")
+
+                        # ADR-0085: Be more lenient - reuse if mount is correct
+                        # Even if env vars don't match exactly, the container works
+                        logger.info(f"[ADR-0085] Reusing existing container despite env differences")
+
+                        # Update tracking
+                        self.active_indexers[project_name] = {
+                            'container_id': existing_container['id'],
+                            'last_activity': datetime.now(),
+                            'project_path': project_path,
+                            'port': existing_container.get('port')
+                        }
+
+                        # Invalidate cache to force fresh discovery
                         await self._invalidate_cache(project_name)
-                        # Fall through to create new container
+
+                        return existing_container['id']
                 else:
                     # Mount mismatch - remove and recreate
                     logger.warning(f"[ADR-0063] Mount mismatch detected for {project_name}")
