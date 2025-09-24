@@ -141,6 +141,20 @@ class ContainerDiscoveryService:
                 # Update registry with discovered port
                 context_manager.container_registry[project_name] = existing['port']
                 await context_manager._persist_registry()
+
+                # ADR-0098 Phase 0: Observability
+                try:
+                    from .docker_observability import observer
+                    observer.check_state_divergence(
+                        project_name,
+                        {'port': existing['port']},
+                        source="container_registry"
+                    )
+                except ImportError:
+                    pass
+                except Exception as e:
+                    logger.debug(f"[ADR-0098] Observability check failed: {e}")
+
                 logger.info(f"♻️ Reusing existing container on port {existing['port']}")
                 return existing
             else:
@@ -152,6 +166,20 @@ class ContainerDiscoveryService:
                     # Update registry
                     context_manager.container_registry[project_name] = existing['port']
                     await context_manager._persist_registry()
+
+                    # ADR-0098 Phase 0: Observability
+                    try:
+                        from .docker_observability import observer
+                        observer.check_state_divergence(
+                            project_name,
+                            {'port': existing['port']},
+                            source="container_registry"
+                        )
+                    except ImportError:
+                        pass
+                    except Exception as e:
+                        logger.debug(f"[ADR-0098] Observability check failed: {e}")
+
                     return {
                         'container': container,
                         'container_id': container.id,
@@ -209,6 +237,19 @@ class ContainerDiscoveryService:
             # Update registry with new container port
             context_manager.container_registry[project_name] = new_port
             await context_manager._persist_registry()
+
+            # ADR-0098 Phase 0: Observability
+            try:
+                from .docker_observability import observer
+                observer.check_state_divergence(
+                    project_name,
+                    {'port': new_port},
+                    source="container_registry"
+                )
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.debug(f"[ADR-0098] Observability check failed: {e}")
 
             logger.info(f"✅ Created container {container.name} on port {new_port}")
 

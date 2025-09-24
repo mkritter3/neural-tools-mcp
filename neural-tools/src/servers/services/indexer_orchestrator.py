@@ -415,6 +415,19 @@ class IndexerOrchestrator:
                             'port': existing_container.get('port')
                         }
 
+                        # ADR-0098 Phase 0: Observability
+                        try:
+                            from .docker_observability import observer
+                            observer.check_state_divergence(
+                                project_name,
+                                self.active_indexers[project_name],
+                                source="active_indexers"
+                            )
+                        except ImportError:
+                            pass
+                        except Exception as e:
+                            logger.debug(f"[ADR-0098] Observability check failed: {e}")
+
                         # Invalidate cache to force fresh discovery
                         await self._invalidate_cache(project_name)
 
@@ -440,6 +453,19 @@ class IndexerOrchestrator:
                             'project_path': project_path,
                             'port': existing_container.get('port')
                         }
+
+                        # ADR-0098 Phase 0: Observability
+                        try:
+                            from .docker_observability import observer
+                            observer.check_state_divergence(
+                                project_name,
+                                self.active_indexers[project_name],
+                                source="active_indexers"
+                            )
+                        except ImportError:
+                            pass
+                        except Exception as e:
+                            logger.debug(f"[ADR-0098] Observability check failed: {e}")
 
                         # Invalidate cache to force fresh discovery
                         await self._invalidate_cache(project_name)
@@ -528,6 +554,19 @@ class IndexerOrchestrator:
             'project_path': project_path,
             'port': container.attrs['HostConfig']['PortBindings']['8080/tcp'][0]['HostPort']
         }
+
+        # ADR-0098 Phase 0: Observability - check for state divergence
+        try:
+            from .docker_observability import observer
+            observer.check_state_divergence(
+                project_name,
+                self.active_indexers[project_name],
+                source="active_indexers"
+            )
+        except ImportError:
+            pass  # Observability module not yet deployed
+        except Exception as e:
+            logger.debug(f"[ADR-0098] Observability check failed: {e}")
 
         # Invalidate cache after creating new container
         await self._invalidate_cache(project_name)
@@ -639,11 +678,23 @@ class IndexerOrchestrator:
     async def _garbage_collection_loop(self):
         """
         ADR-0060: Garbage collection with 7-day policy for stopped containers
+        ADR-0098: Added observability metrics reporting
         """
         while True:
             try:
                 await asyncio.sleep(3600)  # Check every hour
                 await self.garbage_collect_containers()
+
+                # ADR-0098 Phase 0: Report observability metrics periodically
+                try:
+                    from .docker_observability import observer
+                    metrics = observer.report_metrics()
+                    if metrics['divergence_rate'] != "0.0%":
+                        logger.warning(f"[ADR-0098] State divergence detected: {metrics}")
+                except ImportError:
+                    pass  # Observability module not yet deployed
+                except Exception as e:
+                    logger.debug(f"[ADR-0098] Metrics reporting failed: {e}")
             except Exception as e:
                 logger.error(f"[ADR-0060] GC error: {e}")
 
