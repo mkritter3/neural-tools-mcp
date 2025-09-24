@@ -292,28 +292,28 @@ async def rerank_results(
 
 ## Implementation Plan
 
-### Phase 1: Foundation (Week 1)
+### Phase 1: Foundation (Completed)
 1. ✅ Fix Tree-sitter initialization (actually instantiate it)
 2. ✅ Implement import extraction for IMPORTS relationships
 3. ✅ Fix language detection
-4. ⬜ Upgrade HNSW parameters
+4. ✅ Upgrade HNSW parameters (M=24, ef=150, quantization enabled)
 
-### Phase 2: Graph Enhancement (Week 2)
+### Phase 2: Graph Enhancement (Completed)
+1. ✅ Tree-sitter symbol extraction (50+ symbols per file)
+2. ✅ Extract CALLS, INHERITS, IMPORTS relationships
+3. ✅ Add USES relationships (variables/attributes)
+4. ✅ Add INSTANTIATES relationships (class instantiation)
+
+### Phase 3: Hybrid Search (Completed)
+1. ✅ Create hybrid search with fan-out (hybrid_search_with_fanout)
+2. ✅ DRIFT-inspired graph traversal (2-hop default)
+3. ✅ Combined vector + graph scoring
+4. ✅ Graph context enrichment (imports, calls, variables, classes)
+
+### Phase 4: Production Optimization (In Progress)
 1. ⬜ Implement community detection (Leiden algorithm)
 2. ⬜ Add AST-aware chunking
-3. ⬜ Create hybrid search with fan-out
-4. ⬜ Add community summaries
-
-### Phase 3: Model Upgrade (Week 3)
-1. ⬜ Switch to Nomic Embed Code 7B
-2. ⬜ Test quantization options
-3. ⬜ Implement Matryoshka embeddings (optional)
-4. ⬜ Benchmark performance
-
-### Phase 4: Production Optimization (Week 4)
-1. ⬜ Implement hybrid reranking
-2. ⬜ Add context sufficiency metrics
-3. ⬜ Optimize batch sizes
+3. ⬜ Switch to Nomic Embed Code 7B
 4. ⬜ Performance monitoring dashboard
 
 ## Monitoring & Success Metrics
