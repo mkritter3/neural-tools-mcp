@@ -159,6 +159,16 @@ async def main():
     """Main server entry point"""
     logger.info("🚀 Starting Neural Tools MCP Server (September 2025 Modular Architecture)")
 
+    # Proactive container initialization (ADR-0100)
+    try:
+        logger.info("🎭 Initializing Container Orchestrator...")
+        from servers.services.container_orchestrator import get_container_orchestrator
+        orchestrator = await get_container_orchestrator()
+        logger.info("✅ Container Orchestrator ready - all services pre-warmed")
+    except Exception as e:
+        logger.warning(f"⚠️ Container Orchestrator initialization failed: {e}")
+        logger.warning("⚠️ Falling back to on-demand container startup")
+
     # Initialize server
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         logger.info("📡 STDIO transport initialized")
