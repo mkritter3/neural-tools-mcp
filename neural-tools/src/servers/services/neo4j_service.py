@@ -566,7 +566,7 @@ class Neo4jService:
             return []
 
     async def hybrid_search(self, query_text: str, query_embedding: List[float], limit: int = 10, vector_weight: float = 0.7) -> List[Dict[str, Any]]:
-        """ADR-0066: Elite GraphRAG hybrid search combining vector similarity and text search"""
+        """ADR-0090 Phase 4: Elite GraphRAG hybrid search with graph fan-out and community context"""
         if not self.initialized:
             return []
 
@@ -631,6 +631,94 @@ class Neo4jService:
 
         logger.info(f"✅ Hybrid search completed: {len(sorted_results)} results (vector_weight: {vector_weight})")
         return sorted_results
+
+    async def hybrid_search_with_fanout(self, query_text: str, query_embedding: List[float],
+                                       max_depth: int = 2, limit: int = 10,
+                                       vector_weight: float = 0.7) -> List[Dict[str, Any]]:
+        """ADR-0090: DRIFT-inspired hybrid search with graph fan-out for elite GraphRAG"""
+        if not self.initialized:
+            return []
+
+        # Phase 1: Vector search for initial seed nodes
+        cypher = """
+        // 1. Vector search for initial chunks
+        CALL db.index.vector.queryNodes('chunk_embeddings_index', $k, $query_embedding)
+        YIELD node as chunk, score as vector_score
+        WHERE chunk.project = $project
+
+        // 2. Fan-out to related entities using new relationship types
+        MATCH (chunk)-[:BELONGS_TO|HAS_CHUNK]-(f:File)
+        OPTIONAL MATCH (f)-[:IMPORTS]->(imported:File)
+        OPTIONAL MATCH (f)<-[:IMPORTS]-(importing:File)
+        OPTIONAL MATCH (f)-[:HAS_FUNCTION]->(func:Function)
+        OPTIONAL MATCH (func)-[:CALLS*1..$depth]->(called:Function)
+        OPTIONAL MATCH (func)-[:USES]->(var:Variable)
+        OPTIONAL MATCH (func)-[:INSTANTIATES]->(cls:Class)
+
+        // 3. Collect graph context
+        WITH chunk, f, vector_score,
+             collect(DISTINCT imported) as imports,
+             collect(DISTINCT importing) as importers,
+             collect(DISTINCT called) as call_chain,
+             collect(DISTINCT var) as used_vars,
+             collect(DISTINCT cls) as instantiated_classes
+
+        // 4. Calculate combined score with graph context boost
+        WITH chunk, f, vector_score,
+             size(imports) + size(importers) as import_relevance,
+             size(call_chain) as call_depth,
+             size(used_vars) as variable_usage,
+             size(instantiated_classes) as class_usage,
+             imports, importers, call_chain
+
+        RETURN chunk, f, vector_score,
+               import_relevance, call_depth, variable_usage, class_usage,
+               $vector_weight * vector_score +
+               (1 - $vector_weight) * (
+                   (import_relevance * 0.3) +
+                   (call_depth * 0.3) +
+                   (variable_usage * 0.2) +
+                   (class_usage * 0.2)
+               ) / 10 as final_score,
+               imports, importers, call_chain
+        ORDER BY final_score DESC
+        LIMIT $limit
+        """
+
+        result = await self.execute_cypher(cypher, {
+            'query_embedding': query_embedding,
+            'k': limit * 3,  # Get more candidates for reranking
+            'depth': max_depth,
+            'vector_weight': vector_weight,
+            'limit': limit,
+            'project': self.project_name
+        })
+
+        if result["status"] == "success":
+            enhanced_results = []
+            for record in result["result"]:
+                enhanced_result = {
+                    "chunk": record.get("chunk"),
+                    "file": record.get("f"),
+                    "vector_score": record.get("vector_score", 0),
+                    "final_score": record.get("final_score", 0),
+                    "graph_context": {
+                        "import_relevance": record.get("import_relevance", 0),
+                        "call_depth": record.get("call_depth", 0),
+                        "variable_usage": record.get("variable_usage", 0),
+                        "class_usage": record.get("class_usage", 0),
+                        "imports": record.get("imports", []),
+                        "importers": record.get("importers", []),
+                        "call_chain": record.get("call_chain", [])
+                    }
+                }
+                enhanced_results.append(enhanced_result)
+
+            logger.info(f"✅ Elite hybrid search with fan-out: {len(enhanced_results)} results (depth={max_depth})")
+            return enhanced_results
+        else:
+            logger.error(f"Hybrid search with fan-out failed: {result.get('message')}")
+            return []
     
     async def get_code_dependencies(self, file_path: str, max_depth: int = 3) -> Dict[str, Any]:
         """Get code dependencies for a file with traversal depth"""
