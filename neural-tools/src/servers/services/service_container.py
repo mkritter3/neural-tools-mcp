@@ -189,13 +189,120 @@ class ServiceContainer:
         if self._cache_metrics is None:
             # Import here to avoid circular dependencies
             from servers.services.cache_metrics import CacheMetricsService
-            
+
             # Create metrics service with container reference
             self._cache_metrics = CacheMetricsService(self)
-            
+
             # Initialize metrics collection and reporting
             await self._cache_metrics.initialize()
         return self._cache_metrics
+
+    async def get_indexer_url(self) -> str:
+        """
+        Get indexer URL for current project, ensuring it's running.
+        ADR-0085: Dynamic discovery integration for MCP tools.
+
+        Returns:
+            Indexer endpoint URL
+
+        Raises:
+            RuntimeError: If indexer cannot be started or endpoint cannot be resolved
+        """
+        # Initialize orchestrator if needed
+        if not self.indexer_orchestrator:
+            from servers.services.indexer_orchestrator import IndexerOrchestrator
+            # ADR-0044: Pass context manager to orchestrator
+            if self.context_manager:
+                self.indexer_orchestrator = IndexerOrchestrator(context_manager=self.context_manager)
+            else:
+                # Fallback without context manager
+                self.indexer_orchestrator = IndexerOrchestrator()
+            await self.indexer_orchestrator.initialize()
+            logger.info("IndexerOrchestrator initialized for discovery")
+
+        orchestrator = self.indexer_orchestrator
+
+        # Find project root (more robust than just cwd)
+        project_path = self._find_project_root()
+
+        # Ensure indexer is running (orchestrator handles all edge cases)
+        try:
+            await orchestrator.ensure_indexer(self.project_name, project_path)
+        except Exception as e:
+            logger.error(f"Failed to start indexer for project '{self.project_name}': {e}")
+            raise RuntimeError(f"Indexer for '{self.project_name}' could not be started.") from e
+
+        # Get endpoint (with Redis caching for performance)
+        endpoint = await orchestrator.get_indexer_endpoint(self.project_name)
+
+        if endpoint:
+            logger.debug(f"Using orchestrator endpoint for '{self.project_name}': {endpoint}")
+            return endpoint
+
+        # Orchestrator should have returned endpoint if ensure_indexer succeeded
+        # If we're here, something is wrong
+
+        # Check for explicit fallback configuration
+        host = os.getenv('INDEXER_HOST')
+        port = os.getenv('INDEXER_PORT')
+
+        if host and port:
+            fallback_endpoint = f"http://{host}:{port}"
+            logger.warning(
+                f"⚠️ Orchestrator failed to provide endpoint for '{self.project_name}'. "
+                f"Falling back to INDEXER_HOST/PORT: {fallback_endpoint}"
+            )
+            return fallback_endpoint
+
+        # No orchestrator endpoint AND no env var fallback = hard failure
+        raise RuntimeError(
+            f"Could not resolve indexer endpoint for project '{self.project_name}' "
+            f"via orchestrator or environment variables. "
+            f"Ensure Docker is running and indexer image is available."
+        )
+
+    def _find_project_root(self) -> str:
+        """
+        Find project root by searching upward for marker files.
+        ADR-0085: Robust project discovery for any invocation location.
+
+        Returns:
+            Absolute path to project root
+        """
+        # If context manager knows the project path, use it
+        if self.context_manager:
+            try:
+                return self.context_manager.get_project_path()
+            except Exception:
+                pass  # Fall through to search logic
+
+        # Search upward from cwd for project markers
+        current = os.path.abspath(os.getcwd())
+        markers = [
+            '.git',
+            'pyproject.toml',
+            'package.json',
+            'requirements.txt',
+            'setup.py',
+            '.claude'
+        ]
+
+        while current != '/':
+            # Check for any marker file/directory
+            for marker in markers:
+                if os.path.exists(os.path.join(current, marker)):
+                    logger.debug(f"Found project root at {current} (marker: {marker})")
+                    return current
+
+            # Move up one directory
+            parent = os.path.dirname(current)
+            if parent == current:  # Reached filesystem root
+                break
+            current = parent
+
+        # If no markers found, use cwd as fallback
+        logger.warning(f"No project markers found, using cwd: {os.getcwd()}")
+        return os.getcwd()
     
     async def initialize_connection_pools(self):
         """Initialize L9 2025 connection pools for MCP sessions"""

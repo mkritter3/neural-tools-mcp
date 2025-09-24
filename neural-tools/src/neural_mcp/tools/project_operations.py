@@ -257,6 +257,26 @@ async def _execute_indexer_status(neo4j_service, project_name: str) -> dict:
     """Execute indexer status check"""
     logger.info(f"🔍 ADR-0076: Indexer status check for {project_name}")
 
+    # ADR-0085: Check if indexer container is running
+    from servers.services.service_container import ServiceContainer
+    service_container = ServiceContainer(project_name=project_name)
+
+    indexer_endpoint = None
+    indexer_health = "unknown"
+    try:
+        indexer_endpoint = await service_container.get_indexer_url()
+        # Try a health check
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            health_response = await client.get(f"{indexer_endpoint}/health")
+            if health_response.status_code == 200:
+                indexer_health = "healthy"
+            else:
+                indexer_health = "unhealthy"
+    except Exception as e:
+        logger.warning(f"Indexer not available: {e}")
+        indexer_health = "offline"
+
     # Check Neo4j database status
     status_query = """
     MATCH (f:File {project: $project})
@@ -285,7 +305,9 @@ async def _execute_indexer_status(neo4j_service, project_name: str) -> dict:
                 "last_update": data.get('last_update'),
                 "file_types_indexed": data.get('file_types', []),
                 "database_connection": "active",
-                "indexing_service": "neo4j_unified"
+                "indexing_service": "neo4j_unified",
+                "container_health": indexer_health,
+                "container_endpoint": indexer_endpoint
             },
             "system_metrics": system_metrics,
             "architecture": "neo4j_indexer_status_consolidated"
@@ -323,11 +345,22 @@ async def _execute_reindex_path(neo4j_service, arguments: Dict[str, Any], projec
     try:
         import httpx
         from datetime import datetime
+        from servers.services.service_container import ServiceContainer
 
-        # Use IndexerService HTTP API (our fixed container on port 48121)
-        indexer_host = os.getenv('INDEXER_HOST', 'localhost')
-        indexer_port = os.getenv('INDEXER_PORT', '48121')
-        indexer_url = f"http://{indexer_host}:{indexer_port}"
+        # ADR-0085: Use dynamic discovery to find indexer
+        service_container = ServiceContainer(project_name=project_name)
+
+        try:
+            indexer_url = await service_container.get_indexer_url()
+            logger.info(f"🔍 Using discovered indexer endpoint: {indexer_url}")
+        except RuntimeError as e:
+            # If discovery fails, return error to user
+            logger.error(f"Failed to discover indexer: {e}")
+            return {
+                "status": "error",
+                "message": f"Indexer not available for project '{project_name}': {str(e)}",
+                "path": str(path)
+            }
 
         async with httpx.AsyncClient(timeout=300.0) as client:
             # Call the IndexerService /reindex-path endpoint
