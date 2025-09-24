@@ -2,14 +2,16 @@
 """
 Unified MCP entrypoint (STDIO transport)
 
-Launches the canonical MCP stdio server implemented in:
-  neural-tools/src/neural_mcp/neural_server_stdio.py
+Launches the modular MCP server implemented in:
+  neural-tools/src/neural_mcp/server.py
 
 Bootstrap behavior:
 - Ensures `neural-tools/src` is on PYTHONPATH
 - If `mcp` SDK is not installed in the current interpreter, attempts to
   bootstrap a local virtualenv under `<repo>/.neural/.venv` and install
   production requirements, then re-executes itself using that venv.
+
+Updated: September 2025 for ADR-0076 modular architecture
 """
 
 import os
@@ -79,9 +81,9 @@ def _maybe_bootstrap_and_exec():
 def main():
     _maybe_bootstrap_and_exec()
     _add_src_to_path()
-    # Prefer canonical stdio server under src/neural_mcp
-    from neural_mcp.neural_server_stdio import run
-    asyncio.run(run())
+    # Import the modular server from src/neural_mcp/server.py
+    from neural_mcp.server import main as server_main
+    asyncio.run(server_main())
 
 
 if __name__ == "__main__":

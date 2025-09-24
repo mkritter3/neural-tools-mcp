@@ -167,7 +167,7 @@ run_local_validation() {
         "test_indexer_mount_validation.py"     # ADR-64: Unit tests for mount validation
         "integration/test_indexer_mount_validation.py"  # ADR-64: Integration tests
         "test_contract_validation.py"          # ADR-96: Schema contract validation
-        "pre_deployment_validation.py"         # ADR-96: Comprehensive pre-deployment checks
+        "pre_deployment_validation_v2.py"      # Updated for current architecture
     )
 
     # Track test results
@@ -234,7 +234,7 @@ run_local_validation() {
 
             # Use timeout for all tests to prevent hangs
             TEST_LOG="/tmp/${test_file//\//_}_output.log"
-            if run_with_timeout 300 python3 "$test_file" "$TEST_LOG"; then
+            if PYTHONPATH="$SOURCE_DIR/src" run_with_timeout 300 python3 "$test_file" "$TEST_LOG"; then
                 echo -e "${GREEN}✅ $test_file PASSED${NC}"
                 PASSED_TESTS+=("$test_file")
             else
@@ -263,7 +263,7 @@ run_local_validation() {
     if [[ -f "$SOURCE_DIR/../scripts/test-sync-manager-integration.py" ]]; then
         echo -e "${YELLOW}Testing Neo4j-only Architecture (ADR-0075)...${NC}"
         cd "$SOURCE_DIR/.."
-        if run_with_timeout 300 python3 scripts/test-sync-manager-neo4j-only.py "/tmp/sync_manager_output.log"; then
+        if PYTHONPATH="$SOURCE_DIR/src" run_with_timeout 300 python3 scripts/test-sync-manager-neo4j-only.py "/tmp/sync_manager_output.log"; then
             echo -e "${GREEN}✅ Sync manager validation passed${NC}"
             PASSED_TESTS+=("Neo4j-only Architecture")
         else
