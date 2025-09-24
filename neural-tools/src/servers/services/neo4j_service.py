@@ -11,6 +11,23 @@ import hashlib
 import time
 from typing import Dict, List, Any, Optional
 
+# ADR-0096: Import robust vector search implementation
+try:
+    from robust_vector_search import RobustVectorSearch
+    ROBUST_SEARCH_AVAILABLE = True
+except ImportError:
+    from pathlib import Path
+    import sys
+    # Try to add the services directory to path
+    services_dir = Path(__file__).parent
+    sys.path.insert(0, str(services_dir))
+    try:
+        from robust_vector_search import RobustVectorSearch
+        ROBUST_SEARCH_AVAILABLE = True
+    except ImportError:
+        ROBUST_SEARCH_AVAILABLE = False
+        RobustVectorSearch = None
+
 # Neo4j imports with availability check
 NEO4J_AVAILABLE = False
 try:
@@ -51,6 +68,9 @@ class AsyncNeo4jClient:
         self.driver = AsyncGraphDatabase.driver(
             self.uri, auth=(neo4j_username, neo4j_password)
         )
+
+        # ADR-0096: Initialize robust vector search
+        self.robust_search = None  # Will be initialized after connection
 
     async def __aenter__(self):
         return self
@@ -168,6 +188,9 @@ class Neo4jService:
             None  # Will be set by service container for cache access
         )
 
+        # ADR-0096: Robust vector search instance
+        self.robust_search = None
+
         # Cache configuration
         self.enable_caching = (
             os.getenv("NEO4J_ENABLE_CACHING", "true").lower() == "true"
@@ -247,6 +270,13 @@ class Neo4jService:
             if result["status"] == "success" and result["result"]:
                 # Ensure basic constraints exist
                 await self._ensure_constraints()
+
+                # ADR-0096: Initialize robust vector search if available
+                if ROBUST_SEARCH_AVAILABLE and RobustVectorSearch:
+                    self.robust_search = RobustVectorSearch(self, self.project_name)
+                else:
+                    logger.warning("RobustVectorSearch not available, using legacy search")
+
                 self.initialized = True
 
                 return {
@@ -520,7 +550,7 @@ class Neo4jService:
             logger.error(f"Semantic search failed: {result.get('message')}")
             return []
 
-    async def vector_similarity_search(
+    async def vector_similarity_search_legacy(
         self,
         query_embedding: List[float],
         node_type: str = "Chunk",
@@ -715,7 +745,46 @@ class Neo4jService:
         )
         return sorted_results
 
-    async def hybrid_search_with_fanout(
+    async def vector_similarity_search(
+        self,
+        query_embedding: List[float],
+        node_type: str = "Chunk",
+        limit: int = 10,
+        min_score: float = 0.5,
+    ) -> List[Dict[str, Any]]:
+        """ADR-0096: Use RobustVectorSearch for all vector operations"""
+        if not self.initialized or not self.robust_search:
+            logger.warning("RobustVectorSearch not initialized, falling back to legacy")
+            return await self.vector_similarity_search_legacy(
+                query_embedding, node_type, limit, min_score
+            )
+
+        # Use the robust vector search implementation
+        results = await self.robust_search.vector_search_phase1(
+            query_embedding, limit, min_score
+        )
+
+        # Format for compatibility with existing code
+        formatted_results = []
+        for r in results:
+            formatted_results.append({
+                "node": {
+                    "id": r.get("element_id"),
+                    "chunk_id": r.get("chunk_id"),
+                    "file_path": r.get("file_path"),
+                    "content": r.get("content"),
+                    "start_line": r.get("start_line"),
+                    "end_line": r.get("end_line"),
+                },
+                "similarity_score": r.get("score", 0),
+                "score": r.get("score", 0),
+                "node_type": ["Chunk"],
+                "search_type": "vector_similarity",
+            })
+
+        return formatted_results
+
+    async def hybrid_search_with_fanout_legacy(
         self,
         query_text: str,
         query_embedding: List[float],
@@ -882,6 +951,44 @@ class Neo4jService:
                 }
                 for vr in vector_results[:limit]
             ]
+
+    async def hybrid_search_with_fanout(
+        self,
+        query_text: str,
+        query_embedding: List[float],
+        max_depth: int = 2,
+        limit: int = 10,
+        vector_weight: float = 0.7,
+    ) -> List[Dict[str, Any]]:
+        """ADR-0096: Use RobustVectorSearch for hybrid search"""
+        if not self.initialized or not self.robust_search:
+            logger.warning("RobustVectorSearch not initialized, falling back to legacy")
+            return await self.hybrid_search_with_fanout_legacy(
+                query_text, query_embedding, max_depth, limit, vector_weight
+            )
+
+        # Use the robust hybrid search implementation
+        results = await self.robust_search.hybrid_search(
+            query_embedding, limit, min_score=0.5, enrich_context=(max_depth > 0)
+        )
+
+        # Format for compatibility with existing code
+        formatted_results = []
+        for r in results:
+            formatted_results.append({
+                "chunk": {
+                    "chunk_id": r.get("chunk_id"),
+                    "file_path": r.get("file_path"),
+                    "content": r.get("content"),
+                    "start_line": r.get("start_line"),
+                    "end_line": r.get("end_line"),
+                },
+                "vector_score": r.get("score", 0),
+                "final_score": r.get("score", 0),  # Could be enhanced with graph context
+                "graph_context": r.get("graph_context", {}),
+            })
+
+        return formatted_results
 
     async def get_code_dependencies(
         self, file_path: str, max_depth: int = 3

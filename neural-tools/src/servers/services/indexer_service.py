@@ -23,6 +23,9 @@ from threading import Timer, Lock
 
 # ADR-0075: Removed qdrant_client import - Neo4j-only architecture
 
+# ADR-0096: Schema contract for chunk consistency
+from chunk_schema import ChunkSchema
+
 # CRITICAL: DO NOT REMOVE - Required for imports to work (see ADR-0056)
 # These sys.path modifications compensate for mixed import patterns across the codebase
 # Removing them will break pattern extraction, code parsing, and service imports
@@ -1586,7 +1589,32 @@ class IncrementalIndexer(FileSystemEventHandler):
                     f"🔧 Processing chunk batch {i//BATCH_SIZE + 1}/{(len(chunks_data) + BATCH_SIZE - 1)//BATCH_SIZE} ({len(batch)} chunks)"
                 )
 
-                # Create chunks in this batch
+                # Validate and prepare chunks using ChunkSchema
+                validated_batch = []
+                for chunk_data in batch:
+                    try:
+                        # Create ChunkSchema instance for validation
+                        chunk = ChunkSchema(
+                            chunk_id=chunk_data['chunk_id'],
+                            file_path=str(relative_path),
+                            content=chunk_data['content'],
+                            embedding=chunk_data['embedding'],
+                            project=self.project_name,
+                            start_line=chunk_data.get('start_line', 0),
+                            end_line=chunk_data.get('end_line', 0),
+                            size=chunk_data.get('size', len(chunk_data['content']))
+                        )
+                        # Convert to Neo4j-compatible dict
+                        validated_batch.append(chunk.to_neo4j_dict())
+                    except Exception as e:
+                        logger.error(f"❌ Invalid chunk data: {e}")
+                        continue
+
+                if not validated_batch:
+                    logger.warning(f"⚠️ No valid chunks in batch {i//BATCH_SIZE + 1}")
+                    continue
+
+                # Create chunks in this batch using validated schema
                 batch_cypher = """
                 MATCH (f:File {path: $path, project: $project})
                 WITH f
@@ -1597,9 +1625,10 @@ class IncrementalIndexer(FileSystemEventHandler):
                     start_line: chunk_data.start_line,
                     end_line: chunk_data.end_line,
                     size: chunk_data.size,
-                    project: $project,
+                    project: chunk_data.project,
+                    file_path: chunk_data.file_path,
                     embedding: chunk_data.embedding,
-                    created_time: datetime()
+                    created_at: chunk_data.created_at
                 })
                 CREATE (f)-[:HAS_CHUNK]->(c)
                 WITH count(c) as batch_count
@@ -1609,7 +1638,7 @@ class IncrementalIndexer(FileSystemEventHandler):
                 batch_params = {
                     "path": str(relative_path),
                     "project": self.project_name,
-                    "batch_chunks": batch,
+                    "batch_chunks": validated_batch,
                 }
 
                 batch_result = await self.container.neo4j.execute_cypher(
