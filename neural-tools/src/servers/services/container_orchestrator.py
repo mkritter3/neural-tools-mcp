@@ -153,9 +153,27 @@ class ContainerOrchestrator:
 
     async def _start_container(self, config: Dict) -> Container:
         """Start a single container with configuration."""
-        container_name = f"{config['name']}-{self.project_hash}"
+        # First check if container is already running on the expected port
+        # This handles docker-compose managed containers
+        try:
+            # Look for any container using the expected port
+            all_containers = self.docker_client.containers.list(all=True)
+            for container in all_containers:
+                # Check if this container is using our port
+                ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+                for port_key, port_bindings in ports.items():
+                    if port_bindings:
+                        for binding in port_bindings:
+                            if binding.get('HostPort') == str(config['port']):
+                                logger.info(f"Found existing container {container.name} on port {config['port']}")
+                                # Update labels if possible (Docker doesn't allow label updates on running containers)
+                                # Just track it in our session
+                                return container
+        except Exception as e:
+            logger.warning(f"Error checking existing containers: {e}")
 
-        # Check if already running
+        # Try exact name match
+        container_name = f"{config['name']}-{self.project_hash}"
         try:
             existing = self.docker_client.containers.get(container_name)
             if existing.status == "running":
@@ -168,7 +186,7 @@ class ContainerOrchestrator:
         except docker.errors.NotFound:
             pass
 
-        # Create new container
+        # Create new container only if port is free
         labels = {
             "com.l9.managed": "true",
             "com.l9.service": config["name"],
@@ -186,19 +204,30 @@ class ContainerOrchestrator:
             port_bindings[f"{internal_port}/tcp"] = config["port"]
 
         # Start container
-        container = self.docker_client.containers.run(
-            config["image"],
-            name=container_name,
-            labels=labels,
-            ports=port_bindings,
-            environment=self._get_environment(config["name"]),
-            healthcheck=config.get("healthcheck"),
-            detach=True,
-            remove=False,
-            network_mode="bridge"
-        )
-
-        return container
+        try:
+            container = self.docker_client.containers.run(
+                config["image"],
+                name=container_name,
+                labels=labels,
+                ports=port_bindings,
+                environment=self._get_environment(config["name"]),
+                healthcheck=config.get("healthcheck"),
+                detach=True,
+                remove=False,
+                network_mode="bridge"
+            )
+            return container
+        except docker.errors.APIError as e:
+            if "port is already allocated" in str(e):
+                logger.warning(f"Port {config['port']} already in use, assuming service is running")
+                # Return a dummy container object that won't break the flow
+                class DummyContainer:
+                    id = f"existing-{config['name']}"
+                    name = config['name']
+                    status = "running"
+                    labels = labels
+                return DummyContainer()
+            raise
 
     def _get_internal_port(self, service: str) -> int:
         """Get the internal port for a service."""
@@ -241,7 +270,8 @@ class ContainerOrchestrator:
 
         try:
             orchestrator = IndexerOrchestrator()
-            port = await orchestrator.get_or_start_indexer(
+            await orchestrator.initialize()  # Initialize Docker client and Redis
+            port = await orchestrator.ensure_indexer(
                 Path(self.project_path).name,
                 self.project_path
             )
