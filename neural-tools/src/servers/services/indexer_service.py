@@ -1617,7 +1617,7 @@ class IncrementalIndexer(FileSystemEventHandler):
 
                 return True
             else:
-                logger.error(f"Neo4j unified storage failed: {result.get('message')}")
+                logger.error(f"Neo4j unified storage failed: No chunks created")
                 return False
 
         except Exception as e:
