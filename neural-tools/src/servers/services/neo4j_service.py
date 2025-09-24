@@ -304,11 +304,14 @@ class Neo4jService:
                     OPTIONS {
                         indexConfig: {
                             `vector.dimensions`: 768,
-                            `vector.similarity_function`: 'cosine'
+                            `vector.similarity_function`: 'cosine',
+                            `vector.hnsw.m`: 24,
+                            `vector.hnsw.ef_construction`: 150,
+                            `vector.quantization.enabled`: true
                         }
                     }
                     """,
-                    "description": "Elite chunk search: Optimized for Nomic 768-dimensional embeddings with cosine similarity"
+                    "description": "Elite chunk search: ADR-0090 HNSW optimized with M=24, ef=150, int8 quantization for 2x speed"
                 },
                 {
                     "name": "file_embeddings_index",
@@ -318,11 +321,14 @@ class Neo4jService:
                     OPTIONS {
                         indexConfig: {
                             `vector.dimensions`: 768,
-                            `vector.similarity_function`: 'cosine'
+                            `vector.similarity_function`: 'cosine',
+                            `vector.hnsw.m`: 24,
+                            `vector.hnsw.ef_construction`: 150,
+                            `vector.quantization.enabled`: true
                         }
                     }
                     """,
-                    "description": "File search: Optimized for Nomic 768-dimensional embeddings with cosine similarity"
+                    "description": "File search: ADR-0090 HNSW optimized with M=24, ef=150, int8 quantization for 2x speed"
                 }
             ]
 
