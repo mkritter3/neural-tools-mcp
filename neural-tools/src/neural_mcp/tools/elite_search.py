@@ -98,8 +98,22 @@ async def execute(arguments: Dict[str, Any]) -> List[types.TextContent]:
             parsed["performance"]["cache_hit"] = True
             return [types.TextContent(type="text", text=json.dumps(parsed, indent=2))]
 
-        # 3. Get services
-        project_name = arguments.get("project_name", "default")
+        # 3. Get services with proper project detection (ADR-0091)
+        # First try from arguments, then detect from context manager
+        project_name = arguments.get("project_name")
+
+        if not project_name:
+            # Use the same approach as indexer - get from ProjectContextManager
+            try:
+                from servers.services.project_context_manager import get_project_context_manager
+                context_manager = await get_project_context_manager()
+                project_info = await context_manager.get_current_project()
+                project_name = project_info["project"]
+                logger.info(f"🎯 Detected project: {project_name}")
+            except Exception as e:
+                logger.warning(f"Failed to detect project: {e}, using default")
+                project_name = "claude-l9-template"
+
         neo4j_service = await get_shared_neo4j_service(project_name)
         embedding_service = await get_shared_embedding_service(project_name)
 

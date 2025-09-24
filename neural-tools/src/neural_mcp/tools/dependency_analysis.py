@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Tool metadata for automatic registration
 TOOL_CONFIG = {
     "name": "dependency_analysis",
-    "description": "ADR-0075: Advanced multi-hop dependency analysis for code files",
+    "description": "ADR-0091: Enhanced dependency analysis with USES/INSTANTIATES relationships",
     "inputSchema": {
         "type": "object",
         "properties": {
@@ -32,9 +32,17 @@ TOOL_CONFIG = {
             },
             "analysis_type": {
                 "type": "string",
-                "description": "Type of analysis ('imports', 'dependents', 'calls', 'all')",
-                "enum": ["imports", "dependents", "calls", "all"],
+                "description": "Type of analysis",
+                "enum": ["imports", "dependents", "calls", "uses", "instantiates", "all"],
                 "default": "all"
+            },
+            "relationship_types": {
+                "type": "array",
+                "description": "Specific relationships to analyze (overrides analysis_type)",
+                "items": {
+                    "enum": ["IMPORTS", "CALLS", "USES", "INSTANTIATES", "INHERITS", "DEFINED_IN", "HAS_CHUNK"]
+                },
+                "default": None
             },
             "max_depth": {
                 "type": "integer",
@@ -42,6 +50,11 @@ TOOL_CONFIG = {
                 "minimum": 1,
                 "maximum": 5,
                 "default": 3
+            },
+            "include_metrics": {
+                "type": "boolean",
+                "description": "Include usage metrics and patterns",
+                "default": True
             }
         },
         "required": ["target_file"]
@@ -87,10 +100,15 @@ async def execute(arguments: Dict[str, Any]) -> List[types.TextContent]:
         # 3. Use shared Neo4j service (ADR-0075)
         neo4j_service = await get_shared_neo4j_service(project_name)
 
+        # 4. Get additional parameters for ADR-0091 enhancements
+        relationship_types = arguments.get("relationship_types")
+        include_metrics = arguments.get("include_metrics", True)
+
         # 4. Execute business logic
         start_time = time.time()
         result = await _execute_dependency_analysis(
-            neo4j_service, target_file, analysis_type, max_depth, project_name
+            neo4j_service, target_file, analysis_type, max_depth, project_name,
+            relationship_types, include_metrics
         )
         duration = (time.time() - start_time) * 1000
 
@@ -114,7 +132,9 @@ async def execute(arguments: Dict[str, Any]) -> List[types.TextContent]:
         return _make_error_response(f"Dependency analysis failed: {e}")
 
 async def _execute_dependency_analysis(neo4j_service, target_file: str, analysis_type: str,
-                                     max_depth: int, project_name: str) -> dict:
+                                     max_depth: int, project_name: str,
+                                     relationship_types: List[str] = None,
+                                     include_metrics: bool = True) -> dict:
     """Execute the dependency analysis with optimized queries"""
 
     logger.info(f"🕸️ ADR-0075: Multi-hop dependency analysis for {target_file}")
@@ -147,6 +167,7 @@ async def _execute_dependency_analysis(neo4j_service, target_file: str, analysis
     if result.get('status') == 'success' and result['result']:
         analysis_data = result['result'][0]
 
+        # ADR-0091: Include new USES and INSTANTIATES relationships
         response = {
             "status": "success",
             "target_file": target_file,
@@ -155,18 +176,30 @@ async def _execute_dependency_analysis(neo4j_service, target_file: str, analysis
             "dependencies": {
                 "imports": analysis_data.get('import_dependencies', []),
                 "dependents": analysis_data.get('reverse_dependencies', []),
-                "calls": analysis_data.get('call_dependencies', [])
+                "calls": analysis_data.get('call_dependencies', []),
+                "uses": analysis_data.get('uses_dependencies', []),
+                "instantiates": analysis_data.get('instantiates_dependencies', [])
             },
             "summary": {
                 "total_imports": len(analysis_data.get('import_dependencies', [])),
                 "total_dependents": len(analysis_data.get('reverse_dependencies', [])),
                 "total_calls": len(analysis_data.get('call_dependencies', [])),
+                "total_uses": len(analysis_data.get('uses_dependencies', [])),
+                "total_instantiates": len(analysis_data.get('instantiates_dependencies', [])),
                 "max_import_depth": max([dep.get('path_length', 0) or 0 for dep in analysis_data.get('import_dependencies', [])] + [0]),
                 "max_dependent_depth": max([dep.get('path_length', 0) or 0 for dep in analysis_data.get('reverse_dependencies', [])] + [0]),
                 "max_call_depth": max([dep.get('call_depth', 0) or 0 for dep in analysis_data.get('call_dependencies', [])] + [0])
             },
             "architecture": "neo4j_multi_hop_analysis_modular"
         }
+
+        # Add metrics if requested and available
+        if include_metrics and analysis_type in ["uses", "instantiates", "all"]:
+            response["metrics"] = {
+                "variable_patterns": analysis_data.get('variable_patterns', []),
+                "instantiation_chains": analysis_data.get('instantiation_chains', []),
+                "usage_frequency": analysis_data.get('usage_frequency', {})
+            }
     else:
         response = {
             "status": "no_data",
@@ -219,6 +252,40 @@ async def _build_optimized_dependency_query(analysis_type: str, max_depth: int) 
         }}
         """
 
+    elif analysis_type == "uses":
+        # ADR-0091: New USES relationship for variable/attribute usage
+        return f"""
+        MATCH (target:File {{project: $project}})
+        WHERE target.path = $target_file OR target.path ENDS WITH $target_file
+        OPTIONAL MATCH (target)-[:HAS_FUNCTION]->(func:Function)-[:USES*1..{max_depth}]->(var:Variable)
+        WITH target,
+             [{{type: 'uses', from_function: func.name, to_variable: var.name, usage_depth: 1}}] as uses_dependencies
+        RETURN {{
+            import_dependencies: [],
+            reverse_dependencies: [],
+            call_dependencies: [],
+            uses_dependencies: uses_dependencies,
+            instantiates_dependencies: []
+        }}
+        """
+
+    elif analysis_type == "instantiates":
+        # ADR-0091: New INSTANTIATES relationship for class instantiation
+        return f"""
+        MATCH (target:File {{project: $project}})
+        WHERE target.path = $target_file OR target.path ENDS WITH $target_file
+        OPTIONAL MATCH (target)-[:HAS_FUNCTION]->(func:Function)-[:INSTANTIATES*1..{max_depth}]->(cls:Class)
+        WITH target,
+             [{{type: 'instantiates', from_function: func.name, to_class: cls.name, instantiation_depth: 1}}] as instantiates_dependencies
+        RETURN {{
+            import_dependencies: [],
+            reverse_dependencies: [],
+            call_dependencies: [],
+            uses_dependencies: [],
+            instantiates_dependencies: instantiates_dependencies
+        }}
+        """
+
     elif analysis_type == "calls":
         return f"""
         MATCH (target:File {{project: $project}})
@@ -260,10 +327,22 @@ async def _build_optimized_dependency_query(analysis_type: str, max_depth: int) 
         WITH target, import_deps, reverse_deps,
              [{{type: 'call', from_function: func.name, to_function: called.name, call_depth: 1}}] as call_deps
 
+        // ADR-0091: Include USES relationships
+        OPTIONAL MATCH (target)-[:HAS_FUNCTION]->(func2:Function)-[:USES*1..{max_depth}]->(var:Variable)
+        WITH target, import_deps, reverse_deps, call_deps,
+             [{{type: 'uses', from_function: func2.name, to_variable: var.name, usage_depth: 1}}] as uses_deps
+
+        // ADR-0091: Include INSTANTIATES relationships
+        OPTIONAL MATCH (target)-[:HAS_FUNCTION]->(func3:Function)-[:INSTANTIATES*1..{max_depth}]->(cls:Class)
+        WITH target, import_deps, reverse_deps, call_deps, uses_deps,
+             [{{type: 'instantiates', from_function: func3.name, to_class: cls.name, instantiation_depth: 1}}] as instantiates_deps
+
         RETURN {{
             import_dependencies: import_deps,
             reverse_dependencies: reverse_deps,
-            call_dependencies: call_deps
+            call_dependencies: call_deps,
+            uses_dependencies: uses_deps,
+            instantiates_dependencies: instantiates_deps
         }}
         """
 
