@@ -254,6 +254,29 @@ class ServiceContainer:
             )
             return fallback_endpoint
 
+        # ADR-0085: Auto-detect running indexer containers as last resort
+        # This helps when orchestrator validation is too strict
+        try:
+            import docker
+            client = docker.from_env()
+            containers = client.containers.list(
+                filters={'status': 'running'}
+            )
+
+            for container in containers:
+                # Look for indexer containers for this project
+                if 'indexer' in container.name and self.project_name in container.name:
+                    ports = container.ports.get('8080/tcp')
+                    if ports and len(ports) > 0:
+                        port = ports[0]['HostPort']
+                        auto_endpoint = f"http://localhost:{port}"
+                        logger.warning(
+                            f"⚠️ Auto-detected indexer for '{self.project_name}' at {auto_endpoint}"
+                        )
+                        return auto_endpoint
+        except Exception as e:
+            logger.debug(f"Auto-detection failed: {e}")
+
         # No orchestrator endpoint AND no env var fallback = hard failure
         raise RuntimeError(
             f"Could not resolve indexer endpoint for project '{self.project_name}' "
