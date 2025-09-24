@@ -230,8 +230,9 @@ async def _execute_project_understanding(neo4j_service, arguments: Dict[str, Any
                 "metadata": {
                     "total_analyzed": len(understanding_data),
                     "scope": scope,
-                    "high_complexity_files": len([f for f in understanding_data if f.get('complexity_score', 0) > 0.7]),
-                    "canonical_files": len([f for f in understanding_data if f.get('canon_weight', 0) >= 0.7])
+                    # ADR-0087: Fixed null handling in comparisons
+                    "high_complexity_files": len([f for f in understanding_data if (f.get('complexity_score') or 0) > 0.7]),
+                    "canonical_files": len([f for f in understanding_data if (f.get('canon_weight') or 0) >= 0.7])
                 }
             }
 

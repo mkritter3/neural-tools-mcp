@@ -421,14 +421,37 @@ class Neo4jService:
                 logger.debug(f"Semantic search cache hit for: {query_text[:50]}...")
                 return cached_result.get("search_results", [])
 
-        # Search across files, classes, and methods for relevant text
+        # ADR-0087: Fixed semantic search to use correct field names
+        # Search Chunks with content, Files by path/name, Functions by name
         cypher = """
-        MATCH (n)
-        WHERE (n:File OR n:Class OR n:Method)
-          AND (n.content CONTAINS $query
-               OR n.name CONTAINS $query
-               OR n.description CONTAINS $query)
-        RETURN n, labels(n) as node_type
+        MATCH (c:Chunk)
+        WHERE c.content CONTAINS $query
+           AND c.project = $project
+        RETURN c, 'Chunk' as node_type, c.content as matched_content
+        LIMIT $limit
+
+        UNION
+
+        MATCH (f:File)
+        WHERE (f.name CONTAINS $query OR f.path CONTAINS $query)
+           AND f.project = $project
+        RETURN f, 'File' as node_type, f.path as matched_content
+        LIMIT $limit
+
+        UNION
+
+        MATCH (func:Function)
+        WHERE func.name CONTAINS $query
+           AND func.project = $project
+        RETURN func, 'Function' as node_type, func.name as matched_content
+        LIMIT $limit
+
+        UNION
+
+        MATCH (m:Method)
+        WHERE m.name CONTAINS $query
+           AND m.project = $project
+        RETURN m, 'Method' as node_type, m.name as matched_content
         LIMIT $limit
         """
 

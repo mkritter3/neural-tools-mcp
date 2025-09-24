@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Dict, Optional, List, Any
 from datetime import datetime, timedelta
 import json
+import math
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -916,6 +917,34 @@ class IncrementalIndexer(FileSystemEventHandler):
             logger.error(f"Unified indexing failed for {relative_path}: {e}")
             return False
 
+    def _clean_embedding(self, embedding):
+        """
+        ADR-0088: Ensure embedding is Neo4j-compatible LIST<FLOAT>.
+        Handles numpy arrays, invalid values, and type conversion.
+        """
+        if embedding is None:
+            return None
+
+        # Convert numpy/tensor to Python list
+        if hasattr(embedding, 'tolist'):
+            embedding = embedding.tolist()
+        elif not isinstance(embedding, list):
+            try:
+                embedding = list(embedding)
+            except Exception:
+                logger.warning("Could not convert embedding to list")
+                return None
+
+        # Validate and clean values
+        cleaned = []
+        for val in embedding:
+            if val is None or math.isnan(val) or math.isinf(val):
+                cleaned.append(0.0)  # Replace invalid with zero
+            else:
+                cleaned.append(float(val))
+
+        return cleaned
+
     async def _store_unified_neo4j(self, file_path: str, relative_path: Path, chunks: List[Dict],
                                    embeddings: List[List[float]], content: str, symbols_data: List[Dict] = None) -> bool:
         """ADR-0066: Store file, chunks with embeddings, and symbols in single Neo4j transaction"""
@@ -951,51 +980,44 @@ class IncrementalIndexer(FileSystemEventHandler):
             MATCH (f)-[:HAS_CHUNK]->(old_chunk:Chunk)
             DETACH DELETE old_chunk
 
-            // 3. Create new chunks with embeddings (ADR-0078: Defensive UNWIND)
+            // 3. Create new chunks with embeddings (ADR-0078: Simplified approach)
             WITH f
             UNWIND CASE
                 WHEN $chunks_data IS NULL OR size($chunks_data) = 0
-                THEN [null]
+                THEN []
                 ELSE $chunks_data
             END AS chunk_data
+            CREATE (c:Chunk {
+                chunk_id: chunk_data.chunk_id,
+                content: chunk_data.content,
+                start_line: chunk_data.start_line,
+                end_line: chunk_data.end_line,
+                size: chunk_data.size,
+                project: $project,
+                embedding: chunk_data.embedding,  // Store vector directly in Neo4j
+                created_time: datetime()
+            })
+            CREATE (f)-[:HAS_CHUNK]->(c)
 
-            // ADR-0078: Neo4j CALL subquery with modern variable scope clause (Neo4j 2025+)
-            CALL (chunk_data, f) {
-                WITH chunk_data, f
-                WHERE chunk_data IS NOT NULL
-                CREATE (c:Chunk {
-                    chunk_id: chunk_data.chunk_id,
-                    content: chunk_data.content,
-                    start_line: chunk_data.start_line,
-                    end_line: chunk_data.end_line,
-                    size: chunk_data.size,
-                    project: $project,
-                    embedding: chunk_data.embedding,  // Store vector directly in Neo4j
-                    created_time: datetime()
-                })
-                CREATE (f)-[:HAS_CHUNK]->(c)
-                RETURN c
-            }
-
-            // 4. Create symbol nodes if provided (ADR-0078: Native conditionals)
+            // 4. Create symbol nodes if provided (ADR-0078: Simplified)
             WITH f, collect(c) as chunks
-            CALL (f) {
-                WITH f
-                WHERE $symbols_data IS NOT NULL AND size($symbols_data) > 0
-                UNWIND $symbols_data AS symbol
-                CREATE (s:Symbol {
-                    name: symbol.name,
-                    type: symbol.type,
-                    start_line: symbol.start_line,
-                    end_line: symbol.end_line,
-                    project: $project
-                })
-                CREATE (f)-[:HAS_SYMBOL]->(s)
-                RETURN count(s) as symbols_created
-            }
+            UNWIND CASE
+                WHEN $symbols_data IS NULL OR size($symbols_data) = 0
+                THEN []
+                ELSE $symbols_data
+            END AS symbol
+            CREATE (s:Symbol {
+                name: symbol.name,
+                type: symbol.type,
+                start_line: symbol.start_line,
+                end_line: symbol.end_line,
+                project: $project
+            })
+            CREATE (f)-[:HAS_SYMBOL]->(s)
 
+            WITH f, chunks, collect(s) as symbols
             RETURN f.path as file_path, size(chunks) as chunks_created,
-                   COALESCE(symbols_created, 0) as symbols_created
+                   size(symbols) as symbols_created
             """
 
             # ADR-0078: Debug chunk preparation pipeline
@@ -1024,13 +1046,18 @@ class IncrementalIndexer(FileSystemEventHandler):
                 # Enhanced chunk_id with better uniqueness
                 chunk_id = f"{relative_path}:chunk:{i}"
 
+                # ADR-0088: Clean and convert embedding for Neo4j compatibility
+                clean_emb = self._clean_embedding(embedding)
+                if i == 0 and clean_emb:
+                    logger.info(f"🔍 ADR-0088 Debug - cleaned embedding type: {type(clean_emb)}, len: {len(clean_emb)}, sample: {clean_emb[:3] if clean_emb else 'None'}")
+
                 chunks_data.append({
                     'chunk_id': chunk_id,
                     'content': chunk_text,  # Validated non-empty content
                     'start_line': chunk.get('start_line', 0),
                     'end_line': chunk.get('end_line', 0),
                     'size': len(chunk_text),
-                    'embedding': embedding  # Store vector directly in Neo4j
+                    'embedding': clean_emb
                 })
 
                 # Log first few chunks for debugging
@@ -1044,6 +1071,19 @@ class IncrementalIndexer(FileSystemEventHandler):
                 return False
 
             logger.info(f"🔍 ADR-0078 chunks_data prepared: {len(chunks_data)} items")
+
+            # ADR-0088: Deep inspection of chunks_data before Neo4j
+            if chunks_data:
+                first_chunk = chunks_data[0]
+                logger.info(f"🔍 ADR-0088: First chunk inspection:")
+                logger.info(f"  - Type: {type(first_chunk)}")
+                logger.info(f"  - Keys: {list(first_chunk.keys())}")
+                logger.info(f"  - chunk_id: {first_chunk.get('chunk_id')}")
+                logger.info(f"  - content length: {len(first_chunk.get('content', ''))}")
+                logger.info(f"  - embedding type: {type(first_chunk.get('embedding'))}")
+                if first_chunk.get('embedding'):
+                    logger.info(f"  - embedding length: {len(first_chunk.get('embedding'))}")
+                    logger.info(f"  - embedding sample: {first_chunk.get('embedding')[:3]}")
 
             params = {
                 'path': str(relative_path),
@@ -1084,8 +1124,129 @@ class IncrementalIndexer(FileSystemEventHandler):
             logger.info(f"✅ ADR-0078 Debug - first chunk preview: {chunks_data[0]['chunk_id']}")
             logger.info(f"✅ ADR-0078 Debug - embedding dimensions: {len(chunks_data[0]['embedding'])}")
 
-            # Execute atomic transaction
-            result = await self.container.neo4j.execute_cypher(cypher, params)
+            # ADR-0089: Fix parameter serialization by chunking
+            # Neo4j driver can't handle large nested structures in parameters
+            # Process in smaller batches to avoid Bolt protocol limits
+            BATCH_SIZE = 10  # Process 10 chunks at a time to stay under serialization limits
+
+            total_chunks_created = 0
+            total_symbols_created = 0
+
+            # First, create/update the file node and symbols
+            file_params = {
+                'path': str(relative_path),
+                'project': self.project_name,
+                'name': relative_path.name,
+                'file_hash': file_hash,
+                'size': len(content),
+                'file_type': metadata.get('file_type', 'unknown'),
+                'language': metadata.get('language', 'unknown'),
+                'is_test': metadata.get('is_test', False),
+                'is_config': metadata.get('is_config', False),
+                'is_docs': metadata.get('is_docs', False),
+                'complexity_score': metadata.get('complexity_score', 0),
+                'importance': metadata.get('importance', 1.0),
+                'symbols_data': symbols_data
+            }
+
+            # Create file and symbols (without chunks)
+            file_cypher = """
+            // Create or update File node
+            MERGE (f:File {path: $path, project: $project})
+            SET f += {
+                name: $name,
+                content_hash: $file_hash,
+                size: $size,
+                created_time: datetime(),
+                updated_time: datetime(),
+                indexed_time: datetime(),
+                project: $project,
+                file_type: $file_type,
+                language: $language,
+                is_test: $is_test,
+                is_config: $is_config,
+                is_docs: $is_docs,
+                complexity_score: $complexity_score,
+                importance: $importance
+            }
+
+            // Remove old chunks
+            WITH f
+            MATCH (f)-[:HAS_CHUNK]->(old_chunk:Chunk)
+            DETACH DELETE old_chunk
+
+            // Create symbols if provided
+            WITH f
+            UNWIND CASE
+                WHEN $symbols_data IS NULL OR size($symbols_data) = 0
+                THEN []
+                ELSE $symbols_data
+            END AS symbol
+            CREATE (s:Symbol {
+                name: symbol.name,
+                type: symbol.type,
+                start_line: symbol.start_line,
+                end_line: symbol.end_line,
+                project: $project
+            })
+            CREATE (f)-[:HAS_SYMBOL]->(s)
+
+            WITH f, collect(s) as symbols
+            RETURN f.path as file_path, size(symbols) as symbols_created
+            """
+
+            file_result = await self.container.neo4j.execute_cypher(file_cypher, file_params)
+            if file_result.get('status') == 'success' and file_result.get('result'):
+                total_symbols_created = file_result['result'][0].get('symbols_created', 0)
+
+            # Now process chunks in batches
+            for i in range(0, len(chunks_data), BATCH_SIZE):
+                batch = chunks_data[i:i + BATCH_SIZE]
+                logger.info(f"🔧 Processing chunk batch {i//BATCH_SIZE + 1}/{(len(chunks_data) + BATCH_SIZE - 1)//BATCH_SIZE} ({len(batch)} chunks)")
+
+                # Create chunks in this batch
+                batch_cypher = """
+                MATCH (f:File {path: $path, project: $project})
+                WITH f
+                UNWIND $batch_chunks AS chunk_data
+                CREATE (c:Chunk {
+                    chunk_id: chunk_data.chunk_id,
+                    content: chunk_data.content,
+                    start_line: chunk_data.start_line,
+                    end_line: chunk_data.end_line,
+                    size: chunk_data.size,
+                    project: $project,
+                    embedding: chunk_data.embedding,
+                    created_time: datetime()
+                })
+                CREATE (f)-[:HAS_CHUNK]->(c)
+                WITH count(c) as batch_count
+                RETURN batch_count
+                """
+
+                batch_params = {
+                    'path': str(relative_path),
+                    'project': self.project_name,
+                    'batch_chunks': batch
+                }
+
+                batch_result = await self.container.neo4j.execute_cypher(batch_cypher, batch_params)
+
+                if batch_result.get('status') == 'success':
+                    result_list = batch_result.get('result', [])
+                    if result_list:
+                        batch_created = result_list[0].get('batch_count', 0)
+                        total_chunks_created += batch_created
+                        logger.info(f"✅ Batch created {batch_created} chunks")
+
+                        if batch_created == 0:
+                            logger.error(f"🚨 Batch {i//BATCH_SIZE + 1} failed to create chunks despite having {len(batch)} items")
+                else:
+                    logger.error(f"🚨 Batch {i//BATCH_SIZE + 1} failed: {batch_result.get('message')}")
+
+            chunks_created = total_chunks_created
+            symbols_created = total_symbols_created
+            logger.info(f"✅ Neo4j unified storage complete: {chunks_created} chunks + {symbols_created} symbols")
 
             if result.get('status') == 'success':
                 result_list = result.get('result', [])
@@ -1099,15 +1260,13 @@ class IncrementalIndexer(FileSystemEventHandler):
                     chunks_created = 0
                     symbols_created = 0
 
-                logger.info(f"✅ Neo4j unified storage: {chunks_created} chunks + {symbols_created} symbols")
-
-                # ADR-0078: Post-execution analysis
-                if chunks_created == 0 and len(chunks_data) > 0:
-                    logger.error(f"🚨 UNWIND FAILURE: {len(chunks_data)} chunks passed but 0 created")
-                    logger.error("🚨 This indicates a Neo4j UNWIND issue - check ADR-0078")
-                    return False
-                elif chunks_created > 0:
-                    logger.info(f"✅ ADR-0078 SUCCESS: {chunks_created} chunks created successfully")
+            # ADR-0089: Post-execution validation
+            if chunks_created == 0 and len(chunks_data) > 0:
+                logger.error(f"🚨 BATCH PROCESSING FAILURE: {len(chunks_data)} chunks passed but 0 created")
+                logger.error("🚨 Check batch processing and parameter serialization")
+                return False
+            elif chunks_created > 0:
+                logger.info(f"✅ ADR-0089 SUCCESS: {chunks_created}/{len(chunks_data)} chunks created via batch processing")
 
                 # Update metrics
                 self.metrics['chunks_created'] += chunks_created

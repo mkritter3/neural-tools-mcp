@@ -119,6 +119,21 @@ async def _execute_dependency_analysis(neo4j_service, target_file: str, analysis
 
     logger.info(f"🕸️ ADR-0075: Multi-hop dependency analysis for {target_file}")
 
+    # ADR-0087: Normalize path to relative format for Neo4j compatibility
+    if target_file.startswith('/'):
+        # Convert absolute to relative by removing common project paths
+        base_paths = [
+            '/Users/mkr/local-coding/claude-l9-template/',
+            '/home/user/projects/',
+            '/app/',
+            '/workspace/'
+        ]
+        for base_path in base_paths:
+            if target_file.startswith(base_path):
+                target_file = target_file[len(base_path):]
+                logger.info(f"Normalized path from absolute to relative: {target_file}")
+                break
+
     # Build optimized analysis-type-specific queries for performance
     analysis_query = await _build_optimized_dependency_query(analysis_type, max_depth)
 
@@ -168,7 +183,8 @@ async def _build_optimized_dependency_query(analysis_type: str, max_depth: int) 
 
     if analysis_type == "imports":
         return f"""
-        MATCH (target:File {{path: $target_file, project: $project}})
+        MATCH (target:File {{project: $project}})
+        WHERE target.path = $target_file OR target.path ENDS WITH $target_file
         OPTIONAL MATCH path = (target)-[:IMPORTS*1..{max_depth}]->(imported:File {{project: $project}})
         WITH target,
              [rel in relationships(path) | {{
@@ -186,7 +202,8 @@ async def _build_optimized_dependency_query(analysis_type: str, max_depth: int) 
 
     elif analysis_type == "dependents":
         return f"""
-        MATCH (target:File {{path: $target_file, project: $project}})
+        MATCH (target:File {{project: $project}})
+        WHERE target.path = $target_file OR target.path ENDS WITH $target_file
         OPTIONAL MATCH path = (dependent:File {{project: $project}})-[:IMPORTS*1..{max_depth}]->(target)
         WITH target,
              [rel in relationships(path) | {{
@@ -204,7 +221,8 @@ async def _build_optimized_dependency_query(analysis_type: str, max_depth: int) 
 
     elif analysis_type == "calls":
         return f"""
-        MATCH (target:File {{path: $target_file, project: $project}})
+        MATCH (target:File {{project: $project}})
+        WHERE target.path = $target_file OR target.path ENDS WITH $target_file
         OPTIONAL MATCH (target)-[:CONTAINS]->(func:Function)-[:CALLS*1..{max_depth}]->(called:Function)<-[:CONTAINS]-(called_file:File {{project: $project}})
         WITH target,
              [{{type: 'call', from_function: func.name, to_function: called.name, call_depth: 1}}] as call_dependencies
@@ -217,7 +235,8 @@ async def _build_optimized_dependency_query(analysis_type: str, max_depth: int) 
 
     else:  # "all"
         return f"""
-        MATCH (target:File {{path: $target_file, project: $project}})
+        MATCH (target:File {{project: $project}})
+        WHERE target.path = $target_file OR target.path ENDS WITH $target_file
 
         OPTIONAL MATCH import_path = (target)-[:IMPORTS*1..{max_depth}]->(imported:File {{project: $project}})
         WITH target,

@@ -50,6 +50,10 @@ ENV PYTHONPATH=/app:/app/src
 ENV PYTHONUNBUFFERED=1
 ENV TOKENIZERS_PARALLELISM=false
 
+# Path mapping environment variables (ADR-0086)
+ENV HOST_PROJECT_PATH=/Users/mkr/local-coding/claude-l9-template
+ENV CONTAINER_PROJECT_PATH=/workspace
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=60s \
     CMD curl -f http://localhost:8080/health || exit 1

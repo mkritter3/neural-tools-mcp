@@ -56,6 +56,48 @@ async def health():
         "version": "1.0.0"
     }
 
+@app.get('/healthz')
+async def liveness_probe():
+    """Kubernetes liveness probe - is the service running? (ADR-0086)"""
+    return {
+        "status": "alive",
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get('/readyz')
+async def readiness_probe():
+    """Kubernetes readiness probe - can the service handle requests? (ADR-0086)"""
+    checks = {}
+
+    # Check if indexer is initialized
+    if hasattr(app.state, 'indexer_runner') and app.state.indexer_runner.indexer:
+        checks['indexer'] = 'ready'
+    else:
+        checks['indexer'] = 'not ready'
+
+    # Check Neo4j connection if available
+    if hasattr(app.state, 'indexer_runner') and app.state.indexer_runner.indexer:
+        try:
+            # Simple check to see if services are initialized
+            if app.state.indexer_runner.indexer.services:
+                checks['neo4j'] = 'ready'
+            else:
+                checks['neo4j'] = 'not ready'
+        except:
+            checks['neo4j'] = 'unknown'
+
+    # Overall readiness
+    all_ready = all('ready' in str(v) for v in checks.values())
+
+    if all_ready:
+        return {"status": "ready", "checks": checks}
+    else:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not ready", "checks": checks}
+        )
+
 @app.get('/metrics')
 async def metrics():
     """Prometheus metrics endpoint"""
@@ -105,22 +147,39 @@ async def status():
     
     return base_status
 
+from pydantic import BaseModel
+
+class ReindexRequest(BaseModel):
+    """Request model for reindexing paths (ADR-0086)"""
+    path: str
+    recursive: bool = True
+
 @app.post('/reindex-path')
-async def reindex_path(path: str):
-    """Trigger reindexing of a specific path"""
-    if not path:
+async def reindex_path(request: ReindexRequest):
+    """Trigger reindexing of a specific path - accepts JSON body per 2025 REST standards"""
+    if not request.path:
         return {"error": "Path parameter is required"}
-    
+
+    # Handle path translation from host to container (ADR-0086)
+    container_path = request.path
+    host_base = os.environ.get('HOST_PROJECT_PATH', '/Users/mkr/local-coding/claude-l9-template')
+    container_base = os.environ.get('CONTAINER_PROJECT_PATH', '/workspace')
+
+    if container_path.startswith(host_base):
+        container_path = container_path.replace(host_base, container_base)
+
     # This will be populated by the indexer service when runner is set up
     # For now, return a placeholder response
     if hasattr(app.state, 'indexer_runner') and app.state.indexer_runner.indexer:
         try:
             # Queue the path for reindexing
-            await app.state.indexer_runner.indexer._queue_change(path, 'update')
+            await app.state.indexer_runner.indexer._queue_change(container_path, 'update')
             return {
                 "status": "success",
-                "message": f"Reindex request queued for: {path}",
-                "enqueued": path
+                "message": f"Reindex request queued for: {container_path}",
+                "enqueued": container_path,
+                "original_path": request.path,
+                "recursive": request.recursive
             }
         except Exception as e:
             logger.error(f"Error queuing reindex request: {e}")

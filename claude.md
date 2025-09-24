@@ -1,6 +1,7 @@
 # L9 Engineering Contract
 
-**Date: September 21, 2025 | MCP Protocol: 2025-06-18**
+**Date: September 23, 2025 | MCP Protocol: 2025-06-18**
+**Status: ADR-0085 In Progress - Fixing 5 Critical Indexer Disconnects**
 
 **CRITICAL RULES:**
 - Check Context7 for protocols before March 2025
@@ -53,12 +54,12 @@ Container naming uses timestamp+random to prevent 409 conflicts:
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| Neo4j | 47687 | GraphRAG |
-| Qdrant | 46333 | Vector DB |
+| Neo4j | 47687 | GraphRAG + Vector Storage (HNSW) |
+| ~~Qdrant~~ | ~~46333~~ | **NOT USED** - Neo4j handles vectors |
 | Redis Cache | 46379 | Session cache |
 | Redis Queue | 46380 | Task queue |
-| Nomic | 48000 | Embeddings |
-| Indexer | 48100+ | Per-project |
+| Nomic | 48000 | Embeddings (Nomic Embed v2) |
+| Indexer | 48100+ | Per-project (currently 48106)
 
 ## Configuration Priority (ADR-0037)
 1. Environment variables (highest)
@@ -75,8 +76,7 @@ Container naming uses timestamp+random to prevent 409 conflicts:
 - 7-day cleanup for temp tags
 
 ## MCP Connection Pooling (L9 Conservative)
-- Neo4j: 50 (min 5) - Complex queries need headroom
-- Qdrant: 30 (min 3) - Fast vector ops
+- Neo4j: 50 (min 5) - Complex queries + vector ops need headroom
 - Redis: 25/15 - Lightweight ops
 
 ## Performance Requirements
@@ -95,7 +95,7 @@ Container naming uses timestamp+random to prevent 409 conflicts:
 ### ✅ ADR-0039: Collection Naming
 - Single source of truth: `CollectionNamingManager`
 - Format: `project-{name}` (no underscores)
-- Consistent between Neo4j and Qdrant
+- Applied to Neo4j node properties only (no Qdrant)
 
 ### ✅ ADR-0060: Container Conflicts (409 Errors)
 - Unique names: `indexer-{project}-{timestamp}-{random}`
@@ -120,16 +120,33 @@ Container naming uses timestamp+random to prevent 409 conflicts:
 - Migration system with rollback
 - Schema validation tools
 
+### ✅ ADR-0084: Neo4j Embedding Pipeline Optimization
+- Task prefixes for Nomic Embed v2 (10x speedup)
+- Connection pooling with persistent httpx client
+- Redis cache integration (600-1000x on hits)
+- Circuit breaker pattern for resilience
+
+### 🔧 ADR-0085: Indexer-MCP Integration Fix (IN PROGRESS)
+**5 Critical Disconnects Found:**
+1. HTTP API mismatch - MCP sends JSON, indexer expects query params
+2. Neo4j syntax error - CALL subquery aliasing not allowed
+3. Port discovery failure - Returns None despite container running
+4. Vector storage confusion - No Qdrant, using Neo4j HNSW
+5. Path translation - Host paths vs container paths
+
+**Fix Status:** ADR created, implementation plan ready
+
 ## Common Issues & Solutions
 
 | Issue | Root Cause | Solution |
 |-------|------------|----------|
 | MCP fails to connect | Hardcoded Docker IPs | Use localhost + exposed ports |
 | Auth failures | Password mismatch | Neo4j: `graphrag-password` |
-| Indexer no data | Event loop/schema issues | Use `asyncio.run_coroutine_threadsafe()` |
+| Indexer no data | Multiple disconnects | ADR-0085: Fix all 5 issues |
 | Cross-project data | No isolation | ADR-0029: project property |
-| GraphRAG empty | Collection naming | ADR-0039: consistent naming |
+| GraphRAG empty | Indexing pipeline broken | ADR-0085: Complete fix |
 | 409 Conflicts | Deterministic names | ADR-0060: unique names + Redis lock |
+| Vector search empty | Neo4j not storing vectors | Fix Neo4j syntax + API calls |
 
 ## Development Workflow
 
