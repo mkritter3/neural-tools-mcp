@@ -324,8 +324,8 @@ class ProjectContextManager:
                         "method": "current_directory",
                         "confidence": 0.95
                     }
-        except Exception as e:
-            logger.debug(f"Failed to detect from current directory: {e}")
+            except Exception as e:
+                logger.debug(f"Failed to detect from current directory: {e}")
         
         # Strategy 1: Already have a current project (but lower priority than cwd)
         if self.current_project and self.current_project_path:
