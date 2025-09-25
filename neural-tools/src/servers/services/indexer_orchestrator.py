@@ -85,13 +85,14 @@ class IndexerOrchestrator:
     Updated with ADR-0060 for Graceful Ephemeral Containers pattern
     """
 
-    def __init__(self, context_manager=None, max_concurrent: int = 8):
+    def __init__(self, context_manager=None, max_concurrent: int = 8, test_mode: bool = False):
         """
         Initialize the orchestrator with dependency injection (ADR-0044)
 
         Args:
             context_manager: Injected ProjectContextManager instance
             max_concurrent: Maximum number of concurrent indexer containers
+            test_mode: If True, use test port range (49100+) to avoid conflicts
         """
         # ADR-0044: Accept injected context manager
         self.context_manager = context_manager
@@ -100,14 +101,21 @@ class IndexerOrchestrator:
         self.active_indexers: Dict[str, dict] = {}  # project -> {container_id, last_activity, port}
         self.stopped_indexers: Dict[str, dict] = {}  # project -> {container_id, stop_time, port, project_path}
         self.max_concurrent = max_concurrent
+        self.test_mode = test_mode
 
         # ADR-0060: Redis clients for distributed locking and caching
         self.redis_client = None
         self.redis_cache = None
 
         # Port allocation for indexer HTTP APIs
-        self.port_base = 48100  # Start from 48100 for project indexers
+        # Use different port ranges to avoid test/production conflicts
+        self.port_base = 49100 if test_mode else 48100  # Tests: 49100-49199, Production: 48100-48199
         self.allocated_ports = set()  # Track allocated ports
+
+        if test_mode:
+            logger.info(f"🧪 IndexerOrchestrator initialized in TEST MODE (ports {self.port_base}-{self.port_base+99})")
+        else:
+            logger.info(f"🚀 IndexerOrchestrator initialized in PRODUCTION MODE (ports {self.port_base}-{self.port_base+99})")
         
         # Resource limits per ADR-0030 and expert recommendations
         self.resource_limits = {

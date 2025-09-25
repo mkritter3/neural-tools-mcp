@@ -33,7 +33,7 @@ class TestMountValidation:
     @pytest.fixture
     def orchestrator(self, mock_docker_client):
         """Create orchestrator with mocked Docker client"""
-        orch = IndexerOrchestrator()
+        orch = IndexerOrchestrator(test_mode=True)  # Use test port range
         orch.docker_client = mock_docker_client
         orch.redis_client = None  # Use local locks
         return orch
@@ -191,7 +191,7 @@ class TestMountValidation:
     @pytest.mark.asyncio
     async def test_redis_fallback_still_works(self, mock_docker_client):
         """Test that orchestrator works even when Redis fails"""
-        orch = IndexerOrchestrator()
+        orch = IndexerOrchestrator(test_mode=True)  # Use test port range
         orch.docker_client = mock_docker_client
 
         # Simulate Redis failure

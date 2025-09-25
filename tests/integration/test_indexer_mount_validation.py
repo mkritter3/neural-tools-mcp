@@ -66,7 +66,7 @@ class TestIndexerIntegration:
     @pytest.mark.asyncio
     async def test_real_mount_validation(self):
         """Test mount validation with real containers"""
-        orchestrator = IndexerOrchestrator()
+        orchestrator = IndexerOrchestrator(test_mode=True)  # Use test port range
         orchestrator.docker_client = self.docker_client
 
         # Initialize orchestrator
@@ -119,7 +119,7 @@ class TestIndexerIntegration:
     @pytest.mark.asyncio
     async def test_redis_unavailable_fallback(self):
         """Test that system works when Redis is unavailable"""
-        orchestrator = IndexerOrchestrator()
+        orchestrator = IndexerOrchestrator(test_mode=True)  # Use test port range
         orchestrator.docker_client = self.docker_client
 
         # Set invalid Redis credentials to force fallback
@@ -161,7 +161,7 @@ class TestIndexerIntegration:
     @pytest.mark.asyncio
     async def test_concurrent_real_containers(self):
         """Test concurrent container creation with real Docker"""
-        orchestrator = IndexerOrchestrator()
+        orchestrator = IndexerOrchestrator(test_mode=True)  # Use test port range
         orchestrator.docker_client = self.docker_client
         await orchestrator.initialize()
 
