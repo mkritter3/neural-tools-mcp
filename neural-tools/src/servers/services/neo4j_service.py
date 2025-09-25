@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional
 
 # ADR-0096: Import robust vector search implementation
 try:
-    from robust_vector_search import RobustVectorSearch
+    from .robust_vector_search import RobustVectorSearch
     ROBUST_SEARCH_AVAILABLE = True
 except ImportError:
     from pathlib import Path
@@ -22,7 +22,7 @@ except ImportError:
     services_dir = Path(__file__).parent
     sys.path.insert(0, str(services_dir))
     try:
-        from robust_vector_search import RobustVectorSearch
+        from .robust_vector_search import RobustVectorSearch
         ROBUST_SEARCH_AVAILABLE = True
     except ImportError:
         ROBUST_SEARCH_AVAILABLE = False
