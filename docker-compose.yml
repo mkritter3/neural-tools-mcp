@@ -1,0 +1,128 @@
+version: '3.8'
+
+# L9 Neural GraphRAG Production Stack
+# ADR-0096: Neo4j handles both graph and vector storage (no Qdrant)
+# ADR-0084: Nomic Embed v2 with optimized container
+
+services:
+  # Neo4j GraphRAG Database (Graph + Vector Storage)
+  neo4j:
+    image: neo4j:5.26.0
+    container_name: neo4j-graphrag
+    ports:
+      - "47474:7474"  # Browser UI
+      - "47687:7687"  # Bolt protocol
+    environment:
+      - NEO4J_AUTH=neo4j/graphrag-password
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      - NEO4J_server_memory_heap_initial__size=2g
+      - NEO4J_server_memory_heap_max__size=4g
+      - NEO4J_server_memory_pagecache_size=2g
+      - NEO4J_db_tx__log_rotation_retention__policy=false
+      - NEO4J_db_transaction_timeout=60s
+      - NEO4J_server_bolt_thread__pool__max__size=400
+      - NEO4J_server_bolt_thread__pool__keep__alive=5m
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "graphrag-password", "MATCH () RETURN count(*) LIMIT 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - neural-network
+
+  # Redis Cache (Session state and embeddings cache)
+  redis-cache:
+    image: redis:7-alpine
+    container_name: redis-cache
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass graphrag-redis-2025
+    ports:
+      - "46379:6379"
+    volumes:
+      - redis-cache-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "-a", "graphrag-redis-2025", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - neural-network
+
+  # Redis Queue (Task management and distributed locking)
+  redis-queue:
+    image: redis:7-alpine
+    container_name: redis-queue
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass graphrag-redis-2025
+    ports:
+      - "46380:6379"
+    volumes:
+      - redis-queue-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "-a", "graphrag-redis-2025", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    networks:
+      - neural-network
+
+  # Nomic Embeddings Service (Optimized v2-MoE)
+  nomic:
+    build:
+      context: .
+      dockerfile: Dockerfile.nomic-optimized
+    container_name: neural-flow-nomic-v2
+    ports:
+      - "48000:8000"
+    environment:
+      - MODEL_NAME=nomic-ai/nomic-embed-text-v2-moe
+      - MAX_BATCH_SIZE=256
+      - MAX_CONCURRENT_REQUESTS=100
+      - CACHE_SIZE=10000
+      - PORT=8000
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - neural-network
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  # Neural Indexer Sidecar (Per-project, dynamically created)
+  # Note: Indexers are created dynamically by the MCP server
+  # Each project gets its own indexer on ports 48100+
+  # Example manual run:
+  # docker run -d \
+  #   --name indexer-myproject \
+  #   --network neural-network \
+  #   -p 48106:8080 \
+  #   -v /path/to/project:/workspace:ro \
+  #   -e PROJECT_NAME=myproject \
+  #   -e PROJECT_PATH=/workspace \
+  #   l9-neural-indexer:production
+
+volumes:
+  neo4j-data:
+    driver: local
+  neo4j-logs:
+    driver: local
+  redis-cache-data:
+    driver: local
+  redis-queue-data:
+    driver: local
+
+networks:
+  neural-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

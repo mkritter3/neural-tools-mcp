@@ -1,0 +1,54 @@
+version: '3.8'
+
+# Development overrides for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+services:
+  neo4j:
+    environment:
+      - NEO4J_server_directories_logs=/logs
+      - NEO4J_server_logging_level=DEBUG
+      - NEO4J_server_logging_console_enabled=true
+    ports:
+      - "47474:7474"  # Browser UI (for development inspection)
+
+  redis-cache:
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass graphrag-redis-2025 --loglevel debug
+
+  redis-queue:
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass graphrag-redis-2025 --loglevel debug
+
+  nomic:
+    environment:
+      - LOG_LEVEL=DEBUG
+      - ENABLE_PROFILING=true
+    volumes:
+      - ./neural-tools/src:/app/src:ro  # Mount source for debugging
+
+  # Development indexer with hot reload
+  indexer-dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.indexer
+      args:
+        CACHE_BUST: ${CACHE_BUST:-1}
+    container_name: indexer-dev
+    ports:
+      - "48100:8080"
+    environment:
+      - PROJECT_NAME=${PROJECT_NAME:-claude-l9-template}
+      - PROJECT_PATH=/workspace
+      - INITIAL_INDEX=true
+      - LOG_LEVEL=DEBUG
+      - PYTHONUNBUFFERED=1
+      - ENABLE_PROFILING=true
+    volumes:
+      - .:/workspace:ro
+      - ./neural-tools/src:/app/src:ro  # Hot reload source
+    networks:
+      - neural-network
+    depends_on:
+      - neo4j
+      - redis-cache
+      - redis-queue
+      - nomic
