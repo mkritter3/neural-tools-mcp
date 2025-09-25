@@ -132,7 +132,11 @@ project_understanding(scope="full")
 
 ```
 l9-neural-graphrag/
-├── 🐳 docker-compose.yml           # Service orchestration
+├── 🐳 docker-compose.yml           # Production stack (Neo4j, Redis, Nomic)
+├── 🐳 docker-compose.dev.yml       # Development overrides
+├── 🐳 docker/                      # Container configs & docs
+│   ├── Dockerfile.indexer         # Neural indexer container
+│   └── README.md                  # Docker operations guide
 ├── ⚡ setup.sh                     # One-click installation
 ├── 🧠 neural-tools/                # MCP server & indexer
 │   ├── src/neural_mcp/            # MCP protocol implementation
@@ -195,7 +199,10 @@ docker system prune -f
 docker-compose up -d
 
 # Verify all services running
-docker-compose ps | grep -v Exit
+docker-compose ps | grep Up
+
+# For development mode with debug logging
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
 ### 🔌 MCP Not Connecting to Claude

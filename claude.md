@@ -69,11 +69,18 @@ Container naming uses timestamp+random to prevent 409 conflicts:
 
 **Container→Host:** Use `host.docker.internal` not `localhost`
 
-## Docker Image Management (ADR-0038)
-- Production images: `service:production` tag (auto-updates)
-- Semantic versioning: `v1.2.3`
-- No debug suffixes in production
-- 7-day cleanup for temp tags
+## Docker Setup & Management (ADR-0038)
+
+### Active Docker Compose Files
+- `docker-compose.yml` - Production stack (Neo4j, Redis, Nomic)
+- `docker-compose.dev.yml` - Development overrides with debug logging
+- `docker/README.md` - Complete Docker operations guide
+
+### Image Management
+- Production images: `service:production` tag
+- Cleaned up 30+ old images (Sept 24, 2025)
+- Removed obsolete Dockerfiles and monitoring configs
+- Active containers: neo4j, redis-cache, redis-queue, nomic, indexers
 
 ## MCP Connection Pooling (L9 Conservative)
 - Neo4j: 50 (min 5) - Complex queries + vector ops need headroom
@@ -187,8 +194,9 @@ mv ~/.claude/mcp-servers/neural-tools-backup-* ~/.claude/mcp-servers/neural-tool
 - MCP: 2025-06-18
 - JSON-RPC: 2.0
 - Neo4j Driver: 5.22.0
-- Qdrant: 1.15.1
 - Redis: RESP3
+- Docker Compose: 3.8
+- Nomic Embed: v2-MoE
 
 **Confidence: 100%** - Complete architecture with ADR-0060 fix deployed globally.
 
