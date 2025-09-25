@@ -354,36 +354,15 @@ class ProjectContextManager:
         """
         Auto-detect active project using heuristics.
 
-        Detection strategies (ADR-0097 updated):
-        0. Active Docker containers (highest confidence - 1.0)
-        1. CLAUDE_PROJECT_DIR environment variable (if set - 0.95)
-        2. Current working directory (only if not in mcp-servers - 0.9)
-        3. Most recently accessed project (0.7)
-        4. Project containing recently accessed files (0.6)
-        5. Scan common directories for projects (0.4)
-        6. Fall back to "default" (0.2)
+        Detection strategies (ADR-0102 - Corrected Architecture):
+        1. CLAUDE_PROJECT_DIR environment variable (highest confidence - 1.0)
+        2. Explicit user setting via set_project_context (1.0)
+        3. File-based detection from current directory (0.9)
+        4. Container detection as SECONDARY confirmation (0.7)
+        5. Registry cache - last known project (0.5, local only)
+        6. Fall back to explicit None - require user action (0.0)
         """
-        # Strategy 0: Check for active Docker containers FIRST (ADR-0097)
-        # This is the most authoritative source - containers prove which project is active
-        container_result = await self._detect_from_containers()
-        if container_result:
-            project_name, project_path = container_result
-            # Update state and registry
-            self.current_project = project_name
-            self.current_project_path = project_path
-            self.project_registry[project_name] = project_path
-            self.last_activity[project_name] = datetime.now()
-            self._save_registry()
-
-            logger.info(f"🐳 Using project from active container: {project_name}")
-            return {
-                "project": project_name,
-                "path": str(project_path),
-                "method": "container",
-                "confidence": 1.0  # Highest confidence - containers are source of truth
-            }
-
-        # Strategy 1: Check CLAUDE_PROJECT_DIR - Claude sets this when launching MCP
+        # Strategy 1: Check CLAUDE_PROJECT_DIR - Most authoritative if set
         import os
         if claude_dir := os.getenv("CLAUDE_PROJECT_DIR"):
             logger.info(f"🎯 Using CLAUDE_PROJECT_DIR: {claude_dir}")
@@ -396,7 +375,23 @@ class ProjectContextManager:
             except Exception as e:
                 logger.warning(f"Failed to use CLAUDE_PROJECT_DIR: {e}")
 
-        # Strategy 1: Try current working directory (but skip if we're in MCP server location)
+        # Strategy 2: Check if already explicitly set via set_project_context
+        if self.current_project and self.current_project_path:
+            # Verify the path still exists
+            if self.current_project_path.exists():
+                logger.info(f"📌 Using explicitly set project: {self.current_project}")
+                return {
+                    "project": self.current_project,
+                    "path": str(self.current_project_path),
+                    "method": "explicit",
+                    "confidence": 1.0
+                }
+            else:
+                # Clear stale cache
+                self.current_project = None
+                self.current_project_path = None
+
+        # Strategy 3: File-based detection from current directory
         current_dir = Path.cwd()
         # Skip if we're running from global MCP location
         if "mcp-servers" not in str(current_dir) and ".claude" not in str(current_dir):
@@ -414,48 +409,53 @@ class ProjectContextManager:
                     return {
                         "project": current_project_name,
                         "path": str(current_dir),
-                        "method": "current_directory",
-                        "confidence": 0.95
+                        "method": "file_detection",
+                        "confidence": 0.9
                     }
             except Exception as e:
                 logger.debug(f"Failed to detect from current directory: {e}")
+
+        # Strategy 4: Container detection as SECONDARY confirmation (ADR-0102)
+        container_result = await self._detect_from_containers()
+        if container_result:
+            project_name, project_path = container_result
+            # Update state and registry
+            self.current_project = project_name
+            self.current_project_path = project_path
+            self.project_registry[project_name] = project_path
+            self.last_activity[project_name] = datetime.now()
+            self._save_registry()
+
+            logger.info(f"🐳 Using project from active container (secondary confirmation): {project_name}")
+            return {
+                "project": project_name,
+                "path": str(project_path),
+                "method": "container",
+                "confidence": 0.7  # Secondary confirmation, not primary
+            }
         
-        # Strategy 1: Already have a current project (but lower priority than cwd)
-        if self.current_project and self.current_project_path:
-            # Verify the path still exists
-            if self.current_project_path.exists():
-                logger.info(f"📌 Using cached project: {self.current_project}")
-                return {
-                    "project": self.current_project,
-                    "path": str(self.current_project_path),
-                    "method": "cached",
-                    "confidence": 0.9
-                }
-            else:
-                # Clear stale cache
-                self.current_project = None
-                self.current_project_path = None
-        
-        # Strategy 2: Most recent activity (only if not stale)
-        if self.last_activity:
+        # Strategy 5: Registry cache - last known project (local only)
+        # Skip if running from global MCP to prevent cross-project contamination
+        is_global_mcp = str(Path(__file__).resolve()).startswith(str(Path.home() / ".claude" / "mcp-servers"))
+        if not is_global_mcp and self.last_activity:
             most_recent = max(
                 self.last_activity.items(),
                 key=lambda x: x[1]
             )
             project_name = most_recent[0]
             # Only use if recent (within last hour) and path exists
-            if (project_name in self.project_registry and 
+            if (project_name in self.project_registry and
                 (datetime.now() - most_recent[1]).seconds < 3600 and
                 self.project_registry[project_name].exists()):
-                
+
                 self.current_project = project_name
                 self.current_project_path = self.project_registry[project_name]
-                logger.info(f"🕐 Detected project from recent activity: {project_name}")
+                logger.info(f"🕐 Detected project from registry cache: {project_name}")
                 return {
                     "project": project_name,
                     "path": str(self.current_project_path),
-                    "method": "recent_activity",
-                    "confidence": 0.7
+                    "method": "registry_cache",
+                    "confidence": 0.5
                 }
         
         # Strategy 3: Check detection hints (files recently accessed)
@@ -496,16 +496,15 @@ class ProjectContextManager:
                         "confidence": 0.4
                     }
         
-        # Strategy 6: Fall back to current directory detection
-        fallback_name = await self._detect_project_name(current_dir)
-        self.current_project = fallback_name
-        self.current_project_path = current_dir
-        logger.warning(f"🏠 Falling back to current directory: {fallback_name}")
+        # Strategy 6: Fall back to explicit None - require user action (ADR-0102)
+        logger.warning("⚠️ No project context detected. User must call set_project_context()")
         return {
-            "project": fallback_name,
-            "path": str(self.current_project_path),
-            "method": "fallback",
-            "confidence": 0.2 if fallback_name == "default" else 0.3
+            "project": None,
+            "path": None,
+            "method": "none",
+            "confidence": 0.0,
+            "error": "No project context detected",
+            "action": "Please use set_project_context tool to specify your working project"
         }
     
     async def _scan_for_projects(self):

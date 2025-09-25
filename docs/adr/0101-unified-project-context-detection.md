@@ -1,8 +1,11 @@
-# ADR-0097: Unified Project Context Detection Architecture
+# ADR-0101: Unified Project Context Detection Architecture
 
-**Status:** Proposed
+**Status:** SUPERSEDED by ADR-0102
 **Date:** 2025-09-24
 **Author:** L9 Engineering Team
+
+> **⚠️ IMPORTANT**: This ADR has been superseded by ADR-0102 which corrects the circular dependency issue.
+> Container detection should be SECONDARY, not primary. See ADR-0102 for the corrected architecture.
 
 ## Executive Summary
 

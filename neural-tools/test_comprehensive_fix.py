@@ -85,8 +85,7 @@ def check_imports():
 
     required_imports = [
         'from contextlib import asynccontextmanager',
-        'from project_context_manager import get_project_context_manager',
-        'from neural_mcp.project_detector import get_user_project'
+        'from servers.services.project_context_manager import get_project_context_manager'
     ]
 
     all_present = True
