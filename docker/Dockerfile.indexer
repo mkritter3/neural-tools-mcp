@@ -60,8 +60,8 @@ ENV PYTHONUNBUFFERED=1
 ENV TOKENIZERS_PARALLELISM=false
 
 # Path mapping environment variables (ADR-0086)
-ENV HOST_PROJECT_PATH=/Users/mkr/local-coding/claude-l9-template
-ENV CONTAINER_PROJECT_PATH=/workspace
+# NOTE: These should be set dynamically at container runtime, not hardcoded
+# The orchestrator will pass the actual project path via environment
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=60s \

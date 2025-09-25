@@ -695,6 +695,9 @@ class IndexerOrchestrator:
             environment={
                 'PROJECT_NAME': project_name,
                 'PROJECT_PATH': '/workspace',
+                # ADR-0086: Dynamic path mapping (not hardcoded in Dockerfile)
+                'HOST_PROJECT_PATH': project_path,
+                'CONTAINER_PROJECT_PATH': '/workspace',
                 # Use container name when on same network (l9-graphrag-network)
                 # Don't inherit from host environment - always use container name
                 'NEO4J_URI': 'bolt://claude-l9-template-neo4j-1:7687',
