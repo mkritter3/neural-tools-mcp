@@ -141,38 +141,56 @@ class ProjectDetector:
         return sanitized or "default"
 
     def _detect_from_containers(self) -> Optional[Tuple[str, Path]]:
-        """Detect project from running Docker containers"""
+        """
+        Detect project from running Docker containers
+        ADR-0097: Use most recently started indexer container as active project
+        """
         try:
             containers = self.docker_client.containers.list(all=True)
 
-            # Look for indexer containers (they indicate active projects)
+            # Collect all running indexer containers with their info
+            indexer_containers = []
             for container in containers:
                 if container.name.startswith("indexer-") and container.status == "running":
-                    # Extract project name from container name
-                    project_name = container.name.replace("indexer-", "")
+                    # Parse container name: indexer-{project}-{timestamp}-{random}
+                    # Example: indexer-neural-novelist-1758777614-4cb1
+                    parts = container.name.split("-")
+                    if len(parts) >= 4:
+                        # Project name is everything between "indexer-" and the last two parts
+                        project_name = "-".join(parts[1:-2])
 
-                    # Try to get mount path from container
-                    mounts = container.attrs.get("Mounts", [])
-                    for mount in mounts:
-                        if mount.get("Destination") == "/workspace":
-                            source = mount.get("Source")
-                            if source:
-                                project_path = Path(source)
-                                if project_path.exists():
-                                    return project_name, project_path
+                        # Get container start time for sorting
+                        started_at = container.attrs.get("State", {}).get("StartedAt", "")
 
-                    # If no mount found, check registry
-                    registry_path = Path.home() / ".claude" / "project_registry.json"
-                    if registry_path.exists():
-                        try:
-                            with open(registry_path) as f:
-                                data = json.load(f)
-                                if project_name in data.get("projects", {}):
-                                    project_path = Path(data["projects"][project_name])
+                        # Get mount path
+                        mounts = container.attrs.get("Mounts", [])
+                        project_path = None
+                        for mount in mounts:
+                            if mount.get("Destination") == "/workspace":
+                                source = mount.get("Source")
+                                if source:
+                                    project_path = Path(source)
                                     if project_path.exists():
-                                        return project_name, project_path
-                        except:
-                            pass
+                                        indexer_containers.append({
+                                            "name": project_name,
+                                            "path": project_path,
+                                            "started": started_at,
+                                            "container": container.name
+                                        })
+                                        break
+
+            # If we found containers, use the most recently started
+            if indexer_containers:
+                # Sort by start time (most recent first)
+                indexer_containers.sort(key=lambda x: x["started"], reverse=True)
+                most_recent = indexer_containers[0]
+
+                logger.info(f"🎯 Detected active project from container '{most_recent['container']}': {most_recent['name']}")
+                if len(indexer_containers) > 1:
+                    logger.info(f"📝 Note: {len(indexer_containers)} indexer containers running, using most recent")
+
+                return most_recent["name"], most_recent["path"]
+
         except Exception as e:
             logger.error(f"Container detection failed: {e}")
 
