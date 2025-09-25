@@ -2,11 +2,15 @@
 ChunkSchema - The Single Source of Truth Contract
 This enforces consistency between indexer, storage, and retrieval
 ADR-0096: Schema Contract Pattern
+ADR-0098: Incremental backfill support with versioning
 """
 
 from dataclasses import dataclass, field
 from typing import List, Optional
 from datetime import datetime
+
+# Current schema version
+CHUNK_SCHEMA_VERSION = "1.1"
 
 
 @dataclass
@@ -14,19 +18,37 @@ class ChunkSchema:
     """
     The canonical chunk structure that ALL components must follow.
     This is the contract between indexer, Neo4j storage, and retrieval.
+
+    Version History:
+    - 1.0: Original schema (basic fields)
+    - 1.1: Added file metadata and git information
     """
-    # Required fields
+    # Required fields (v1.0)
     chunk_id: str  # Format: "file_path:chunk:index"
     file_path: str  # Always present for search filtering
     content: str  # The actual text content
     embedding: List[float]  # Must be exactly 768 dimensions
     project: str  # Project isolation
 
-    # Required with defaults
+    # Required with defaults (v1.0)
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())  # ISO string, NOT DateTime
     start_line: int = 0
     end_line: int = 0
     size: int = 0
+
+    # Optional fields (v1.1) - Added for incremental backfill
+    file_modified_at: Optional[str] = None  # File modification timestamp (ISO)
+    file_created_at: Optional[str] = None   # File creation timestamp (ISO)
+    git_commit_sha: Optional[str] = None    # Git commit when indexed
+    git_author: Optional[str] = None        # Last git author
+    file_type: Optional[str] = None         # File extension/type
+    language: Optional[str] = None          # Programming language
+    is_canonical: Optional[bool] = None     # From PRISM scoring
+
+    # Backfill metadata
+    metadata_version: str = "1.0"           # Schema version of this chunk
+    backfill_status: Optional[str] = None   # pending/processing/complete
+    backfill_timestamp: Optional[str] = None  # When backfilled
 
     def __post_init__(self):
         """Validate the contract"""
@@ -48,7 +70,7 @@ class ChunkSchema:
 
     def to_neo4j_dict(self) -> dict:
         """Convert to Neo4j-compatible dictionary (no nested objects)"""
-        return {
+        base_dict = {
             'chunk_id': self.chunk_id,
             'file_path': self.file_path,
             'content': self.content,
@@ -57,8 +79,31 @@ class ChunkSchema:
             'created_at': self.created_at,  # ISO string
             'start_line': self.start_line,
             'end_line': self.end_line,
-            'size': self.size or len(self.content)
+            'size': self.size or len(self.content),
+            'metadata_version': self.metadata_version
         }
+
+        # Add v1.1 fields if present (for backfilled chunks)
+        if self.file_modified_at is not None:
+            base_dict['file_modified_at'] = self.file_modified_at
+        if self.file_created_at is not None:
+            base_dict['file_created_at'] = self.file_created_at
+        if self.git_commit_sha is not None:
+            base_dict['git_commit_sha'] = self.git_commit_sha
+        if self.git_author is not None:
+            base_dict['git_author'] = self.git_author
+        if self.file_type is not None:
+            base_dict['file_type'] = self.file_type
+        if self.language is not None:
+            base_dict['language'] = self.language
+        if self.is_canonical is not None:
+            base_dict['is_canonical'] = self.is_canonical
+        if self.backfill_status is not None:
+            base_dict['backfill_status'] = self.backfill_status
+        if self.backfill_timestamp is not None:
+            base_dict['backfill_timestamp'] = self.backfill_timestamp
+
+        return base_dict
 
     def to_dict(self) -> dict:
         """Convert to regular dictionary for JSON serialization"""
