@@ -710,7 +710,7 @@ class IndexerOrchestrator:
                 'REDIS_QUEUE_PORT': '6379',  # Internal port
                 # Use container name since Nomic is on same network (l9-graphrag-network)
                 # Don't use os.environ.get - always use container name for container-to-container communication
-                'EMBEDDING_SERVICE_HOST': 'neural-flow-nomic-v2-production-optimized',
+                'EMBEDDING_SERVICE_HOST': 'neural-flow-nomic-v2-production',
                 'EMBEDDING_SERVICE_PORT': '8000',  # Internal port, not exposed port
                 # Performance tuning
                 'BATCH_SIZE': '10',
