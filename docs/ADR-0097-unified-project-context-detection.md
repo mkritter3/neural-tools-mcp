@@ -8,18 +8,33 @@
 
 Critical architectural issue: Multiple overlapping project detection mechanisms causing cross-project data contamination when using global MCP. MCP tools cannot reliably detect which directory Claude was launched from, leading to wrong project contexts and failed operations.
 
-## The Problem (Corrected Understanding)
+## The Problem (Final Correct Understanding)
 
-### The Real Issue: MCP Tools Don't Check for Active Containers
+### The Real Issue: MCP Protocol Doesn't Pass Client Working Directory
 
-**Container orchestration works correctly** - containers are being created successfully. The problem is that **MCP tools are not dynamically detecting these newly created containers** when they execute.
+**The fundamental problem:** The MCP protocol doesn't provide a way for Claude to tell MCP servers which directory it was launched from.
 
-Example flow that's broken:
+**What happens:**
 1. User launches Claude from `neural-novelist` directory
-2. Indexer orchestrator creates `indexer-neural-novelist-XXX` container ✅
-3. User runs `elite_search`
-4. elite_search uses cached/default context → queries with `project: "claude-l9-template"` ❌
-5. Should have checked for active containers → found `neural-novelist` container → queried correctly
+2. MCP server starts in `~/.claude/mcp-servers/neural-tools`
+3. `get_consistent_project_path()` calls `os.getcwd()` → returns MCP server dir
+4. Finds `.git` marker → incorrectly detects `claude-l9-template`
+5. ALL tools use wrong project: search, indexing, everything
+
+### Critical Insight: Container Detection is NOT the Solution
+
+**Why the user is right:**
+- Search tools connect to static Neo4j container (port 47687)
+- They just need to pass correct `project: "neural-novelist"` parameter
+- Container detection creates circular logic: containers are created AFTER project detection
+- Only the reindex tool needs to find containers (to connect to their API)
+
+**Actual flow:**
+```
+Project Detection → Create Indexer Container → Search with Project Filter
+       ↑                                              ↑
+  THE PROBLEM                                   NOT THE PROBLEM
+```
 
 ### Current State Analysis
 
@@ -120,13 +135,13 @@ From official specification analysis:
 
 ## Proposed Solution
 
-### Core Fix: Make Container Detection Primary
+### Core Fix: Explicit Project Context Setting
 
-**Key Insight:** Active indexer containers are the strongest signal of user intent. They should be checked FIRST by all MCP tools, not as a fallback.
+**Key Insight:** Since Claude can't pass working directory, we need explicit project context setting.
 
-### Phase 1: Consolidate to Single Source of Truth
+### Phase 1: Require Explicit Project Setting
 
-**Decision:** Merge `ProjectDetector` into `ProjectContextManager` with container detection as PRIMARY strategy
+**Decision:** Make `set_project_context` the primary mechanism in global MCP mode
 
 ```python
 # ADR-0097: Unified ProjectContextManager
@@ -135,32 +150,32 @@ class ProjectContextManager:
 
     async def detect_project(self) -> ProjectContext:
         """
-        Unified detection with DYNAMIC container check first:
+        Unified detection strategy (CORRECTED):
 
-        1. Active Docker containers (confidence: 1.0) 🔥 PRIMARY
-           - ALWAYS check for running indexer containers
-           - Use most recently started if multiple
-           - This is the TRUTH - user's actual working project
-
-        2. CLAUDE_PROJECT_DIR env (confidence: 0.95)
-           - Only if no containers found
+        1. CLAUDE_PROJECT_DIR env (confidence: 1.0) 🔥 PRIMARY
            - Would be authoritative if Claude set it
+           - Currently not implemented by Claude
 
-        3. Registry cache (confidence: 0.7, local only)
+        2. Explicit user setting (confidence: 1.0)
+           - Via set_project_context tool
+           - Most reliable in global mode
+
+        3. Active containers as HINT (confidence: 0.8)
+           - If indexer container running, suggests active project
+           - NOT primary - containers are created AFTER detection
+           - Useful for session continuity
+
+        4. Registry cache (confidence: 0.5, local only)
            - Last known active project
-           - DISABLED in global mode
-           - Only as fallback
+           - DISABLED in global mode to prevent contamination
 
-        4. Current directory (confidence: 0.5, local only)
-           - Path.cwd() for project-specific servers
-           - Unreliable in global mode
-
-        5. File access hints (confidence: 0.3)
-           - Weak signal, last resort
-           - Infer from recent operations
+        5. Current directory (confidence: 0.3, local only)
+           - Path.cwd() only works for local servers
+           - Fails in global mode (returns MCP server dir)
 
         6. Explicit None (safest failure)
            - Force user to call set_project_context
+           - Better than wrong project
         """
 
     async def get_current_project(self, force_refresh: bool = True) -> ProjectInfo:
@@ -230,28 +245,33 @@ async def get_project_path(project_name: str) -> Path:
     return None
 ```
 
-### Phase 4: Update MCP Tools to Force Container Check
+### Phase 4: Update MCP Tools to Handle Missing Context
 
-**Critical:** Every MCP tool must force container detection
+**Critical:** MCP tools must handle missing project context gracefully
 
 ```python
-# elite_search.py - BEFORE (broken)
+# elite_search.py - IMPROVED
 context_manager = await get_project_context_manager()
-project_info = await context_manager.get_current_project()  # Uses cache
+project_info = await context_manager.get_current_project()
 
-# elite_search.py - AFTER (fixed)
-context_manager = await get_project_context_manager()
-project_info = await context_manager.get_current_project(force_refresh=True)  # Checks containers
+if not project_info or not project_info.get("project"):
+    return {
+        "error": "No project context detected",
+        "message": "Please use set_project_context tool first to specify your working project"
+    }
+
+project_name = project_info["project"]
+# Now safe to query Neo4j with correct project filter
 ```
 
-**Tools requiring this update:**
-- `elite_search.py` - Always check for new containers
-- `fast_search.py` - Same fix
-- `semantic_search.py` - Same fix
-- `project_operations.py` - Critical for reindex
-- `dependency_analysis.py` - Must use correct project
+**Tools requiring this pattern:**
+- `elite_search.py` - Fail gracefully without project
+- `fast_search.py` - Same pattern
+- `semantic_search.py` - Same pattern
+- `project_operations.py` - Especially critical for reindex
+- `dependency_analysis.py` - Must have correct project
 - `schema_management.py` - Schema is per-project
-- All other MCP tools (17 files total)
+- All other MCP tools that query data
 
 ### Phase 5: Client-Side Fix
 
@@ -380,7 +400,13 @@ If issues arise:
 
 ## Decision
 
-**APPROVED** for immediate implementation due to critical data isolation issues.
+**REVISED APPROACH:** Require explicit project context setting in global MCP mode.
+
+**Rationale:**
+1. Container detection creates circular dependencies
+2. MCP protocol lacks working directory passing
+3. Explicit setting is more reliable than guessing
+4. Only reindex tool needs container discovery (for API connection)
 
 ## References
 
