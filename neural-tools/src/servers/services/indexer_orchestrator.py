@@ -98,6 +98,7 @@ class IndexerOrchestrator:
         self.docker_client = None
         self.discovery_service = None  # Will be initialized with docker client
         self.active_indexers: Dict[str, dict] = {}  # project -> {container_id, last_activity, port}
+        self.stopped_indexers: Dict[str, dict] = {}  # project -> {container_id, stop_time, port, project_path}
         self.max_concurrent = max_concurrent
 
         # ADR-0060: Redis clients for distributed locking and caching
@@ -115,9 +116,9 @@ class IndexerOrchestrator:
             'cpu_period': 100000
         }
         
-        # ADR-0060: Updated garbage collection - 7 days for stopped containers
-        self.gc_stopped_age = timedelta(days=7)  # How old stopped containers must be
-        self.gc_idle_timeout = timedelta(hours=1)  # Still stop containers after 1 hour idle
+        # ADR-0060: Updated garbage collection - 24 hours for stopped containers before removal
+        self.gc_removal_age = timedelta(hours=24)  # Remove stopped containers after 24 hours
+        self.gc_idle_timeout = timedelta(hours=1)  # Stop (not remove) containers after 1 hour idle
         self._cleanup_task = None
         self._lock = asyncio.Lock()  # Thread safety for container operations
         
@@ -497,7 +498,40 @@ class IndexerOrchestrator:
                 await self._invalidate_cache(project_name)
                 # Fall through to create new container
 
-        # No existing container, create a new one
+        # Check if we have a stopped container we can restart (within grace period)
+        if project_name in self.stopped_indexers:
+            stopped_info = self.stopped_indexers[project_name]
+            if datetime.now() - stopped_info['stop_time'] < self.gc_removal_age:
+                try:
+                    container = self.docker_client.containers.get(stopped_info['container_id'])
+                    logger.info(f"[ADR-0060] Restarting stopped container for {project_name}: {stopped_info['container_id'][:12]}")
+                    container.start()
+
+                    # Move back to active tracking
+                    self.active_indexers[project_name] = {
+                        'container_id': stopped_info['container_id'],
+                        'last_activity': datetime.now(),
+                        'port': stopped_info.get('port'),
+                        'project_path': stopped_info.get('project_path')
+                    }
+
+                    # Remove from stopped tracking
+                    del self.stopped_indexers[project_name]
+
+                    # Update last activity and return
+                    await self._update_last_activity(project_name)
+                    return stopped_info['container_id']
+
+                except docker.errors.NotFound:
+                    logger.warning(f"[ADR-0060] Stopped container not found, will create new")
+                    # Clean up stopped tracking and fall through to create new
+                    del self.stopped_indexers[project_name]
+                except Exception as e:
+                    logger.error(f"[ADR-0060] Error restarting container: {e}")
+                    # Clean up and fall through to create new
+                    del self.stopped_indexers[project_name]
+
+        # No existing or restorable container, create a new one
         logger.info(f"[ADR-0060] Creating new container for {project_name}")
 
         # Validate path security
@@ -773,13 +807,26 @@ class IndexerOrchestrator:
                     now = datetime.now()
                     to_remove = []
                     
+                    # Check active containers for idle timeout (stop after 1 hour)
                     for project, info in self.active_indexers.items():
                         if now - info['last_activity'] > self.gc_idle_timeout:
-                            logger.info(f"Indexer for {project} idle for > 1 hour, stopping")
+                            logger.info(f"Indexer for {project} idle for > 1 hour, stopping (not removing)")
                             to_remove.append(project)
-                            
+
                     for project in to_remove:
-                        await self._stop_indexer_internal(project)
+                        await self._stop_only_internal(project)
+
+                    # Check stopped containers for removal (after 24 hours)
+                    to_delete = []
+                    for project, info in self.stopped_indexers.items():
+                        if now - info['stop_time'] > self.gc_removal_age:
+                            logger.info(f"Stopped indexer for {project} > 24 hours old, removing")
+                            to_delete.append(project)
+
+                    for project in to_delete:
+                        info = self.stopped_indexers[project]
+                        await self._remove_indexer_internal(project, info)
+                        del self.stopped_indexers[project]
                         
             except Exception as e:
                 logger.error(f"Error in idle cleanup loop: {e}")
@@ -795,24 +842,82 @@ class IndexerOrchestrator:
         async with self._lock:
             await self._stop_indexer_internal(project_name)
             
+    async def _stop_only_internal(self, project_name: str):
+        """
+        Stop container without removing it (for 24hr grace period)
+        Moves container from active to stopped tracking
+        """
+        if project_name in self.active_indexers:
+            try:
+                info = self.active_indexers[project_name]
+                container_id = info['container_id']
+                container = self.docker_client.containers.get(container_id)
+
+                logger.info(f"Stopping (not removing) indexer for {project_name}: {container_id[:12]}")
+                container.stop(timeout=10)
+
+                # Move to stopped_indexers for grace period tracking
+                self.stopped_indexers[project_name] = {
+                    'container_id': container_id,
+                    'stop_time': datetime.now(),
+                    'port': info.get('port'),
+                    'project_path': info.get('project_path')
+                }
+
+                # Don't release port yet - keep it reserved for potential restart
+                logger.info(f"Container {container_id[:12]} stopped, entering 24hr grace period")
+
+            except docker.errors.NotFound:
+                logger.warning(f"Container already stopped for {project_name}")
+            except Exception as e:
+                logger.error(f"Error stopping container for {project_name}: {e}")
+            finally:
+                # Remove from active tracking
+                if project_name in self.active_indexers:
+                    del self.active_indexers[project_name]
+
+    async def _remove_indexer_internal(self, project_name: str, info: dict):
+        """
+        Actually remove a container and release resources
+        Called after 24hr grace period expires
+        """
+        try:
+            container_id = info['container_id']
+            container = self.docker_client.containers.get(container_id)
+
+            logger.info(f"Removing indexer container for {project_name} after grace period: {container_id[:12]}")
+            container.remove(force=True)
+
+            # Release the allocated port
+            port = info.get('port')
+            if port:
+                self._release_port(port)
+                logger.debug(f"Released port {port} from {project_name}")
+
+        except docker.errors.NotFound:
+            logger.warning(f"Container already removed for {project_name}")
+        except Exception as e:
+            logger.error(f"Error removing container for {project_name}: {e}")
+
     async def _stop_indexer_internal(self, project_name: str):
         """
-        Internal method to stop indexer (assumes lock is held)
+        Internal method to stop and remove indexer immediately (for shutdown or forced removal)
         """
         if project_name in self.active_indexers:
             try:
                 container_id = self.active_indexers[project_name]['container_id']
                 port = self.active_indexers[project_name].get('port')
                 container = self.docker_client.containers.get(container_id)
-                
-                logger.info(f"Stopping indexer container for {project_name}: {container_id[:12]}")
+
+                logger.info(f"Stopping and removing indexer container for {project_name}: {container_id[:12]}")
                 container.stop(timeout=10)
-                
+                container.remove(force=True)
+
                 # Release the allocated port
                 if port:
                     self._release_port(port)
                     logger.debug(f"Released port {port} from {project_name}")
-                
+
             except docker.errors.NotFound:
                 logger.warning(f"Container already stopped for {project_name}")
             except Exception as e:
@@ -859,6 +964,7 @@ class IndexerOrchestrator:
         """
         status = {
             'active_indexers': len(self.active_indexers),
+            'stopped_indexers': len(self.stopped_indexers),
             'max_concurrent': self.max_concurrent,
             'indexers': {}
         }
@@ -886,6 +992,16 @@ class IndexerOrchestrator:
             except Exception as e:
                 logger.error(f"Error getting status for {project}: {e}")
                 
+        # Add stopped containers info
+        for project, info in self.stopped_indexers.items():
+            status['indexers'][f"{project} (stopped)"] = {
+                'status': 'stopped',
+                'stop_time': info['stop_time'].isoformat(),
+                'grace_period_remaining': str(self.gc_removal_age - (datetime.now() - info['stop_time'])),
+                'container_id': info['container_id'][:12],
+                'port': info.get('port', 'N/A')
+            }
+
         return status
         
     def _calculate_cpu_percent(self, stats: dict) -> float:
