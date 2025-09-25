@@ -15,9 +15,10 @@ import json
 import re
 import logging
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from datetime import datetime
 import asyncio
+import docker
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,15 @@ class ProjectContextManager:
         self.switch_lock = asyncio.Lock()  # Add lock for concurrent safety (ADR-0043)
         self.container = None  # Store ServiceContainer here (Gemini: correct pattern)
         self.container_registry: Dict[str, int] = {}  # Track container->port mappings (ADR-0044)
+
+        # Initialize Docker client for container detection (ADR-0097)
+        self.docker_client = None
+        try:
+            self.docker_client = docker.from_env()
+            logger.info("🐳 Docker client initialized for container detection")
+        except Exception as e:
+            logger.warning(f"Docker not available for container detection: {e}")
+
         self._load_registry()
 
         # Check for CLAUDE_PROJECT_DIR immediately on startup
@@ -277,20 +287,103 @@ class ProjectContextManager:
         sanitized = sanitized.strip('-')
         
         return sanitized or "default"
-    
+
+    async def _detect_from_containers(self) -> Optional[Tuple[str, Path]]:
+        """
+        Detect project from running Docker containers (ADR-0097)
+        Use most recently started indexer container as active project
+
+        Returns:
+            Tuple of (project_name, project_path) or None if no containers found
+        """
+        if not self.docker_client:
+            return None
+
+        try:
+            containers = self.docker_client.containers.list(all=True)
+
+            # Collect all running indexer containers with their info
+            indexer_containers = []
+            for container in containers:
+                if container.name.startswith("indexer-") and container.status == "running":
+                    # Parse container name: indexer-{project}-{timestamp}-{random}
+                    # Example: indexer-neural-novelist-1758777614-4cb1
+                    parts = container.name.split("-")
+                    if len(parts) >= 4:
+                        # Project name is everything between "indexer-" and the last two parts
+                        project_name = "-".join(parts[1:-2])
+
+                        # Get container start time for sorting
+                        started_at = container.attrs.get("State", {}).get("StartedAt", "")
+
+                        # Get mount path
+                        mounts = container.attrs.get("Mounts", [])
+                        project_path = None
+                        for mount in mounts:
+                            if mount.get("Destination") == "/workspace":
+                                source = mount.get("Source")
+                                if source:
+                                    project_path = Path(source)
+                                    if project_path.exists():
+                                        indexer_containers.append({
+                                            "name": project_name,
+                                            "path": project_path,
+                                            "started": started_at,
+                                            "container": container.name
+                                        })
+                                        break
+
+            # If we found containers, use the most recently started
+            if indexer_containers:
+                # Sort by start time (most recent first)
+                indexer_containers.sort(key=lambda x: x["started"], reverse=True)
+                most_recent = indexer_containers[0]
+
+                logger.info(f"🎯 Detected active project from container '{most_recent['container']}': {most_recent['name']}")
+                if len(indexer_containers) > 1:
+                    logger.info(f"📝 Note: {len(indexer_containers)} indexer containers running, using most recent")
+
+                return most_recent["name"], most_recent["path"]
+
+        except Exception as e:
+            logger.error(f"Container detection failed: {e}")
+
+        return None
+
     async def detect_project(self) -> Dict:
         """
         Auto-detect active project using heuristics.
 
-        Detection strategies:
-        0. CLAUDE_PROJECT_DIR environment variable (highest priority - set by Claude)
-        1. Current working directory (only if not in mcp-servers)
-        2. Most recently accessed project
-        3. Project containing recently accessed files
-        4. Scan common directories for projects
-        5. Fall back to "default"
+        Detection strategies (ADR-0097 updated):
+        0. Active Docker containers (highest confidence - 1.0)
+        1. CLAUDE_PROJECT_DIR environment variable (if set - 0.95)
+        2. Current working directory (only if not in mcp-servers - 0.9)
+        3. Most recently accessed project (0.7)
+        4. Project containing recently accessed files (0.6)
+        5. Scan common directories for projects (0.4)
+        6. Fall back to "default" (0.2)
         """
-        # Strategy 0: Check CLAUDE_PROJECT_DIR first - Claude sets this when launching MCP
+        # Strategy 0: Check for active Docker containers FIRST (ADR-0097)
+        # This is the most authoritative source - containers prove which project is active
+        container_result = await self._detect_from_containers()
+        if container_result:
+            project_name, project_path = container_result
+            # Update state and registry
+            self.current_project = project_name
+            self.current_project_path = project_path
+            self.project_registry[project_name] = project_path
+            self.last_activity[project_name] = datetime.now()
+            self._save_registry()
+
+            logger.info(f"🐳 Using project from active container: {project_name}")
+            return {
+                "project": project_name,
+                "path": str(project_path),
+                "method": "container",
+                "confidence": 1.0  # Highest confidence - containers are source of truth
+            }
+
+        # Strategy 1: Check CLAUDE_PROJECT_DIR - Claude sets this when launching MCP
         import os
         if claude_dir := os.getenv("CLAUDE_PROJECT_DIR"):
             logger.info(f"🎯 Using CLAUDE_PROJECT_DIR: {claude_dir}")
@@ -461,9 +554,21 @@ class ProjectContextManager:
         if len(self.detection_hints) > 100:
             self.detection_hints = self.detection_hints[-100:]
     
-    async def get_current_project(self) -> Dict:
-        """Get current project context, auto-detecting if needed"""
-        if self.current_project and self.current_project_path:
+    async def get_current_project(self, force_refresh: bool = False) -> Dict:
+        """
+        Get current project context, auto-detecting if needed
+
+        Args:
+            force_refresh: If True, force re-detection (checks containers)
+                          This ensures we catch newly created containers (ADR-0097)
+
+        Returns:
+            Dict with project name, path, method, and confidence
+        """
+        if force_refresh:
+            # Force re-detection to check for new containers
+            return await self.detect_project()
+        elif self.current_project and self.current_project_path:
             return {
                 "project": self.current_project,
                 "path": str(self.current_project_path),

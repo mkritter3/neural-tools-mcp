@@ -101,12 +101,32 @@ async def execute(arguments: Dict[str, Any]) -> List[types.TextContent]:
             try:
                 from servers.services.project_context_manager import get_project_context_manager
                 context_manager = await get_project_context_manager()
-                project_info = await context_manager.get_current_project()
+                # ADR-0097: Force refresh to detect from containers
+                project_info = await context_manager.get_current_project(force_refresh=True)
+
+                # ADR-0097: Fail gracefully if no project detected
+                if not project_info or not project_info.get("project"):
+                    return [types.TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "error": "No project context detected",
+                            "message": "Please use set_project_context tool first to specify your working project",
+                            "hint": "Run: set_project_context with path to your project directory"
+                        }, indent=2)
+                    )]
+
                 project_name = project_info["project"]
-                logger.info(f"🎯 Detected project: {project_name}")
+                logger.info(f"🎯 Detected project: {project_name} (method: {project_info.get('method', 'unknown')})")
             except Exception as e:
-                logger.warning(f"Failed to detect project: {e}, using default")
-                project_name = "claude-l9-template"
+                logger.warning(f"Failed to detect project: {e}")
+                return [types.TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "error": "Project detection failed",
+                        "message": str(e),
+                        "hint": "Use set_project_context tool to explicitly set your project"
+                    }, indent=2)
+                )]
 
         neo4j_service = await get_shared_neo4j_service(project_name)
 
