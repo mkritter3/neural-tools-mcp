@@ -76,21 +76,28 @@ class ProjectDetector:
                 logger.info(f"✅ Detected project from active containers: {project_name}")
                 return project_name, project_path
 
-        # Strategy 4: Check registry for last active project
-        registry_path = Path.home() / ".claude" / "project_registry.json"
-        if registry_path.exists():
-            try:
-                with open(registry_path) as f:
-                    data = json.load(f)
-                    if "active_project" in data and data["active_project"]:
-                        project_name = data["active_project"]
-                        if "active_project_path" in data and data["active_project_path"]:
-                            project_path = Path(data["active_project_path"])
-                            if project_path.exists():
-                                logger.info(f"✅ Using last active project from registry: {project_name}")
-                                return project_name, project_path
-            except Exception as e:
-                logger.error(f"Failed to load registry: {e}")
+        # Strategy 4: Check registry for last active project (ONLY if running locally)
+        # CRITICAL: Do not use registry fallback when running from global MCP
+        # This prevents cross-project data contamination (ADR-0097)
+        is_global_mcp = str(Path(__file__).resolve()).startswith(str(Path.home() / ".claude" / "mcp-servers"))
+
+        if is_global_mcp:
+            logger.warning("🚫 Running from global MCP - skipping registry fallback to prevent cross-project contamination")
+        else:
+            registry_path = Path.home() / ".claude" / "project_registry.json"
+            if registry_path.exists():
+                try:
+                    with open(registry_path) as f:
+                        data = json.load(f)
+                        if "active_project" in data and data["active_project"]:
+                            project_name = data["active_project"]
+                            if "active_project_path" in data and data["active_project_path"]:
+                                project_path = Path(data["active_project_path"])
+                                if project_path.exists():
+                                    logger.info(f"✅ Using last active project from registry: {project_name}")
+                                    return project_name, project_path
+                except Exception as e:
+                    logger.error(f"Failed to load registry: {e}")
 
         # Strategy 5: Fallback - return None to indicate manual setting needed
         logger.warning("⚠️ Could not detect project. User must call set_project_context()")

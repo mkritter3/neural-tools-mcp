@@ -392,6 +392,29 @@ done
 # Set permissions
 chmod +x "$TARGET_DIR/run_mcp_server.py"
 
+# Update global MCP configuration to remove PROJECT_NAME for proper isolation
+echo -e "${YELLOW}🔧 Updating global MCP configuration for project isolation...${NC}"
+if command -v jq &> /dev/null; then
+    MCP_CONFIG="$HOME/.claude/mcp_config.json"
+    if [[ -f "$MCP_CONFIG" ]]; then
+        # Remove PROJECT_NAME from global config to force explicit project setting
+        jq '.mcpServers."neural-tools".env |= del(.PROJECT_NAME)' "$MCP_CONFIG" > "$MCP_CONFIG.tmp" && \
+        mv "$MCP_CONFIG.tmp" "$MCP_CONFIG"
+        echo -e "${GREEN}✅ Removed PROJECT_NAME from global MCP config for isolation${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠️ jq not installed - cannot update MCP config automatically${NC}"
+    echo -e "${YELLOW}   Please manually remove PROJECT_NAME from ~/.claude/mcp_config.json${NC}"
+fi
+
+# Clear active project from registry to prevent cross-project contamination
+REGISTRY_PATH="$HOME/.claude/project_registry.json"
+if [[ -f "$REGISTRY_PATH" ]] && command -v jq &> /dev/null; then
+    jq 'del(.active_project, .active_project_path)' "$REGISTRY_PATH" > "$REGISTRY_PATH.tmp" && \
+    mv "$REGISTRY_PATH.tmp" "$REGISTRY_PATH"
+    echo -e "${GREEN}✅ Cleared active_project from registry for clean state${NC}"
+fi
+
 # Get current git information
 cd "$SOURCE_DIR/.."
 CURRENT_SHA=$(git rev-parse --short HEAD)
