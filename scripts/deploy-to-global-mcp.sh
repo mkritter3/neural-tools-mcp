@@ -41,7 +41,9 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-SOURCE_DIR="/Users/mkr/local-coding/claude-l9-template/neural-tools"
+# Dynamically determine source directory relative to script location
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_DIR="$(cd "$SCRIPT_DIR/../neural-tools" && pwd)"
 TARGET_DIR="/Users/mkr/.claude/mcp-servers/neural-tools"
 BACKUP_DIR="/Users/mkr/.claude/mcp-servers/neural-tools-backup-$(date +%Y%m%d-%H%M%S)"
 
