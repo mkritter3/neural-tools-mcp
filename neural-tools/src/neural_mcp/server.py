@@ -159,17 +159,33 @@ async def main():
     """Main server entry point"""
     logger.info("🚀 Starting Neural Tools MCP Server (September 2025 Modular Architecture)")
 
-    # Proactive container initialization (ADR-0100)
-    try:
-        logger.info("🎭 Initializing Container Orchestrator...")
-        from servers.services.container_orchestrator import get_container_orchestrator
-        orchestrator = await get_container_orchestrator()
-        logger.info("✅ Container Orchestrator ready - all services pre-warmed")
-    except Exception as e:
-        logger.warning(f"⚠️ Container Orchestrator initialization failed: {e}")
-        logger.warning("⚠️ Falling back to on-demand container startup")
+    # Start container initialization in background (non-blocking)
+    async def initialize_containers_async():
+        """Background task to start containers without blocking MCP connection"""
+        from servers.services.container_status import get_container_status
+        from datetime import datetime
 
-    # Initialize server
+        status_tracker = get_container_status()
+        status_tracker.initialization_started = datetime.now()
+
+        try:
+            logger.info("🎭 Starting Container Orchestrator in background...")
+            from servers.services.container_orchestrator import get_container_orchestrator
+            orchestrator = await get_container_orchestrator()
+
+            # Mark as ready
+            status_tracker.set_orchestrator(orchestrator)
+            logger.info("✅ Container Orchestrator ready - all services pre-warmed")
+        except Exception as e:
+            status_tracker.set_error(e)
+            logger.warning(f"⚠️ Container Orchestrator initialization failed: {e}")
+            logger.warning("⚠️ Falling back to on-demand container startup")
+
+    # Create background task for container initialization
+    container_task = asyncio.create_task(initialize_containers_async())
+    logger.info("🚀 MCP server starting immediately (containers starting in background)")
+
+    # Initialize server IMMEDIATELY without waiting
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         logger.info("📡 STDIO transport initialized")
 
