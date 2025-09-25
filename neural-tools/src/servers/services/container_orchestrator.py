@@ -319,14 +319,17 @@ class ContainerOrchestrator:
 
     async def _start_indexer(self) -> Dict:
         """Start the project-specific indexer."""
-        from .indexer_orchestrator import IndexerOrchestrator
+        from .shared_orchestrator import get_shared_indexer_orchestrator, get_consistent_project_path
 
         try:
-            orchestrator = IndexerOrchestrator()
-            await orchestrator.initialize()  # Initialize Docker client and Redis
+            # Use consistent project path to prevent mount mismatches
+            consistent_path = get_consistent_project_path()
+
+            # Use shared orchestrator to prevent conflicts
+            orchestrator = await get_shared_indexer_orchestrator()
             port = await orchestrator.ensure_indexer(
-                Path(self.project_path).name,
-                self.project_path
+                Path(consistent_path).name,
+                consistent_path
             )
 
             # Update session labels on indexer container

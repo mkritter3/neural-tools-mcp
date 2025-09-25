@@ -224,25 +224,22 @@ class ServiceContainer:
         Raises:
             RuntimeError: If indexer cannot be started or endpoint cannot be resolved
         """
-        # Initialize orchestrator if needed
+        # Use shared orchestrator to prevent conflicts
         if not self.indexer_orchestrator:
-            from servers.services.indexer_orchestrator import IndexerOrchestrator
+            from servers.services.shared_orchestrator import get_shared_indexer_orchestrator
 
-            # ADR-0044: Pass context manager to orchestrator
-            if self.context_manager:
-                self.indexer_orchestrator = IndexerOrchestrator(
-                    context_manager=self.context_manager
-                )
-            else:
-                # Fallback without context manager
-                self.indexer_orchestrator = IndexerOrchestrator()
-            await self.indexer_orchestrator.initialize()
-            logger.info("IndexerOrchestrator initialized for discovery")
+            # Get the shared instance (prevents container termination)
+            self.indexer_orchestrator = await get_shared_indexer_orchestrator(
+                context_manager=self.context_manager
+            )
+            logger.info("Using shared IndexerOrchestrator instance")
 
         orchestrator = self.indexer_orchestrator
 
-        # Find project root (more robust than just cwd)
-        project_path = self._find_project_root()
+        # Use consistent project path to prevent mount mismatches
+        from servers.services.shared_orchestrator import get_consistent_project_path
+        project_path = get_consistent_project_path()
+        logger.info(f"Using consistent project path: {project_path}")
 
         # Ensure indexer is running (orchestrator handles all edge cases)
         try:
@@ -1046,18 +1043,13 @@ class ServiceContainer:
             Container ID of the running indexer
         """
         if not self.indexer_orchestrator:
-            from servers.services.indexer_orchestrator import IndexerOrchestrator
+            from servers.services.shared_orchestrator import get_shared_indexer_orchestrator
 
-            # ADR-0044: Pass context manager to orchestrator
-            if self.context_manager:
-                self.indexer_orchestrator = IndexerOrchestrator(
-                    context_manager=self.context_manager
-                )
-            else:
-                # Fallback without context manager
-                self.indexer_orchestrator = IndexerOrchestrator()
-            await self.indexer_orchestrator.initialize()
-            logger.info("IndexerOrchestrator initialized with dependency injection")
+            # Get the shared instance (prevents container termination)
+            self.indexer_orchestrator = await get_shared_indexer_orchestrator(
+                context_manager=self.context_manager
+            )
+            logger.info("Using shared IndexerOrchestrator instance")
 
         # ADR-0044: Use injected context manager, don't create new instance!
         project_info = {}  # Initialize for later use
@@ -1087,9 +1079,11 @@ class ServiceContainer:
                 "⚠️ Had to get singleton context manager in ensure_indexer_running"
             )
 
-        # Use detected path if no path provided
+        # Use consistent project path to prevent mount mismatches
+        from servers.services.shared_orchestrator import get_consistent_project_path
         if not project_path:
-            project_path = current_project_path
+            project_path = get_consistent_project_path()
+            logger.info(f"Using consistent project path: {project_path}")
 
         logger.info(
             f"🔄 [Container Sync] Ensuring indexer for project: {current_project_name}"
@@ -1217,23 +1211,20 @@ class ServiceContainer:
             Discovered endpoint URL or None if not found
         """
         try:
-            # Ensure orchestrator is initialized
+            # Use shared orchestrator to prevent conflicts
             if not self.indexer_orchestrator:
-                from servers.services.indexer_orchestrator import IndexerOrchestrator
+                from servers.services.shared_orchestrator import get_shared_indexer_orchestrator
 
-                if self.context_manager:
-                    self.indexer_orchestrator = IndexerOrchestrator(
-                        context_manager=self.context_manager
-                    )
-                else:
-                    self.indexer_orchestrator = IndexerOrchestrator()
-                logger.info("IndexerOrchestrator initialized for endpoint discovery")
+                # Get the shared instance (prevents container termination)
+                self.indexer_orchestrator = await get_shared_indexer_orchestrator(
+                    context_manager=self.context_manager
+                )
+                logger.info("Using shared IndexerOrchestrator for endpoint discovery")
 
-            # Get project path
-            if self.context_manager:
-                project_path = self.context_manager.get_project_path()
-            else:
-                project_path = os.getcwd()
+            # Use consistent project path to prevent mount mismatches
+            from servers.services.shared_orchestrator import get_consistent_project_path
+            project_path = get_consistent_project_path()
+            logger.debug(f"Using consistent project path: {project_path}")
 
             # Ensure indexer is running for this project
             container_id = await self.indexer_orchestrator.ensure_indexer(
