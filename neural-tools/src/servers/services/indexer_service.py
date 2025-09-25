@@ -24,7 +24,7 @@ from threading import Timer, Lock
 # ADR-0075: Removed qdrant_client import - Neo4j-only architecture
 
 # ADR-0096: Schema contract for chunk consistency
-from chunk_schema import ChunkSchema
+from .chunk_schema import ChunkSchema
 
 # CRITICAL: DO NOT REMOVE - Required for imports to work (see ADR-0056)
 # These sys.path modifications compensate for mixed import patterns across the codebase
@@ -1532,51 +1532,52 @@ class IncrementalIndexer(FileSystemEventHandler):
                         # Create Variable and USES relationship
                         # ADR-0093: Support both field naming conventions from tree-sitter
                         var_name = rel.get("variable_name") or rel.get("to_variable")
-                        uses_cypher = """
-                        MERGE (v:Variable {name: $var_name, project: $project})
-                        WITH v
-                        MATCH (f:Function {name: $func_name, project: $project, file_path: $file_path})
-                        MERGE (f)-[:USES {line: $line}]->(v)
-                        """
-                        result = await self.container.neo4j.execute_cypher(
-                            uses_cypher,
-                            {
-                                "var_name": var_name,
-                                "func_name": rel.get("from_function"),
-                                "project": self.project_name,
-                                "file_path": str(relative_path),
-                                "line": rel.get("line", 0),
-                            },
-                        )
-                        if result.get("status") == "success":
-                            uses_count += 1
+                        if var_name:  # Only create USES relationship if variable name exists
+                            uses_cypher = """
+                            MERGE (v:Variable {name: $var_name, project: $project})
+                            WITH v
+                            MATCH (f:Function {name: $func_name, project: $project, file_path: $file_path})
+                            MERGE (f)-[:USES {line: $line}]->(v)
+                            """
+                            result = await self.container.neo4j.execute_cypher(
+                                uses_cypher,
+                                {
+                                    "var_name": var_name,
+                                    "func_name": rel.get("from_function"),
+                                    "project": self.project_name,
+                                    "file_path": str(relative_path),
+                                    "line": rel.get("line", 0),
+                                },
+                            )
+                            if result.get("status") == "success":
+                                uses_count += 1
 
                     elif rel.get("type") == "INSTANTIATES" and rel.get("from_function"):
                         # ADR-0094 Quick Fix: Support both Symbol and Class nodes
                         # This handles the schema mismatch where symbols are stored as :Symbol {type:'class'}
                         # but relationships expect :Class nodes
-                        inst_cypher = """
-                        MATCH (f:Function {name: $func_name, project: $project, file_path: $file_path})
-                        MATCH (c)
-                        WHERE (c:Class OR (c:Symbol AND c.type = 'class'))
-                          AND c.name = $class_name
-                          AND c.project = $project
-                        MERGE (f)-[:INSTANTIATES {line: $line}]->(c)
-                        """
-                        result = await self.container.neo4j.execute_cypher(
-                            inst_cypher,
-                            {
-                                "func_name": rel.get("from_function"),
-                                "class_name": rel.get(
-                                    "class_name", rel.get("to_class")
-                                ),
-                                "project": self.project_name,
-                                "file_path": str(relative_path),
-                                "line": rel.get("line", 0),
-                            },
-                        )
-                        if result.get("status") == "success":
-                            inst_count += 1
+                        class_name = rel.get("class_name", rel.get("to_class"))
+                        if class_name:  # Only create INSTANTIATES relationship if class name exists
+                            inst_cypher = """
+                            MATCH (f:Function {name: $func_name, project: $project, file_path: $file_path})
+                            MATCH (c)
+                            WHERE (c:Class OR (c:Symbol AND c.type = 'class'))
+                              AND c.name = $class_name
+                              AND c.project = $project
+                            MERGE (f)-[:INSTANTIATES {line: $line}]->(c)
+                            """
+                            result = await self.container.neo4j.execute_cypher(
+                                inst_cypher,
+                                {
+                                    "func_name": rel.get("from_function"),
+                                    "class_name": class_name,
+                                    "project": self.project_name,
+                                    "file_path": str(relative_path),
+                                    "line": rel.get("line", 0),
+                                },
+                            )
+                            if result.get("status") == "success":
+                                inst_count += 1
 
                 logger.info(
                     f"📊 ADR-0093: Created {uses_count} USES and {inst_count} INSTANTIATES relationships"
