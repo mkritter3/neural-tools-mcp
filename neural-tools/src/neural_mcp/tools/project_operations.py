@@ -74,11 +74,28 @@ async def execute(arguments: Dict[str, Any]) -> List[types.TextContent]:
         List of TextContent responses with operation results
     """
     try:
-        # 1. Validate inputs
-        operation = arguments.get("operation", "understanding")
-        project_name = arguments.get("project", "claude-l9-template")
+        # 1. Get project context from manager (ADR-0102)
+        from servers.services.project_context_manager import get_project_context_manager
+        context_manager = await get_project_context_manager()
+        project_info = await context_manager.get_current_project(force_refresh=True)
 
-        # 2. Check cache for understanding operations
+        if not project_info or not project_info.get("project"):
+            return [types.TextContent(
+                type="text",
+                text=json.dumps({
+                    "status": "error",
+                    "message": "No project context detected",
+                    "action": "Please use set_project_context tool to specify your working project"
+                }, indent=2)
+            )]
+
+        project_name = project_info["project"]
+        logger.info(f"🎯 Using project from context manager: {project_name}")
+
+        # 2. Validate inputs
+        operation = arguments.get("operation", "understanding")
+
+        # 3. Check cache for understanding operations
         if operation in ["understanding", "full_status"]:
             scope = arguments.get("scope", "full")
             max_results = arguments.get("max_results", 50)
@@ -88,10 +105,10 @@ async def execute(arguments: Dict[str, Any]) -> List[types.TextContent]:
                 logger.info(f"🚀 ADR-0075: Cache hit for {operation} operation")
                 return cached
 
-        # 3. Use shared Neo4j service (ADR-0075)
+        # 4. Use shared Neo4j service (ADR-0075)
         neo4j_service = await get_shared_neo4j_service(project_name)
 
-        # 4. Execute business logic based on operation
+        # 5. Execute business logic based on operation
         start_time = time.time()
 
         if operation == "understanding":
@@ -107,14 +124,14 @@ async def execute(arguments: Dict[str, Any]) -> List[types.TextContent]:
 
         duration = (time.time() - start_time) * 1000
 
-        # 5. Add performance metadata
+        # 6. Add performance metadata
         result["performance"] = {
             "query_time_ms": round(duration, 2),
             "cache_hit": False,
             "operation": operation
         }
 
-        # 6. Cache and return (for understanding operations)
+        # 7. Cache and return (for understanding operations)
         response = [types.TextContent(type="text", text=json.dumps(result, indent=2))]
         if operation in ["understanding", "full_status"] and result.get("status") == "success":
             cache_result(cache_key, response)
