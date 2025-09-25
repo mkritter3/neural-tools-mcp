@@ -1,4 +1,4 @@
-# ADR-0098: GraphRAG Enhancement Plan - Full Document Retrieval & Graph Context
+# ADR-0103: GraphRAG Enhancement Plan - Full Document Retrieval & Graph Context
 
 **Date: September 24, 2025 | Status: Proposed**
 
