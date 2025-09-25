@@ -518,8 +518,7 @@ class IndexerOrchestrator:
                     # Remove from stopped tracking
                     del self.stopped_indexers[project_name]
 
-                    # Update last activity and return
-                    await self._update_last_activity(project_name)
+                    # Container restarted successfully
                     return stopped_info['container_id']
 
                 except docker.errors.NotFound:
@@ -732,7 +731,7 @@ class IndexerOrchestrator:
             },
             network='l9-graphrag-network',
             detach=True,
-            auto_remove=True,  # Clean up on stop
+            auto_remove=False,  # Don't auto-remove - we manage lifecycle with grace periods
             **self.resource_limits,
             security_opt=['no-new-privileges'],
             user='1000:1000'  # Non-root user
