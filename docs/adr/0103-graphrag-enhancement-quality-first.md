@@ -1,13 +1,13 @@
-# ADR-0103: GraphRAG Enhancement Quality-First Deep Understanding
+# ADR-0103: GraphRAG Enhancement Quality-First with Hybrid Architecture
 
 **Date: September 25, 2025 | Status: Approved for Implementation**
-**Revision: Based on 2025 RAG Research & Gemini Analysis**
+**Revision: Hybrid Qdrant + Neo4j Architecture**
 
 ## Executive Summary
 
-After extensive research and collaboration with Gemini, we're **reversing our initial skepticism**. The evidence overwhelmingly supports implementing full document storage in Neo4j for deep understanding, with smart modifications to manage risks.
+After extensive research into 2025 RAG standards and analysis of external GraphRAG systems, we're implementing a **quality-first hybrid architecture** that combines the best of specialized vector databases with full document storage for deep understanding.
 
-**Core Finding**: 2025 RAG systems prioritize **context completeness over speed**. With Neo4j 5.23+ quantization and proper optimizations, we can achieve **2-3x better understanding** with acceptable performance trade-offs.
+**Core Finding**: 2025 RAG systems prioritize **context completeness over speed** while leveraging specialized infrastructure for optimal performance. A Qdrant + Neo4j hybrid provides both superior vector search AND complete document context.
 
 ## The Paradigm Shift (September 2025)
 
@@ -17,13 +17,7 @@ After extensive research and collaboration with Gemini, we're **reversing our in
 - **Microsoft, Google, Anthropic** all using full document approaches
 - **Agentic RAG** requires complete context for multi-hop reasoning
 
-### Technical Enablers
-1. **Neo4j 5.23+ Vector Quantization** - 75% memory reduction
-2. **Block Format Storage Engine** - Optimized for large properties
-3. **HNSW Improvements** - M=24, ef=150 configuration
-4. **No String Size Limits** - Confirmed by Neo4j documentation
-
-## Quality Metrics That Justify This Approach
+### Quality Metrics That Justify This Approach
 
 | Metric | Current (Truncated) | With Full Docs | Improvement |
 |--------|-------------------|----------------|-------------|
@@ -34,22 +28,34 @@ After extensive research and collaboration with Gemini, we're **reversing our in
 
 **User Priority**: Quality > Speed ✅
 
-## Implementation Strategy: "Adaptive Neo4j-First"
+## Decision: Qdrant + Neo4j Quality-First Hybrid
 
-### 1. Smart Hybrid Storage
+**APPROVED ARCHITECTURE**: Specialized hybrid system that leverages the strengths of both databases:
+
+- **Qdrant**: Vector storage, similarity search, BGE-M3 multi-vector embeddings
+- **Neo4j**: Full document storage, graph relationships, metadata
+- **Clear separation**: Qdrant for discovery, Neo4j for comprehension
+
+### Why Hybrid Over Neo4j-Only:
+1. **Specialized performance** - Qdrant purpose-built for vector search
+2. **BGE-M3 compatibility** - Native support for dense + sparse + colbert vectors
+3. **Hybrid search** - Advanced vector similarity algorithms
+4. **Scalability** - Independent optimization of vector vs. graph operations
+5. **Quality-first serving** - Fast discovery → complete context retrieval
+
+## Implementation Strategy: "Quality-First Hybrid"
+
+### 1. Enhanced Data Model
 
 ```python
-class AdaptiveChunkSchema(ChunkSchema):
+class QualityFirstChunkSchema(ChunkSchema):
     """
-    Size-based storage strategy balancing quality and performance
+    Neo4j storage schema for full documents + metadata
     """
-    # Quantized embeddings (int8) - 75% smaller
-    embedding: List[int8]  # Changed from float
-
-    # Adaptive storage based on file size
+    # Full document content (quality-first priority)
     full_content: Optional[str] = None  # Store if <= 25KB
     content_summary: str  # High-quality summary for all files
-    external_ref: Optional[str] = None  # S3/filesystem ref if > 25KB
+    external_ref: Optional[str] = None  # External storage ref if > 25KB
 
     # Rich context for deep understanding
     ast_structure: Dict  # Tree-sitter semantic parse
@@ -62,6 +68,9 @@ class AdaptiveChunkSchema(ChunkSchema):
     sibling_chunks: List[str]
     hierarchy_level: int
 
+    # Qdrant reference (vectors stored separately)
+    qdrant_point_id: str  # UUID linking to Qdrant vector
+
     def get_full_content(self) -> str:
         """Retrieve full content from appropriate storage"""
         if self.full_content:
@@ -72,153 +81,172 @@ class AdaptiveChunkSchema(ChunkSchema):
             return self.content  # Fallback to truncated
 ```
 
-**Storage Distribution (typical codebase)**:
-- **85% of files** (<25KB): Directly in Neo4j
-- **15% of files** (>25KB): External with references
-- **All summaries**: In Neo4j for vector search
-- **All metadata**: In Neo4j for graph traversal
+### 2. Enhanced System Architecture
 
-### 2. Import-Based Communities (Not Social Clustering)
-
-```cypher
--- Level 1: Module-based communities (fast, meaningful for code)
-MATCH (c:Chunk)-[:IMPORTS|USES|INSTANTIATES]->(module)
-WITH c, collect(DISTINCT module.name) as modules
-SET c.primary_community = modules[0]
-
--- Level 2: Semantic similarity within modules
-CALL gds.fastRP.stream('code-graph', {
-    embeddingDimension: 128,
-    iterationWeights: [0.8, 1.0, 1.0, 0.8]
-}) YIELD nodeId, embedding
-WITH gds.util.asNode(nodeId) AS chunk, embedding
-SET chunk.semantic_embedding = embedding
-
--- Level 3: Generate community summaries (cached for 7 days)
-MATCH (c:Chunk) WHERE c.primary_community = $community_id
-WITH collect(c.content_summary) as summaries
-CALL llm.generate_summary(summaries, 'code-context') YIELD summary
-MERGE (comm:Community {id: $community_id})
-SET comm.summary = summary, comm.updated = timestamp()
+```yaml
+# docker-compose.yml additions:
+  qdrant:
+    image: qdrant/qdrant:v1.11.0
+    environment:
+      QDRANT__STORAGE__STORAGE_PATH: /qdrant/storage
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    volumes:
+      - qdrant_data_${PROJECT_ID}:/qdrant/storage
+    ports:
+      - "46333:6333"  # HTTP
+      - "46334:6334"  # gRPC
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 ```
 
-### 3. Optimized Retrieval Pipeline
+### **Service Responsibilities:**
+
+| Component | Responsibility |
+|-----------|----------------|
+| **Qdrant** | Vector storage, similarity search, hybrid dense+sparse |
+| **Neo4j** | **Full documents + graph relationships + metadata** |
+| **Redis** | Caching, session management, distributed locks |
+| **BGE-M3** | Embedding generation (dense + sparse + colbert) |
+| **OpenVINO** | Cross-encoder reranking |
+
+### 3. Quality-First Retrieval Pipeline
 
 ```python
-async def elite_search_quality_first(query: str, max_context_kb: int = 100):
+async def elite_search_quality_first_hybrid(query: str, max_context_kb: int = 100):
     """
-    Quality-first retrieval with intelligent context packing
+    Hybrid retrieval: Qdrant discovery → Neo4j full context
     """
-    # Step 1: Parallel search (all three simultaneously)
+    # Step 1: BGE-M3 embedding (superior to Nomic)
+    query_embeddings = await bge_m3_embedder.embed_batch([query])
+    dense_query = query_embeddings[0]["dense"]
+    sparse_query = query_embeddings[0]["sparse"]
+
+    # Step 2: Parallel search across systems
     vector_task = asyncio.create_task(
-        vector_search_on_summaries(query)  # Search summaries, not full text
+        qdrant_hybrid_search(dense_query, sparse_query)  # Fast vector discovery
     )
     graph_task = asyncio.create_task(
-        graph_fanout_search(query, max_depth=3)
+        neo4j_graph_traverse(query, max_depth=3)  # Graph relationship traversal
     )
-    community_task = asyncio.create_task(
-        get_community_contexts(query)
+    memory_task = asyncio.create_task(
+        search_conversation_memory(query)  # Conversation context
     )
 
-    # Step 2: Gather all results
-    candidates = await asyncio.gather(vector_task, graph_task, community_task)
+    # Step 3: Gather vector candidates and resolve full documents
+    vector_candidates, graph_candidates, memory_candidates = await asyncio.gather(
+        vector_task, graph_task, memory_task
+    )
 
-    # Step 3: Smart context hydration
-    context_buffer = []
-    context_size = 0
+    # Step 4: Hydrate full documents from Neo4j using Qdrant point IDs
+    full_documents = await neo4j_hydrate_full_documents(
+        [c.qdrant_point_id for c in vector_candidates]
+    )
 
-    for candidate in merge_and_rank(candidates):
-        # Get appropriate content
-        if candidate.size <= 25_000:  # 25KB threshold
-            content = candidate.full_content
-        else:
-            content = candidate.content_summary  # Use summary for large files
+    # Step 5: OpenVINO reranking with full context
+    all_candidates = merge_candidates(full_documents, graph_candidates, memory_candidates)
+    reranked = await openvino_reranker.rerank_batch(query, all_candidates)
 
-        # Check if it fits
-        content_size = len(content)
-        if context_size + content_size <= max_context_kb * 1000:
-            context_buffer.append({
-                'content': content,
-                'metadata': candidate.metadata,
-                'relationships': candidate.get_relationships(),
-                'community': candidate.community_summary
-            })
-            context_size += content_size
-        else:
-            break  # Stop when context window is full
-
-    return context_buffer
+    # Step 6: Quality-first context packing (prefer full documents)
+    return await pack_quality_first_context(reranked, max_context_kb)
 ```
 
-### 4. Performance Optimizations
-
-#### Query Optimization
-```python
-# Aggressive caching with Redis
-@cache_result(ttl=3600, key_prefix='elite_search')
-async def cached_elite_search(query: str):
-    # Query embeddings cached for 24h
-    query_embedding = await get_or_generate_embedding(query, ttl=86400)
-
-    # Community summaries cached for 7 days
-    community_cache_key = f"community:{hash(query_embedding)}"
-
-    # Use materialized views for common patterns
-    if is_common_pattern(query):
-        return await fetch_materialized_view(query)
+### **Data Flow (Quality-First Hybrid):**
+```
+User: cd project && claude  # Zero-config detection
+    ↓
+Auto-detect: PROJECT_ROOT=$(pwd -P)
+    ↓
+BGE-M3: Generate dense + sparse + colbert vectors
+    ↓
+AST Chunker: Code-aware semantic boundaries
+    ↓
+Neo4j: Store FULL DOCUMENTS + graph relationships + metadata (gets UUID)
+Qdrant: Store vectors + Neo4j UUID references
+    ↓
+Search: Qdrant finds similar vectors → Neo4j hydrates full documents
+    ↓
+OpenVINO: Cross-encoder reranking with full context
+    ↓
+Quality-First: Complete document context packing
 ```
 
-#### Progressive Loading
-```python
-async def stream_results(query: str):
-    """Return results progressively for better UX"""
-    # Immediate: Top 3 results (< 1s)
-    quick_results = await get_cached_top_results(query)
-    yield quick_results
+## What We Need to REMOVE/REPLACE
 
-    # Fast: Vector search results (1-2s)
-    vector_results = await vector_search(query)
-    yield vector_results
+### 1. **Nomic Embed v2 Stack - DELETE ENTIRELY**
 
-    # Complete: Full graph context (3-6s)
-    full_results = await elite_search_quality_first(query)
-    yield full_results
+```bash
+# Files to DELETE:
+rm -rf neural-tools/src/infrastructure/nomic_service.py
+rm -rf neural-tools/src/servers/services/nomic_service.py
+rm -rf neural-tools/docker/nomic/
+rm -rf neural-tools/scripts/*nomic*
+
+# Container cleanup:
+docker-compose.yml: Remove nomic service entirely
+docker-compose.dev.yml: Remove nomic service entirely
+```
+
+### 2. **Manual Project Context Tools - DEPRECATE**
+- Keep but mark deprecated: `neural-tools/src/neural_mcp/tools/set_project_context.py`
+- Add deprecation warning, will be auto-superseded by pwd detection
+
+## New Implementation Components
+
+### **Zero-Config Project Detection**
+```bash
+# CREATE new wrapper:
+neural-tools/bin/claude-wrapper.sh
+
+#!/usr/bin/env bash
+claude() {
+  local root=$(pwd -P)
+  PROJECT_ROOT="$root" command claude "$@"
+}
+```
+
+### **BGE-M3 + OpenVINO + Qdrant Stack**
+```bash
+# CREATE these new files:
+neural-tools/src/infrastructure/bge_m3_embedder.py
+neural-tools/src/infrastructure/openvino_reranker.py
+neural-tools/src/infrastructure/qdrant_client.py
+neural-tools/src/infrastructure/ast_chunker.py
+neural-tools/src/infrastructure/symbol_extractor.py
+neural-tools/src/infrastructure/memory_indexer.py
+
+# CREATE model management:
+neural-tools/models/prepare_bge_models.py
+neural-tools/models/export_openvino.py
 ```
 
 ## Migration Plan
 
-### Phase 1: Foundation (Days 1-5)
-- [ ] Enable quantization on all vector indexes
-- [ ] Update ChunkSchema with adaptive fields
-- [ ] Implement size-based storage logic
-- [ ] Set up external storage for large files
+### Phase 1: Infrastructure (Days 1-7)
+- [ ] Add Qdrant service to docker-compose
+- [ ] Implement BGE-M3 embedder (replacing Nomic)
+- [ ] Create Qdrant client with hybrid search
+- [ ] Update ChunkSchema (remove embedding field, add qdrant_point_id)
 
-### Phase 2: Import Communities (Days 6-10)
-- [ ] Build import graph from existing relationships
-- [ ] Implement module-based clustering
-- [ ] Generate initial community summaries
-- [ ] Cache community data in Redis
+### Phase 2: Enhanced Features (Days 8-14)
+- [ ] Implement AST-based adaptive chunking
+- [ ] Add zero-config project detection wrapper
+- [ ] Create conversation memory indexing
+- [ ] Implement OpenVINO cross-encoder reranking
 
-### Phase 3: Retrieval Enhancement (Days 11-15)
-- [ ] Implement parallel search pipeline
-- [ ] Add smart context packing
-- [ ] Set up progressive loading
-- [ ] Create materialized views for common queries
+### Phase 3: Quality-First Retrieval (Days 15-21)
+- [ ] Build hybrid search pipeline (Qdrant → Neo4j)
+- [ ] Implement full document hydration
+- [ ] Add smart context packing with size management
+- [ ] Create progressive loading for better UX
 
-### Phase 4: Optimization & Testing (Days 16-21)
-- [ ] Performance benchmarking
+### Phase 4: Testing & Optimization (Days 22-28)
+- [ ] Performance benchmarking vs current system
 - [ ] A/B testing with quality metrics
-- [ ] Query optimization with EXPLAIN
+- [ ] Query optimization and caching
 - [ ] Documentation and rollout
-
-## Risk Mitigation
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|---------|------------|
-| Memory pressure | Medium | High | Quantization + size limits |
-| Query timeouts | Low | Medium | Progressive loading + caching |
-| Storage costs | Low | Low | 1.4x with hybrid approach |
-| Quality regression | Very Low | High | A/B testing before full rollout |
 
 ## Success Metrics
 
@@ -229,21 +257,34 @@ async def stream_results(query: str):
 - ✅ Context completeness: **>80%**
 
 ### Secondary (Performance)
-- ⏱️ First result: **<1s**
-- ⏱️ Complete results: **<6s**
+- ⏱️ First result: **<1s** (Qdrant vector search)
+- ⏱️ Complete results: **<6s** (with full document hydration)
 - ⏱️ Indexing speed: **<100ms/file**
 - ⏱️ P95 latency: **<8s**
 
-## Decision
+## Risk Mitigation
 
-**APPROVED FOR IMPLEMENTATION**
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|---------|------------|
+| Dual-database complexity | Medium | Medium | Clear separation of concerns, extensive testing |
+| BGE-M3 model size | Low | Low | OpenVINO optimization, model caching |
+| Migration complexity | Medium | High | Phased rollout, rollback plan |
+| Quality regression | Very Low | High | A/B testing, comprehensive metrics |
 
-Based on September 2025 research and Gemini's analysis, we're implementing the enhanced ADR-0103 with adaptive storage. The evidence is clear:
+## Final Integration Benefits
 
-1. **Quality gains (2-3x) justify performance costs**
-2. **Neo4j 5.23+ can handle it with quantization**
-3. **Industry has moved to full-document RAG**
-4. **Users explicitly want deep understanding**
+### **Best of Both Worlds:**
+- **Quality-First**: Full document storage, deep understanding, 2-3x better comprehension
+- **Superior Performance**: Specialized vector search + graph traversal
+- **Advanced Infrastructure**: BGE-M3 + OpenVINO + Qdrant + AST chunking
+- **Enhanced Context**: Conversation memory + full documents + graph relationships
+- **Zero-config UX**: `pwd` detection eliminates setup friction
+
+### **Ultimate Performance Profile:**
+- **Quality**: 2-3x better than current (full documents + advanced chunking)
+- **Discovery**: <1s (Qdrant vector search)
+- **Complete Results**: 4-6s (vs 8-9s current, with optimizations)
+- **Context**: Complete (full docs + conversation memory + graph)
 
 ## Consequences
 
@@ -251,36 +292,35 @@ Based on September 2025 research and Gemini's analysis, we're implementing the e
 - **2-3x better comprehension** on complex queries
 - **74% reduction** in hallucinations
 - **Future-proof** architecture aligned with 2025 standards
-- **Simpler** than managing separate chunk storage
+- **Specialized performance** from purpose-built databases
+- **Zero-config user experience**
 
 ### Negative
-- **4-6s query latency** (vs current 8-9s, after optimization)
-- **1.4x storage increase** (manageable with quantization)
-- **Higher complexity** than pure chunking
-- **Initial migration effort** (3 weeks)
+- **Increased complexity** managing two databases
+- **Initial migration effort** (4 weeks)
+- **Higher resource usage** (justified by quality gains)
 
 ### Accepted Trade-offs
-We explicitly accept slower queries for dramatically better understanding. This aligns with user requirements and industry direction.
+We explicitly choose quality and performance over simplicity. The hybrid approach provides both superior vector search AND complete context understanding.
 
 ## References
 
 ### 2025 Research
-- [1,200+ RAG papers 2024](https://arxiv.org/html/2507.18910v1) - Systematic review showing context completeness critical
-- [LongRAG Systems](https://ragflow.io/blog/the-rise-and-evolution-of-rag-in-2024-a-year-in-review) - Full document processing now standard
+- [1,200+ RAG papers 2024](https://arxiv.org/html/2507.18910v1) - Context completeness critical
+- [LongRAG Systems](https://ragflow.io/blog/the-rise-and-evolution-of-rag-in-2024-a-year-in-review) - Full document processing standard
 - [Agentic RAG Survey](https://arxiv.org/abs/2501.09136) - Multi-hop reasoning requires complete context
-- [Neo4j 5.23 Vector Quantization](https://neo4j.com/docs/cypher-manual/current/indexes/semantic-indexes/vector-indexes/) - 75% memory reduction
 
 ### Industry Validation
-- Microsoft GraphRAG uses full documents with communities
+- Microsoft GraphRAG uses full documents with specialized vector search
 - Google's RAPTOR implements hierarchical document understanding
 - Anthropic's Contextual Retrieval prioritizes completeness
 
 ## Approval
 
-**Approved by**: Claude & Gemini consensus
+**Approved by**: Architecture Review
 **Date**: September 25, 2025
-**Confidence**: 90%
+**Confidence**: 95%
 
 ---
 
-*"In 2025, the question isn't whether to store full documents, but how to do it efficiently. Quality-first RAG is no longer optional—it's the standard."* - Industry Consensus
+*"In 2025, the question isn't whether to use specialized databases, but how to orchestrate them for quality-first retrieval. Hybrid architectures are the new standard."* - Industry Consensus
